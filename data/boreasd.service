@@ -1,0 +1,14 @@
+[Unit]
+Description=Boreas hardware service for ASUS laptops (replaces asusd + supergfxd)
+After=power-profiles-daemon.service systemd-modules-load.service
+Before=display-manager.service
+Conflicts=asusd.service supergfxd.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/boreasd
+Restart=on-failure
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

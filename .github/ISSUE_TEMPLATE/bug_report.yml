@@ -1,0 +1,38 @@
+name: Bug report
+description: Something doesn't work or behaves differently than expected
+labels: [bug]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Laptop model
+      placeholder: ROG Strix G713PV
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and kernel
+      description: Output of `uname -r` and your distribution name
+      placeholder: CachyOS, 7.3.1-cachyos
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: boreasctl status
+      description: Output of `boreasctl status`
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Service logs
+      description: Output of `journalctl -u boreasd -b --no-pager | tail -n 100`
+      render: text

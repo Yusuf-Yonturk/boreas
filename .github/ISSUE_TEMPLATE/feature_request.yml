@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a feature or support for something new
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Boreas to do?
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Laptop model (if hardware related)
+      placeholder: ROG Zephyrus G14 GA403
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: How does G-Helper, Armoury Crate or another tool handle it? Links, screenshots…

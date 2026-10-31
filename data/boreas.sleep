@@ -1,0 +1,4 @@
+#!/bin/sh
+# Uykudan dönünce firmware fan eğrisi, güç limiti, şarj limiti ve Aura'yı sıfırlıyor.
+[ "$1" = post ] && /usr/bin/boreasctl reapply >/dev/null 2>&1
+exit 0

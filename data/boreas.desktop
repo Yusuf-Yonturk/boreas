@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Boreas
+GenericName=ASUS laptop control
+GenericName[tr]=ASUS dizüstü kontrolü
+Comment=Performance mode, fan curves, GPU mode, keyboard lighting and charge limit
+Comment[tr]=Performans modu, fan eğrisi, GPU modu, klavye ışığı ve şarj limiti
+Exec=boreas
+Icon=boreas
+Categories=System;Settings;HardwareSettings;
+Keywords=asus;rog;tuf;fan;gpu;battery;performance;

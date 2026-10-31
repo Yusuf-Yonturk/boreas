@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# ölçüm araçlarının çıktıları
+tools/*.log
+tools/*.txt
