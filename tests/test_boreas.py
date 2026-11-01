@@ -1,5 +1,6 @@
 """Sahte sysfs ağacıyla testler: python3 -m unittest discover -s tests"""
 
+import contextlib
 import json
 import os
 import shutil
@@ -273,6 +274,183 @@ class TestGpu(Base):
         finally:
             gpu._nvidia_users = orig
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def _fake_dgpu(self):
+        d = R + "/sys/bus/pci/devices/0000:01:00.0"
+        put(d + "/vendor", "0x10de")
+        put(d + "/class", "0x030000")
+        os.makedirs(d + "/drm/card1", exist_ok=True)
+        for m in gpu.NV_MODULES:
+            put(R + f"/sys/module/{m}/refcnt", 1)
+
+    def _fake_proc(self, procs, fuser=False):
+        """procs: {pid: (komut, [açık dosyalar])}. fuser=False: fuser yokmuş gibi /proc'a bakılır."""
+        proc = TMP + "/proc"
+        shutil.rmtree(proc, ignore_errors=True)
+        for pid, (comm, files) in procs.items():
+            put(f"{proc}/{pid}/comm", comm)
+            os.makedirs(f"{proc}/{pid}/fd")
+            for i, path in enumerate(files):
+                os.symlink(path, f"{proc}/{pid}/fd/{i}")
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(gpu, "PROC", proc))
+        if not fuser:
+            stack.enter_context(patch.object(gpu, "_fuser_pids", lambda nodes: None))
+        return stack
+
+    def test_fuser_pids_read_from_stdout(self):
+        # fuser PID'leri stdout'a, dosya adı ve erişim harflerini stderr'e yazar
+        self._fake_dgpu()
+        seen = []
+
+        def run(cmd, *a, **k):
+            seen.append(cmd)
+            return gpu.subprocess.CompletedProcess(
+                cmd, 0, stdout="   883  1510  1651", stderr="/dev/nvidia0:  F.... \n/dev/dri/card1: m\n")
+        procs = {883: ("nvidia-powerd", []), 1510: ("kwin_wayland", []), 1651: ("Xwayland", [])}
+        with self._fake_proc(procs, fuser=True), patch.object(gpu.subprocess, "run", run):
+            self.assertEqual(gpu._nvidia_users(ignore=gpu.NV_SERVICE_COMMANDS),
+                             ["Xwayland(1651)", "kwin_wayland(1510)"])
+        self.assertEqual(seen[0][0], "fuser")
+        self.assertIn("/dev/dri/card1", seen[0])
+
+    def test_nvidia_users_without_fuser_reads_proc(self):
+        # fuser (psmisc) yoksa /proc/PID/fd'ye bakılır;
+        # KWin sayılır, servisler (nvidia-powerd) ve dGPU'ya dokunmayanlar sayılmaz
+        self._fake_dgpu()
+        procs = {
+            1510: ("kwin_wayland", ["/dev/null", "/dev/dri/card1"]),
+            1651: ("Xwayland", ["/dev/dri/renderD129"]),
+            883: ("nvidia-powerd", ["/dev/nvidia0", "/dev/nvidiactl"]),
+            900: ("firefox", ["/dev/nvidia-caps/nvidia-cap1"]),
+            42: ("bash", ["/dev/pts/0", "/dev/dri/card0"]),
+        }
+        os.makedirs(R + "/sys/bus/pci/devices/0000:01:00.0/drm/renderD129", exist_ok=True)
+        with self._fake_proc(procs):
+            self.assertEqual(gpu._nvidia_users(ignore=gpu.NV_SERVICE_COMMANDS),
+                             ["Xwayland(1651)", "firefox(900)", "kwin_wayland(1510)"])
+            self.assertIn("nvidia-powerd(883)", gpu._nvidia_users())
+
+    def test_busy_message_names_kwin(self):
+        # dGPU'yu KWin tutuyorsa sürücüye dokunmadan ertele ve 15 sn'de bir yeniden dene
+        self._fake_dgpu()
+        calls = self._gpu_calls()
+        with self._fake_proc({1510: ("kwin_wayland", ["/dev/dri/card1"])}):
+            d = daemon.Daemon(config.Config())
+            r = d.handle({"cmd": "set_gpu", "target": gpu.ECO})
+        self.assertEqual(r["busy"], ["kwin_wayland(1510)"])
+        self.assertFalse(d.eco_stuck)
+        self.assertFalse([c for c in calls if c[0] == "modprobe"])
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def test_eco_stops_nvidia_powerd(self):
+        # nvidia-powerd dGPU'yu açık tutar: durdurulup Eco uygulanmalı, Eco'dan çıkınca başlamalı
+        self._fake_dgpu()
+        running = {"nvidia-powerd.service"}
+
+        def run_ok(cmd):
+            if cmd[:3] == ("systemctl", "is-active", "--quiet"):
+                return cmd[3] in running
+            if cmd[:2] == ("systemctl", "stop"):
+                running.discard(cmd[2])
+            return True
+        calls = self._gpu_calls(run_ok)
+        orig = gpu._nvidia_users
+
+        def users(ignore=()):
+            if "nvidia-powerd.service" not in running:  # servis durunca süreci de biter
+                shutil.rmtree(TMP + "/proc/883", ignore_errors=True)
+            return orig(ignore)
+        with self._fake_proc({883: ("nvidia-powerd", ["/dev/nvidia0"])}), \
+                patch.object(gpu, "_nvidia_users", users):
+            gpu.set_eco(True)
+        self.assertIn(("systemctl", "stop", "nvidia-powerd.service"), calls)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+
+    def test_failed_eco_write_brings_dgpu_back(self):
+        # aygıt çıkarıldıktan sonra dgpu_disable yazılamazsa dGPU kaybolmasın
+        self._fake_dgpu()
+        calls = self._gpu_calls()
+        real_set = hw.set_attr
+
+        def set_attr(name, value):
+            if name == "dgpu_disable":
+                raise OSError(5, "Input/output error")
+            return real_set(name, value)
+        with patch.object(gpu, "_nvidia_users", lambda ignore=(): []), \
+                patch.object(gpu.hw, "set_attr", set_attr):
+            with self.assertRaises(OSError):
+                gpu.set_eco(True)
+        self.assertTrue(os.path.exists(R + "/sys/bus/pci/rescan"))  # aygıt geri tarandı
+        unload = calls.index(("modprobe", "-r", "nvidia"))
+        self.assertIn(("modprobe", "nvidia_drm"), calls[unload:])  # sürücü geri yüklendi
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def _bridge(self, name, child=False, control="auto"):
+        d = R + f"/sys/bus/pci/devices/{name}"
+        put(d + "/secondary_bus_number", 1)
+        put(d + "/power/control", control)
+        # gerçek portlarda aygıt olmasa da bunlar hep var (G713PV: pcie002, pcie010)
+        for svc in ("pcie002", "pcie010"):
+            os.makedirs(f"{d}/{name}:{svc}", exist_ok=True)
+        os.makedirs(d + "/pci_bus/0000:01", exist_ok=True)
+        if child:
+            os.makedirs(d + "/0000:02:00.0", exist_ok=True)
+        return d
+
+    def test_leaving_eco_wakes_sleeping_port(self):
+        # G713PV: port uyurken dgpu_disable=0 firmware'de 30 sn bekleyip EIO veriyordu
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        port = self._bridge("0000:00:01.1")             # Eco'da altı boş: dGPU'nun portu
+        busy = self._bridge("0000:00:02.1", child=True)  # altında aygıt var: dokunulmaz
+        self._gpu_calls()
+        seen = {}
+        real_set = hw.set_attr
+
+        def set_attr(name, value):
+            if name == "dgpu_disable":
+                seen["port"] = get(port + "/power/control")
+                seen["busy"] = get(busy + "/power/control")
+            return real_set(name, value)
+        with patch.object(gpu.hw, "set_attr", set_attr):
+            gpu.set_eco(False)
+        self.assertEqual(seen, {"port": "on", "busy": "auto"})
+        self.assertEqual(get(port + "/power/control"), "auto")  # güç yönetimi geri açıldı
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def test_port_restored_when_firmware_fails(self):
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        port = self._bridge("0000:00:01.1")
+        self._gpu_calls()
+
+        def set_attr(name, value):
+            raise OSError(5, "Input/output error")
+        with patch.object(gpu.hw, "set_attr", set_attr):
+            with self.assertRaises(OSError):
+                gpu.set_eco(False)
+        self.assertEqual(get(port + "/power/control"), "auto")
+
+    def test_sysfs_write_is_attempted_once(self):
+        # open()+with hata olunca kapanışta yazmayı tekrarlıyordu (2 x 30 sn firmware beklemesi)
+        tries = []
+
+        def fail(fd, data):
+            tries.append(data)
+            raise OSError(5, "Input/output error")
+        with patch.object(hw.os, "write", fail):
+            with self.assertRaises(OSError):
+                hw.write(hw.ARMOURY + "/dgpu_disable/current_value", 0)
+        self.assertEqual(tries, [b"0\n"])
+
+    def test_gpu_error_at_boot_does_not_crash(self):
+        d = daemon.Daemon(config.Config())
+        d.cfg["gpu_target"] = gpu.STANDARD
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        with patch.object(gpu, "set_eco", side_effect=OSError(5, "Input/output error")):
+            d.reapply(at_boot=True)  # servis açılışta çökmemeli
+            self.assertIn("Could not change the GPU mode", d.notice)
+            with self.assertRaises(OSError):  # kullanıcı seçtiyse hata ona dönmeli
+                d.apply_gpu_target(gpu.STANDARD, explicit=True)
 
     def test_resume_after_unplug_applies_optimized(self):
         # uyanınca otomatik GPU modu çalışır; uykuda fiş çekildiyse Eco'ya geçilmeli

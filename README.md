@@ -145,11 +145,13 @@ The readback method has not yet been verified live on the 7845HX; it is not enab
 ## GPU modes
 
 - **Ultimate** ↔ others switches the MUX and requires a reboot.
-- **Eco** can freeze the system if `dgpu_disable` is written while the dGPU driver is bound. The
-  service first unloads the NVIDIA modules and removes the PCI device. If the dGPU is in use
-  (KWin, games, CUDA), Eco is postponed: the service retries every 15 s and applies it before the
-  display manager on boot. If the NVIDIA module is never released, it stops retrying and Eco is
-  applied on the next reboot.
+- **Eco → Standard** works right away, without a reboot.
+- **Standard → Eco** can freeze the system if `dgpu_disable` is written while the dGPU driver is
+  bound. The service first stops nvidia-persistenced and nvidia-powerd, unloads the NVIDIA modules
+  and removes the PCI device. If the dGPU is in use (KWin, games, CUDA), Eco is postponed: the
+  service retries every 15 s and applies it before the display manager on boot. On KDE Plasma
+  (Wayland) KWin keeps the dGPU open for the whole session, so there Eco is applied on the next
+  boot. If the NVIDIA module is never released, it stops retrying until the next reboot.
 
 ## Development
 

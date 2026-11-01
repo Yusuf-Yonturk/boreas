@@ -59,8 +59,13 @@ def read_int(path: str) -> int | None:
 
 
 def write(path: str, value) -> None:
-    with open(p(path), "w") as f:
-        f.write(f"{value}\n")
+    # Tek write() çağrısı: open() + with, hata olunca kapanışta yazmayı ikinci kez dener;
+    # yavaş firmware çağrılarında (dgpu_disable) bu bekleme süresini ikiye katlıyordu.
+    fd = os.open(p(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, f"{value}\n".encode())
+    finally:
+        os.close(fd)
 
 
 def exists(path: str) -> bool:

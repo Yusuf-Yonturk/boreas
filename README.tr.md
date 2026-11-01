@@ -153,10 +153,13 @@ Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol 
 ## GPU modları hakkında
 
 - **Ultimate** ↔ diğerleri MUX'u değiştirir, yeniden başlatma gerekir.
-- **Eco**, dGPU sürücüsü bağlıyken `dgpu_disable` yazılırsa sistemi kilitleyebilir. Servis önce
-  NVIDIA modüllerini kaldırır ve PCI aygıtını çıkarır. dGPU kullanımdaysa (KWin, oyun, CUDA)
-  Eco ertelenir: servis 15 saniyede bir yeniden dener ve açılışta ekran yöneticisinden önce uygular.
-  NVIDIA modülü hiç bırakılmıyorsa yeniden denemez, Eco yeniden başlatınca uygulanır.
+- **Eco → Standard** yeniden başlatmadan hemen geçer.
+- **Standard → Eco**: dGPU sürücüsü bağlıyken `dgpu_disable` yazılırsa sistem kilitlenebilir. Servis
+  önce nvidia-persistenced ve nvidia-powerd'yi durdurur, NVIDIA modüllerini kaldırır ve PCI aygıtını
+  çıkarır. dGPU kullanımdaysa (KWin, oyun, CUDA) Eco ertelenir: servis 15 saniyede bir yeniden dener ve
+  açılışta ekran yöneticisinden önce uygular. KDE Plasma'da (Wayland) KWin dGPU'yu oturum boyunca açık
+  tuttuğu için Eco orada bir sonraki açılışta uygulanır. NVIDIA modülü hiç bırakılmıyorsa yeniden
+  başlatmaya kadar tekrar denemez.
 
 ## Geliştirme
 

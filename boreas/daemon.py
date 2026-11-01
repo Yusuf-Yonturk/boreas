@@ -247,6 +247,13 @@ class Daemon:
                                 + ("It will be applied after a reboot." if e.hard else
                                    "It will be applied automatically when the dGPU is free (usually after a reboot)."))
                 return {"busy": e.users, "deferred": True}
+            except OSError as e:
+                # firmware isteği reddetti; açılışta servisin çökmesine (ve ekran yöneticisini
+                # bekletmesine) yol açmasın. Kullanıcı seçtiyse hatayı ona da ilet.
+                self.set_notice(f"Could not change the GPU mode: {e}")
+                if explicit:
+                    raise
+                return {}
             return {}
 
     def eco_pending(self) -> bool:

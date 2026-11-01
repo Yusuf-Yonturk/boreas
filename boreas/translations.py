@@ -336,6 +336,12 @@ _T = {
         "Impossible d'appliquer la limite de température CPU : {error}", "Não foi possível aplicar o limite de temperatura da CPU: {error}",
         "Не удалось применить лимит температуры CPU: {error}", "CPU-Temperaturgrenze konnte nicht angewendet werden: {error}",
         "CPU 温度上限を適用できませんでした: {error}"),
+    "Could not change the GPU mode: {error}": (
+        "GPU modu değiştirilemedi: {error}", "无法切换 GPU 模式：{error}", "GPU मोड नहीं बदला जा सका: {error}",
+        "No se pudo cambiar el modo de GPU: {error}", "تعذّر تغيير وضع GPU: {error}",
+        "Impossible de changer le mode GPU : {error}", "Não foi possível mudar o modo da GPU: {error}",
+        "Не удалось сменить режим GPU: {error}", "GPU-Modus konnte nicht geändert werden: {error}",
+        "GPU モードを切り替えられませんでした: {error}"),
     "Could not apply {key}: {error}": (
         "{key} uygulanamadı: {error}", "无法应用 {key}：{error}", "{key} लागू नहीं हो सका: {error}", "No se pudo aplicar {key}: {error}",
         "تعذّر تطبيق {key}: {error}", "Impossible d'appliquer {key} : {error}", "Não foi possível aplicar {key}: {error}",

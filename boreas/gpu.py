@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import subprocess
 import time
 
@@ -22,9 +23,12 @@ from . import hw
 
 ECO, STANDARD, ULTIMATE, OPTIMIZED = "eco", "standard", "ultimate", "optimized"
 NV_MODULES = ("nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia")
-NV_SERVICES = ("nvidia-persistenced.service",)
-# fuser'ın kısalttığı komut adları; bu servisler Eco öncesi zaten durdurulur
-NV_SERVICE_COMMANDS = ("nvidia-persiste",)
+# dGPU'yu açık tutan NVIDIA servisleri: Eco öncesi durdurulur, Eco'dan çıkınca yeniden başlatılır
+NV_SERVICES = ("nvidia-persistenced.service", "nvidia-powerd.service")
+# /proc/PID/comm adları (çekirdek 15 karakterde keser)
+NV_SERVICE_COMMANDS = ("nvidia-persiste", "nvidia-powerd")
+PROC = "/proc"
+PCI_ADDR = re.compile(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]")
 
 
 class GpuBusy(Exception):
@@ -91,20 +95,67 @@ def _loaded(module: str) -> bool:
     return hw.exists(f"/sys/module/{module}")
 
 
+def _comm(pid: str) -> str:
+    try:
+        with open(f"{PROC}/{pid}/comm") as f:
+            return f.read().strip()
+    except OSError:  # süreç bu arada bitti
+        return "?"
+
+
+def _fuser_pids(nodes: list[str]) -> set[str] | None:
+    """fuser ile aygıtları kullanan PID'ler (açık dosya ve bellek eşlemesi); fuser yoksa None.
+
+    fuser PID'leri stdout'a, dosya adlarını ve erişim harflerini stderr'e yazar;
+    bu yüzden yalnız stdout okunur ve süreç adları /proc/PID/comm'dan alınır.
+    """
+    try:
+        r = subprocess.run(["fuser", *nodes], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return set(r.stdout.split())
+
+
+def _proc_pids(nodes: list[str]) -> set[str]:
+    """fuser (psmisc) yoksa yedek: /proc/PID/fd bağlantılarına bakar."""
+    wanted = set(nodes)
+    try:
+        pids = [p for p in os.listdir(PROC) if p.isdigit()]
+    except OSError:
+        return set()
+    out = set()
+    for pid in pids:
+        try:
+            fds = os.listdir(f"{PROC}/{pid}/fd")
+        except OSError:  # süreç bitti ya da erişim yok
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{PROC}/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if target in wanted or target.startswith("/dev/nvidia"):
+                out.add(pid)
+                break
+    return out
+
+
 def _nvidia_users(ignore: tuple[str, ...] = ()) -> list[str]:
+    """dGPU aygıt dosyalarını kullanan süreçler, "komut(PID)" biçiminde."""
     nodes = glob.glob("/dev/nvidia*")
     for d in nvidia_pci_devices():
         nodes += [f"/dev/dri/{os.path.basename(x)}" for x in glob.glob(hw.p(d) + "/drm/*")
                   if os.path.basename(x).startswith(("card", "renderD"))]
     if not nodes:
         return []
-    r = subprocess.run(["fuser", "-v", *nodes], capture_output=True, text=True)
+    pids = _fuser_pids(nodes)
+    if pids is None:
+        pids = _proc_pids(nodes)
+    pids.discard(str(os.getpid()))
     users = set()
-    for line in r.stderr.splitlines():
-        parts = line.split()
-        # biçim: [dosya:] KULLANICI PID ERİŞİM KOMUT
-        if len(parts) >= 4 and parts[-3].isdigit() and parts[-1] not in ignore:
-            users.add(f"{parts[-1]}({parts[-3]})")
+    for pid in pids:
+        if pid.isdigit() and (comm := _comm(pid)) not in ignore:
+            users.add(f"{comm}({pid})")
     return sorted(users)
 
 
@@ -154,6 +205,47 @@ def _attach_dgpu(tries: int = 5) -> None:
             _run("systemctl", "start", svc)
 
 
+def _empty_bridges() -> list[str]:
+    """Altında aygıt olmayan PCI köprüleri (Eco'da dGPU'nun bağlı olduğu port böyledir)."""
+    out = []
+    for d in sorted(glob.glob(hw.p("/sys/bus/pci/devices/*"))):
+        if not os.path.exists(d + "/secondary_bus_number"):
+            continue
+        # yalnız gerçek PCI aygıtları ("0000:01:00.0"); portun kendi servisleri
+        # ("0000:00:01.1:pcie002" gibi) her zaman orada durur, sayılmamalı
+        children = [c for c in os.listdir(os.path.realpath(d)) if PCI_ADDR.fullmatch(c)]
+        if not children:
+            out.append(d[len(hw.ROOT):])
+    return out
+
+
+def _wake_bridges() -> dict[str, str]:
+    """Boş köprüleri uyanık tut; eski power/control değerlerini döndürür.
+
+    Eco'da dGPU'nun PCIe portu derin uykuya (D3cold) geçer. Port uyurken dgpu_disable=0
+    yazılırsa firmware (ACPI) dGPU'nun açılmasını 30 sn bekleyip hata verir (G713PV'de ölçüldü);
+    port uyanıkken aynı yazma 1 sn'den kısa sürer.
+    """
+    saved = {}
+    for b in _empty_bridges():
+        old = hw.read(b + "/power/control")
+        if old and old != "on":
+            try:
+                hw.write(b + "/power/control", "on")  # yazınca çekirdek portu hemen uyandırır
+                saved[b] = old
+            except OSError:
+                pass
+    return saved
+
+
+def _restore_bridges(saved: dict[str, str]) -> None:
+    for b, old in saved.items():
+        try:
+            hw.write(b + "/power/control", old)
+        except OSError:
+            pass
+
+
 def set_eco(enabled: bool) -> None:
     cur = hw.get_attr("dgpu_disable")
     if cur is None:
@@ -162,10 +254,19 @@ def set_eco(enabled: bool) -> None:
         return
     if enabled:
         _detach_dgpu()
-        hw.set_attr("dgpu_disable", 1)
+        try:
+            hw.set_attr("dgpu_disable", 1)
+        except (OSError, ValueError):
+            # aygıt çıkarıldı ama Eco yazılamadı: dGPU'yu ve sürücüyü geri getir
+            _attach_dgpu()
+            raise
     else:
-        hw.set_attr("dgpu_disable", 0)
-        _attach_dgpu()
+        saved = _wake_bridges()
+        try:
+            hw.set_attr("dgpu_disable", 0)
+            _attach_dgpu()
+        finally:
+            _restore_bridges(saved)  # dGPU bağlıyken port ondan bağımsız uyumaz
 
 
 def set_mux(ultimate: bool) -> None:
