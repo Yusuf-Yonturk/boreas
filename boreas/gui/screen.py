@@ -1,4 +1,4 @@
-"""Dahili ekran yenileme hızı (KDE Wayland, kscreen-doctor). Kullanıcı oturumunda çalışır."""
+"""Built-in display refresh rate (KDE Wayland, kscreen-doctor). Runs in the user session."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _outputs() -> list[dict]:
 
 
 def internal() -> dict | None:
-    """{'name', 'current': Hz, 'rates': {Hz: mode_id}}: mevcut çözünürlükteki hızlar."""
+    """{'name', 'current': Hz, 'rates': {Hz: mode_id}}: the rates at the current resolution."""
     for o in _outputs():
         if not (o.get("enabled") and o["name"].startswith(("eDP", "LVDS"))):
             continue

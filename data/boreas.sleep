@@ -1,4 +1,4 @@
 #!/bin/sh
-# Uykudan dönünce firmware fan eğrisi, güç limiti, şarj limiti ve Aura'yı sıfırlıyor.
+# After sleep the firmware resets the fan curves, power limits, charge limit and Aura.
 [ "$1" = post ] && /usr/bin/boreasctl reapply >/dev/null 2>&1
 exit 0

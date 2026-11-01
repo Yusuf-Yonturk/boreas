@@ -1,7 +1,7 @@
-"""Arayüz dili. Kaynak metinler İngilizce; çeviriler translations.py içinde.
+"""UI language. Source texts are in English; the translations live in translations.py.
 
-Dil seçimi: BOREAS_LANG ortam değişkeni > kullanıcı ayarı (~/.config/boreas/boreas.conf)
-> kurulumda seçilen dil (/etc/xdg/boreas/boreas.conf) > İngilizce.
+Language choice: BOREAS_LANG environment variable > user setting (~/.config/boreas/boreas.conf)
+> language chosen at install (/etc/xdg/boreas/boreas.conf) > English.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import re
 
 from .translations import MESSAGES
 
-# kod → kendi dilinde adı (menüde bu sırayla görünür)
+# code → native name (the menu shows them in this order)
 LANGUAGES = {
     "en": "English",
     "tr": "Türkçe",
@@ -33,7 +33,7 @@ _patterns: list | None = None
 
 
 def normalize(code: str | None) -> str | None:
-    """'tr_TR.UTF-8', 'pt-BR', 'zh_CN' → 'tr', 'pt', 'zh'. Bilinmeyen dil → None."""
+    """'tr_TR.UTF-8', 'pt-BR', 'zh_CN' → 'tr', 'pt', 'zh'. Unknown language → None."""
     if not code:
         return None
     base = re.split(r"[_.@-]", str(code).strip().lower())[0]
@@ -48,7 +48,7 @@ def set_language(code: str | None) -> str:
 
 
 def choose(settings=None) -> str:
-    """Kullanılacak dil kodu (ayarlanmaz)."""
+    """The language code to use (does not apply it)."""
     env = normalize(os.environ.get("BOREAS_LANG"))
     if env:
         return env
@@ -73,7 +73,7 @@ def _(text: str) -> str:
 
 
 def _compiled() -> list:
-    """Yer tutuculu kaynak metinler ({name}) → tam eşleşen düzenli ifade."""
+    """Source texts with placeholders ({name}) → full-match regular expressions."""
     global _patterns
     if _patterns is None:
         _patterns = []
@@ -87,7 +87,7 @@ def _compiled() -> list:
 
 
 def tr_msg(text: str) -> str:
-    """Servisten gelen İngilizce iletiyi çevirir; değişken kısımlar ({...}) da ayrıca denenir."""
+    """Translates an English message from the service; the variable parts ({...}) are translated too."""
     if not text or current == DEFAULT:
         return text
     if text in MESSAGES:
@@ -107,7 +107,7 @@ BUILTIN_NAMES = {2: "Silent", 0: "Balanced", 1: "Turbo"}
 
 
 def mode_name(m: dict) -> str:
-    """Servisin mod kaydından görünen ad: yerleşik modlar ve "Custom N" çevrilir, kullanıcı adları aynen."""
+    """Display name from the service's mode entry: built-in modes and "Custom N" are translated, user names are kept."""
     if m.get("builtin") and m.get("id") in BUILTIN_NAMES:
         return _(BUILTIN_NAMES[m["id"]])
     n = re.fullmatch(r"(?:Custom|Özel) (\d+)", str(m.get("name", "")))

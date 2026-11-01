@@ -1,4 +1,4 @@
-"""Boreas ana penceresi ve tepsi simgesi."""
+"""Boreas main window and tray icon."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
 
 from .. import __version__, i18n, update
 from ..i18n import _, mode_name, tr_msg
-from ..client import DaemonError, call  # noqa: F401  (DaemonError testlerde A.DaemonError olarak kullanılır)
+from ..client import DaemonError, call  # noqa: F401  (the tests use DaemonError as A.DaemonError)
 from . import screen
 from .common import ACCENT, MODE_COLORS, T, apply_theme, bus, run_async, u, uv, watch_system_theme
 from .fans import FansWindow
@@ -37,7 +37,7 @@ AURA_MODES = [("static", "Static"), ("breathe", "Breathe"), ("cycle", "Color cyc
               ("rainbow", "Rainbow"), ("strobe", "Strobe")]
 AURA_SPEEDS = [("slow", "Slow"), ("normal", "Normal"), ("fast", "Fast")]
 
-# bölmeli düğmeli satırlar: üstteki ve alttaki çizgiye yapışmasın
+# rows with segmented buttons: keep them off the lines above and below
 SEG_ROW = 70
 
 THEME_CYCLE = ["auto", "light", "dark"]
@@ -50,8 +50,8 @@ PAGES = {
 
 
 def _wind_paths(simple: bool = False) -> list:
-    """64x64 düzleminde üç rüzgâr çizgisi (data/boreas.svg ile aynı). simple: küçük boylar için
-    kıvrımsız, aralıklı üç çizgi; 16-24 pikselde kıvrımlar birbirine karışıp okunmaz."""
+    """Three wind lines on a 64x64 canvas (same as data/boreas.svg). simple: three spaced lines
+    without curls for small sizes; at 16-24 px the curls blur into each other."""
     if simple:
         lines = []
         for y, x2 in ((22, 44), (32, 50), (42, 38)):
@@ -94,7 +94,7 @@ def _icon_pixmap(color: str, size: int) -> QPixmap:
 
 
 def tray_icon(color: str) -> QIcon:
-    """Her boy ayrı çizilir: küçültülmüş tek resim tepside ve pencere başlığında bulanık durur."""
+    """Every size is drawn separately: a single scaled-down image looks blurry in the tray and title bar."""
     ic = QIcon()
     for size in ICON_SIZES:
         ic.addPixmap(_icon_pixmap(color, size))
@@ -121,27 +121,27 @@ class MainWindow(QWidget):
         self.page = "main"
         self.last_ac = None
         self.busy = False
-        self.stale = False      # sorgu sürerken yeni istek geldi: bitince yeniden sor
-        self.pending = []       # yeni durum gelince çalışacak geri çağrılar
-        # tıklanan seçim, servis uygulayıp yeni durum gelene kadar ekranda sabit kalır
-        # (yoldaki eski durum düğmeyi geri zıplatmasın): anahtar -> (değer, sıra no)
+        self.stale = False      # a new request came in while a query was running: ask again when it finishes
+        self.pending = []       # callbacks to run when a new status arrives
+        # a clicked choice stays on screen until the service has applied it and a new status arrives
+        # (so a stale status in flight does not make the button jump back): key -> (value, sequence no)
         self.hold: dict = {}
         self._hold_seq = 0
-        self.error = ""         # son eylemin hatası (başarılı eylemde silinir)
-        self.status_error = ""  # servise ulaşılamıyor
-        self.update_version = ""  # GitHub'da daha yeni sürüm varsa numarası
-        self.updating = False     # "Güncelle"ye basıldı, indirme/kurulum sürüyor
+        self.error = ""         # error of the last action (cleared on success)
+        self.status_error = ""  # the service cannot be reached
+        self.update_version = ""  # version number if GitHub has a newer version
+        self.updating = False     # "Update" was pressed, download/install in progress
         self.quitting = False
-        # oturum kapanırken de pencere kapanmayı reddetmesin
+        # do not refuse to close when the session ends either
         QApplication.instance().commitDataRequest.connect(lambda _: setattr(self, "quitting", True))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Başlık: ad + alt yazı, sağ üstte "Fanlar ve güç"
+        # Header: name + subtitle, "Fans and power" at the top right
         head = QWidget()
-        # ızgara: başlık ile düğmeler aynı satırda, alt yazı ile anlık bilgi bir alt satırda (hizalı)
+        # grid: title and buttons on one row, subtitle and live info on the row below (aligned)
         hg = QGridLayout(head)
         hg.setContentsMargins(u(24), uv(20), u(24), 0)
         hg.setHorizontalSpacing(u(12))
@@ -151,7 +151,7 @@ class MainWindow(QWidget):
         self.title.setObjectName("title")
         self.subtitle = QLabel(_(PAGES["main"][1]))
         self.subtitle.setObjectName("subtitle")
-        self.title.setWordWrap(True)      # uzun çevirilerde kesilmek yerine alt satıra insin
+        self.title.setWordWrap(True)      # long translations wrap instead of being cut off
         self.subtitle.setWordWrap(True)
         self.fans_btn = QPushButton(_("Fans and power"))
         self.fans_btn.setObjectName("fanbtn")
@@ -161,14 +161,14 @@ class MainWindow(QWidget):
         self.fans_btn.setIconSize(QSize(u(18), u(18)))
         self.fans_btn.clicked.connect(self.open_fans)
         self.fans_btn.toggled.connect(lambda _: self._fan_icon())
-        # Tema düğmesi: Otomatik → Açık → Koyu
+        # Theme button: Auto → Light → Dark
         self.theme_btn = QPushButton()
         self.theme_btn.setObjectName("iconbtn")
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.theme_btn.setFixedSize(uv(38), uv(38))
         self.theme_btn.setIconSize(QSize(u(18), u(18)))
         self.theme_btn.clicked.connect(self.cycle_theme)
-        # Dil düğmesi: menüden seçilir, uygulama yeniden başlar
+        # Language button: picked from a menu, the app restarts
         self.lang_btn = QPushButton()
         self.lang_btn.setObjectName("iconbtn")
         self.lang_btn.setCursor(Qt.PointingHandCursor)
@@ -188,22 +188,22 @@ class MainWindow(QWidget):
         btns.addWidget(self.lang_btn)
         btns.addWidget(self.theme_btn)
         btns.addWidget(self.fans_btn)
-        # Fanlar ve güç sayfasında anlık CPU sıcaklığı ve fan hızları: ayar yaparken sonucu izlemek için.
-        # Alt yazıyla aynı biçim ve aynı satırda, böylece taban çizgileri hizalı.
+        # Live CPU temperature and fan speeds on the Fans and power page, to watch the result while tuning.
+        # Same style and row as the subtitle, so the baselines line up.
         self.live_info = QLabel()
         self.live_info.setObjectName("subtitle")
         self.live_info.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.live_info.hide()
-        # sağ kenarı kartların iç kenarında: ana sayfadaki kart bilgisiyle ("… rpm") aynı çizgi
+        # right edge on the inner edge of the cards: the same line as the card info on the main page ("… rpm")
         self.live_info.setContentsMargins(0, 0, u(20), 0)
-        # satır kaydıran etiketlere hücre hizalaması verilmez (Qt yüksekliği yanlış hesaplar);
-        # hizalama etiketin kendisinde
+        # wrapping labels get no cell alignment (Qt gets their height wrong);
+        # the label aligns itself
         self.title.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.subtitle.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.live_info.setAlignment(Qt.AlignRight | Qt.AlignTop)
         hg.addWidget(self.title, 0, 0)
         hg.addLayout(btns, 0, 1, Qt.AlignRight | Qt.AlignTop)
-        # Güncelleme bildirimi: alt yazının sağında, "Fanlar ve güç"ün altında, aynı sağ hizada
+        # Update notice: right of the subtitle, below "Fans and power", on the same right edge
         self.update_info = QLabel()
         self.update_info.setObjectName("subtitle")
         self.update_info.setTextFormat(Qt.RichText)
@@ -219,7 +219,7 @@ class MainWindow(QWidget):
         hg.addLayout(info_col, 1, 1)
         root.addWidget(head)
 
-        # Uyarı satırı (servis hatası, eylem hatası)
+        # Warning row (service error, action error)
         self.notice = QLabel()
         self.notice.setObjectName("dim")
         self.notice.setWordWrap(True)
@@ -232,13 +232,13 @@ class MainWindow(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(self.stack, 1)
 
-        # ---- ana sayfa ----
+        # ---- main page ----
         content = QWidget()
         cl = QVBoxLayout(content)
         cl.setContentsMargins(u(24), uv(18), u(24), uv(16))
         cl.setSpacing(uv(16))
 
-        # Performans
+        # Performance
         card_, lay, self.perf_info = card(_("Performance mode"))
         self.mode_seg = Segmented(self.set_mode)
         for key in (2, 0, 1):
@@ -261,7 +261,7 @@ class MainWindow(QWidget):
         self.gpu_card = card_
         cl.addWidget(card_)
 
-        # Ekran
+        # Display
         card_, lay, self.screen_info = card(_("Built-in display"))
         self.screen_seg = Segmented(self.set_screen)
         self.screen_group = self.screen_seg.group
@@ -274,7 +274,7 @@ class MainWindow(QWidget):
         lay.addWidget(self.overdrive_row)
         cl.addWidget(card_)
 
-        # Klavye
+        # Keyboard
         card_, lay, self.kbd_info = card(_("Keyboard"))
         self.aura_mode = _combo(266)
         for k, label in AURA_MODES:
@@ -288,7 +288,7 @@ class MainWindow(QWidget):
         self.aura_color.clicked.connect(self.pick_color)
         self.color = QColor(self.settings.value("aura_color", "#ff0000"))
         self.kbd_level = QSlider(Qt.Horizontal)
-        self.kbd_level.setFixedSize(u(340), max(u(28), 22))  # tutamaç kırpılmasın
+        self.kbd_level.setFixedSize(u(340), max(u(28), 22))  # do not clip the handle
         self.kbd_level.setRange(0, 3)
         self.kbd_level.setPageStep(1)
         self.kbd_level.sliderReleased.connect(self.set_kbd)
@@ -309,7 +309,7 @@ class MainWindow(QWidget):
         cl.addWidget(card_)
         cl.addStretch(1)
 
-        # Pil: tasarımda "Fanlar ve güç" sayfasında görünür (FansWindow yerleştirir)
+        # Battery: shown on the "Fans and power" page in the design (FansWindow places it)
         self.pil_card, lay, self.bat_info = card(_("Battery charge limit"))
         self.charge_row = ValueSlider(_("Charge limit"), 40, 100, 80, "%")
         self.charge = self.charge_row.slider
@@ -326,7 +326,7 @@ class MainWindow(QWidget):
         pl.setSpacing(0)
         pl.addWidget(scroll_page(content), 1)
 
-        # Alt çubuk (ana sayfa): başlangıçta aç, sürüm, Çıkış
+        # Bottom bar (main page): start at login, version, Quit
         foot = QHBoxLayout()
         foot.setSpacing(u(16))
         self.autostart = QCheckBox(_("Start at login"))
@@ -348,15 +348,15 @@ class MainWindow(QWidget):
         pl.addWidget(foot_bar)
         self.stack.addWidget(page)
 
-        self.setFixedWidth(u(570))  # ölçekle birlikte değişir
+        self.setFixedWidth(u(570))  # changes with the scale
         self.setMinimumHeight(u(420))
-        # ana sayfa içeriğine göre aç; ekrana sığmıyorsa kısalt (kaydırma çubuğu devreye girer)
+        # open sized to the main page content; shorter if it does not fit the screen (a scroll bar appears)
         natural = head.sizeHint().height() + content.sizeHint().height() + foot_bar.sizeHint().height() + 8
         screen_ = QGuiApplication.primaryScreen()
         avail = screen_.availableGeometry().height() if screen_ else 1000
         self.resize(self.width(), max(u(420), min(natural, avail - 80)))
 
-        # Tepsi
+        # Tray
         self.tray = QSystemTrayIcon(tray_icon(MODE_COLORS[0]), self)
         self.tray.activated.connect(self._tray_click)
         self.tray_menu = QMenu()
@@ -366,7 +366,7 @@ class MainWindow(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(2000)
-        # güncelleme kontrolü: açılıştan kısa süre sonra, sonra günde bir
+        # update check: shortly after start, then once a day
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.check_updates)
         self.update_timer.start(24 * 3600 * 1000)
@@ -385,8 +385,8 @@ class MainWindow(QWidget):
         return call(cmd, **kw)
 
     def action(self, cmd, after=None, hold=None, **kw):
-        """Komutu arka planda çalıştır, ardından durumu tazele.
-        hold=(anahtar, değer): seçim, eylemden sonraki ilk taze durum gelene kadar ekranda tutulur."""
+        """Run the command in the background, then refresh the status.
+        hold=(key, value): the choice stays on screen until the first fresh status after the action."""
         token = None
         if hold:
             self._hold_seq += 1
@@ -407,7 +407,7 @@ class MainWindow(QWidget):
         return self.hold[key][0] if key in self.hold else default
 
     def _release(self, key, token):
-        if self.hold.get(key, (None, None))[1] == token:  # arada yeni tıklama olduysa onu bekle
+        if self.hold.get(key, (None, None))[1] == token:  # if there was a newer click in the meantime, wait for that one
             del self.hold[key]
             if self.status:
                 self.render()
@@ -416,7 +416,7 @@ class MainWindow(QWidget):
         if then:
             self.pending.append(then)
         if self.busy:
-            # süren sorgunun sonucu az önceki eylemden eski olabilir; bitince yeniden sor
+            # the running query may be older than the action that just finished; ask again when it is done
             self.stale = True
             return
         self.busy = True
@@ -425,7 +425,7 @@ class MainWindow(QWidget):
         def done(r):
             self.busy = False
             if isinstance(r, Exception):
-                if not self.updating:  # güncellemede servis yeniden başlıyor; kısa kopukluk hata değil
+                if not self.updating:  # the service restarts during an update; a short disconnect is not an error
                     self.status_error = str(r)
                     self.tray.setToolTip(f"Boreas: {tr_msg(str(r))}")
                     self._render_notice(self.status.get("notice") or "")
@@ -458,7 +458,7 @@ class MainWindow(QWidget):
         self._render_update()
 
     def _render_update(self):
-        """Başlığın sağında iki satır: "Boreas X çıktı" / "Güncelle · Sürüm notları · Gizle"."""
+        """Two lines right of the title: "Boreas X is available" / "Update · Release notes · Hide"."""
         link = f"color:{T['blue']}; text-decoration:none"
         if self.updating:
             text = html.escape(_("Updating to {version}…").format(version=self.update_version))
@@ -477,7 +477,7 @@ class MainWindow(QWidget):
             self.start_update()
         elif href == "notes":
             QDesktopServices.openUrl(QUrl(update.CHANGELOG_URL))
-        elif href == "hide":  # bu sürüm için bir daha gösterme
+        elif href == "hide":  # do not show it again for this version
             self.settings.setValue("update_dismissed", self.update_version)
             self.update_version = ""
             self._render_update()
@@ -485,7 +485,7 @@ class MainWindow(QWidget):
             self._dismiss_notice()
 
     def start_update(self):
-        """Son sürümü indirip kurar (yönetici şifresi pkexec ile sorulur), sonra uygulamayı yeniden açar."""
+        """Downloads and installs the latest version (pkexec asks for the administrator password), then restarts the app."""
         if self.updating or not self.update_version:
             return
         self.updating = True
@@ -503,12 +503,12 @@ class MainWindow(QWidget):
             elif isinstance(r, Exception):
                 self.error = f"Update failed: {r}"
             else:
-                restart_app()  # yeni kodla açıl
+                restart_app()  # start again with the new code
                 return
             self._render_notice(self.status.get("notice") or "")
         run_async(lambda: update.run_update(expected), done)
 
-    # ---- güncelleme ----
+    # ---- update ----
 
     def _updates_enabled(self) -> bool:
         if os.environ.get("BOREAS_NO_UPDATE_CHECK"):
@@ -516,13 +516,13 @@ class MainWindow(QWidget):
         return bool(self.settings.value("update_check", True, type=bool))
 
     def check_updates(self):
-        """GitHub'daki sürüm daha yeniyse bildirim satırında haber verir; kurulum kullanıcıda."""
+        """Shows a notice if the version on GitHub is newer; installing is up to the user."""
         if not self._updates_enabled():
             return
 
         def done(r):
             if isinstance(r, Exception) or not update.is_newer(r, __version__):
-                return  # ağ yoksa sessizce geç
+                return  # no network: skip silently
             if r == self.settings.value("update_dismissed", ""):
                 return
             self.update_version = r
@@ -545,11 +545,11 @@ class MainWindow(QWidget):
             self._render_notice("")
 
     def _slider_action(self, action, apply):
-        # tıklama, tekerlek ve ok tuşu sliderReleased üretmez; değer bu sinyalden sonra değişir
+        # clicks, the wheel and arrow keys do not emit sliderReleased; the value changes after this signal
         if action != QSlider.SliderMove:
             QTimer.singleShot(0, apply)
 
-    # ---- sayfalar ----
+    # ---- pages ----
 
     def _fan_icon(self, *_args):
         col = T["navOnText"] if self.fans_btn.isChecked() else T["dim"]
@@ -572,7 +572,7 @@ class MainWindow(QWidget):
             self.lang_btn.setIcon(lic)
 
     def cycle_theme(self):
-        """Otomatik → Açık → Koyu → Otomatik; seçim kaydedilir."""
+        """Auto → Light → Dark → Auto; the choice is saved."""
         nxt = THEME_CYCLE[(THEME_CYCLE.index(self._theme_pref()) + 1) % len(THEME_CYCLE)]
         self.settings.setValue("theme", nxt)
         apply_theme(QApplication.instance(), nxt)
@@ -592,7 +592,7 @@ class MainWindow(QWidget):
             self.stack.setCurrentIndex(0)
 
     def _fit_header(self):
-        """Başlık ile düğmeler sığmıyorsa "Fanlar ve güç" düğmesi yalnız simge olur (uzun çeviriler)."""
+        """If the title and the buttons do not fit, the "Fans and power" button shows only its icon (long translations)."""
         label = _("Fans and power")
         self.fans_btn.setText(label)
         self.fans_btn.setToolTip("")
@@ -608,18 +608,18 @@ class MainWindow(QWidget):
             self.fans_btn.setMaximumWidth(16777215)
 
     def _prebuild_fans(self):
-        """Fan sayfasını boşta önceden kur; ilk açılışta takılma olmasın."""
+        """Build the fans page ahead of time while idle, so opening it the first time does not stutter."""
         if self.fans_window is not None or not self.status.get("modes"):
             return
         try:
             self.fans_window = FansWindow(self)
             self.stack.addWidget(self.fans_window)
-        except Exception as e:  # kurulamazsa ilk açılışta yeniden denenir
+        except Exception as e:  # if it fails, it is tried again on first open
             self.fans_window = None
             print(f"fan page prebuild failed: {e}", file=sys.stderr)
 
     def open_fans(self):
-        """Sağ üstteki "Fanlar ve güç": sayfaya geçer, sayfadayken ana sayfaya döner."""
+        """"Fans and power" at the top right: opens the page, or goes back to the main page from it."""
         if self.page == "fan":
             self.show_page("main")
             return
@@ -634,7 +634,7 @@ class MainWindow(QWidget):
             self.fans_window.reload_modes(self.status["mode"])
         self.show_page("fan")
 
-    # ---- çizim ----
+    # ---- drawing ----
 
     def render(self):
         s = self.status
@@ -714,7 +714,7 @@ class MainWindow(QWidget):
         self.tray.setToolTip(f"Boreas · {mode_name(cur)}" + (f" · GPU {_(dict(GPU_LABELS).get(g['mode'], g['mode']))}" if g else ""))
         self._build_tray_menu()
 
-        if self.last_ac != s["ac"]:  # ilk durumda da (açılışta otomatik ekran ayarı uygulanır)
+        if self.last_ac != s["ac"]:  # also on the first status (the automatic display setting is applied at start)
             self._auto_screen(s["ac"])
         self.last_ac = s["ac"]
         self._render_screen()
@@ -746,7 +746,7 @@ class MainWindow(QWidget):
         m.addAction(_("Show"), self.show_near_tray)
         m.addAction(_("Quit"), self.quit_app)
 
-    # ---- ekran ----
+    # ---- display ----
 
     def _build_screen_buttons(self):
         info = screen.internal()
@@ -761,7 +761,7 @@ class MainWindow(QWidget):
         self.screen_seg.clear()
         for k, label in items:
             self.screen_seg.add(k, label)
-        self.screen_row.setVisible(bool(items))  # kscreen-doctor yoksa satır gizlenir
+        self.screen_row.setVisible(bool(items))  # the row is hidden without kscreen-doctor
         self.screen_rates = rates
         if info:
             self.screen_current = info["current"]
@@ -772,7 +772,7 @@ class MainWindow(QWidget):
         if not self.screen_rates:
             return
         auto = self.settings.value("screen_auto", False, type=bool)
-        # ilk açılışta kayıtlı ayar boş: ekrandan okunan son değeri kullan
+        # no saved setting on first start: use the last value read from the screen
         cur = ((info or {}).get("current") or getattr(self, "screen_current", 0)
                or self.settings.value("screen_rate", 0, type=int))
         for b in self.screen_group.buttons():
@@ -791,7 +791,7 @@ class MainWindow(QWidget):
     def _auto_screen(self, ac: bool):
         if self.screen_rates and self.settings.value("screen_auto", False, type=bool):
             self._apply_rate(self.screen_rates[-1] if ac else self.screen_rates[0])
-            # otomatik ekran: prizde overdrive açık, pilde kapalı
+            # automatic display: overdrive on with AC, off on battery
             od = self.status.get("attrs", {}).get("panel_overdrive")
             if od and bool(od["current"]) != ac:
                 self.action("set_overdrive", value=int(ac))
@@ -799,7 +799,7 @@ class MainWindow(QWidget):
     def _apply_rate(self, hz):
         def work():
             screen.set_rate(hz)
-            return screen.internal()  # kscreen-doctor da arka planda; arayüz donmasın
+            return screen.internal()  # kscreen-doctor runs in the background too, so the UI does not freeze
 
         def done(info):
             if isinstance(info, Exception):
@@ -811,7 +811,7 @@ class MainWindow(QWidget):
             self._render_screen(info)
         run_async(work, done)
 
-    # ---- eylemler ----
+    # ---- actions ----
 
     def set_mode(self, mode):
         self.action("set_mode", hold=("mode", mode), mode=mode)
@@ -877,14 +877,14 @@ class MainWindow(QWidget):
             os.remove(AUTOSTART)
 
     def set_language(self, code: str):
-        """Seçimi kaydeder ve arayüzü yeni dille yeniden başlatır."""
+        """Saves the choice and restarts the UI in the new language."""
         if code == i18n.current:
             return
         self.settings.setValue("language", code)
         self.settings.sync()
         restart_app()
 
-    # ---- pencere ----
+    # ---- window ----
 
     def _tray_click(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -900,10 +900,10 @@ class MainWindow(QWidget):
         self.refresh()
 
     def quit_app(self):
-        # Qt 6'da quit() önce pencereleri kapatmayı dener; reddedilen closeEvent çıkışı iptal eder
+        # In Qt 6 quit() first tries to close the windows; a refused closeEvent cancels the exit
         self.quitting = True
         QApplication.quit()
-        # bir pencere yine de reddederse quit sessizce iptal olur; Çıkış'ı hiçbir şey durdurmasın
+        # if a window still refuses, quit is silently cancelled; nothing should stop Quit
         QTimer.singleShot(1500, lambda: QApplication.exit(0))
 
     def closeEvent(self, e):
@@ -915,7 +915,7 @@ class MainWindow(QWidget):
 
 
 def restart_app() -> None:
-    """Aynı komutla yeniden başlar (dil değişimi). Pencere görünür açılır."""
+    """Restarts with the same command (language change). The window opens visible."""
     args = [a for a in sys.argv[1:] if a != "--hidden"]
     if sys.argv[0].endswith(os.path.join("gui", "app.py")):  # python3 -m boreas.gui.app
         cmd = [sys.executable, "-m", "boreas.gui.app", *args]
@@ -926,7 +926,7 @@ def restart_app() -> None:
 
 
 def main() -> int:
-    # Wayland oturumunda XWayland'e düşmesin: orada ölçekli ekranda bulanık görünür
+    # do not fall back to XWayland in a Wayland session: it looks blurry on a scaled screen
     if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
         os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
     app = QApplication(sys.argv)
@@ -942,7 +942,7 @@ def main() -> int:
     apply_theme(app)
     watch_system_theme(app)
 
-    # tek örnek: ikinci başlatma mevcut pencereyi gösterir
+    # single instance: a second launch shows the existing window
     name = f"boreas-gui-{os.getuid()}"
     sock = QLocalSocket()
     sock.connectToServer(name)

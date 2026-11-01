@@ -1,4 +1,4 @@
-"""boreasd soket istemcisi ve boreasctl komut satırı."""
+"""boreasd socket client and the boreasctl command line."""
 
 from __future__ import annotations
 

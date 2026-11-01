@@ -1,4 +1,4 @@
-"""Kalıcı ayarlar (/etc/boreas/config.json)."""
+"""Persistent settings (/etc/boreas/config.json)."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _mode_entry(base: int, name: str) -> dict:
         "power_apply": False,
         "ppt": {},
         "nv": {},
-        "cpu_temp": None,  # °C; None = firmware varsayılanı
+        "cpu_temp": None,  # °C; None = firmware default
     }
 
 

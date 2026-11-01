@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
-# ölçüm araçlarının çıktıları
+# output of the measurement tools
 tools/*.log
 tools/*.txt

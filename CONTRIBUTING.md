@@ -43,6 +43,7 @@ library; please keep it that way.
 - Add a test for new behaviour. Tests use a fake sysfs tree (`BOREAS_SYSFS_ROOT`), so they run anywhere.
 - User-visible text is written in English and wrapped with `_()` (UI) or kept as a plain English
   message (service errors); see Translations below.
+- Write code comments and docstrings in English.
 - Don't add new runtime dependencies without discussing it in an issue first.
 
 ## Translations

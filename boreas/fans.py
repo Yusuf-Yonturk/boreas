@@ -1,10 +1,10 @@
-"""Fan eğrileri.
+"""Fan curves.
 
-Eğri 16 baytlık dizi olarak tutulur: 8 sıcaklık (°C) + 8 fan yüzdesi.
-Çekirdek (asus_custom_fan_curve hwmon) aynı 8 noktayı pwmN_auto_pointM_{temp,pwm}
-olarak verir; pwm 0-255 ölçeğinde. pwmN_enable: 1 = özel eğri, 2 = firmware,
-3 = firmware varsayılanına sıfırla. Profil değişince çekirdek özel eğriyi kapatır,
-bu yüzden her mod değişiminden sonra yeniden yazılmalıdır.
+A curve is stored as a 16-byte array: 8 temperatures (°C) + 8 fan percentages.
+The kernel (asus_custom_fan_curve hwmon) exposes the same 8 points as
+pwmN_auto_pointM_{temp,pwm}, with pwm on a 0-255 scale. pwmN_enable: 1 = custom curve,
+2 = firmware, 3 = reset to the firmware default. The kernel turns the custom curve off
+when the profile changes, so it has to be written again after every mode change.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from . import hw
 POINTS = 8
 FANS = {"cpu": 1, "gpu": 2, "mid": 3}
 
-# varsayılan eğriler (sıcaklıklar + yüzdeler)
+# default curves (temperatures + percentages)
 DEFAULTS = {
     hw.TURBO: {
         "cpu": [30, 63, 68, 72, 76, 80, 84, 98, 17, 26, 34, 41, 52, 67, 81, 90],
@@ -42,12 +42,12 @@ def pwm_to_pct(pwm: int) -> int:
 
 
 def safety_floor(temp: int) -> int:
-    """70°C üstünde fan en az (t - 70) * 1.2 %."""
+    """Above 70°C the fan runs at least (t - 70) * 1.2 %."""
     return max(0, math.ceil((temp - 70) * 1.2))
 
 
 def fix_curve(curve: list[int]) -> list[int]:
-    """Sıcaklık ve hızı monoton artan yapar (çekirdek azalan eğriyi reddeder)."""
+    """Makes temperatures and speeds monotonically increasing (the kernel rejects a decreasing curve)."""
     if len(curve) != 2 * POINTS:
         raise ValueError("A curve must have 16 values")
     t = [max(0, min(110, int(x))) for x in curve[:POINTS]]
@@ -86,7 +86,7 @@ def read_curve(fan: str) -> list[int] | None:
 
 
 def factory_curve(fan: str) -> list[int] | None:
-    """Mevcut profilin firmware eğrisini çekirdekten okur (enable=3 ile sıfırlar)."""
+    """Reads the current profile's firmware curve from the kernel (resets it with enable=3)."""
     d = curve_dir()
     n = FANS[fan]
     if not d:
@@ -102,7 +102,7 @@ def write_curve(fan: str, curve: list[int]) -> None:
         raise ValueError("This device doesn't support custom fan curves")
     curve = fix_curve(curve)
     if not any(curve[POINTS:]):
-        # tamamen sıfır eğri yazılmaz
+        # an all-zero curve is never written
         raise ValueError("The fan curve is all zeros")
     for i in range(POINTS):
         hw.write(f"{d}/pwm{n}_auto_point{i + 1}_temp", curve[i])

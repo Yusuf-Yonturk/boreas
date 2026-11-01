@@ -1,8 +1,8 @@
-"""Kernel arayüzleri (sysfs) üzerinden ASUS donanım erişimi.
+"""ASUS hardware access through kernel interfaces (sysfs).
 
-ASUS ACPI (ATKACPI) DEVS/DSTS çağrılarını Linux'ta asus-wmi / asus-armoury çekirdek
-sürücüleri sysfs üzerinden sunar.
-BOREAS_SYSFS_ROOT ortam değişkeni testlerde sahte bir kök dizin vermek içindir.
+On Linux the asus-wmi / asus-armoury kernel drivers expose the ASUS ACPI (ATKACPI)
+DEVS/DSTS calls through sysfs.
+The BOREAS_SYSFS_ROOT environment variable gives the tests a fake root directory.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from dataclasses import dataclass
 
 ROOT = os.environ.get("BOREAS_SYSFS_ROOT", "")
 
-# mod tabanları = ACPI throttle_thermal_policy değerleri
+# mode bases = ACPI throttle_thermal_policy values
 BALANCED, TURBO, SILENT = 0, 1, 2
 PROFILE_BY_BASE = {BALANCED: "balanced", TURBO: "performance", SILENT: "quiet"}
 BASE_BY_PROFILE = {v: k for k, v in PROFILE_BY_BASE.items()}
-# power-profiles-daemon "low-power" yazarsa sessiz kabul et
+# treat "low-power" written by power-profiles-daemon as silent
 BASE_BY_PROFILE["low-power"] = SILENT
 
 ARMOURY = "/sys/class/firmware-attributes/asus-armoury/attributes"
@@ -26,13 +26,13 @@ PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
 KBD_LED = "/sys/class/leds/asus::kbd_backlight"
 DMI_PRODUCT = "/sys/class/dmi/id/product_name"
 
-# asus-nb-wmi altındaki eski adlar (armoury yoksa yedek)
+# legacy names under asus-nb-wmi (fallback when armoury is missing)
 NB_WMI_NAMES = {"panel_overdrive": "panel_od", "ppt_pl3_fppt": "ppt_fppt"}
 
 PPT_ATTRS = ("ppt_pl1_spl", "ppt_pl2_sppt", "ppt_pl3_fppt", "ppt_apu_sppt", "ppt_platform_sppt")
 NV_ATTRS = ("nv_dynamic_boost", "nv_temp_target")
 
-# güç limiti ancak özel fan eğrisiyle tutan modeller
+# models that only keep the power limits together with a custom fan curve
 FAN_REQUIRED_MODELS = ("GA402X", "GU604", "G513", "G713R", "G713P", "GU605", "GA605", "G634J",
                        "G834J", "G614J", "G814J", "FX507V", "FX507Z", "FX608", "FA608P", "G614F",
                        "G614R", "G733", "H7606")
@@ -59,8 +59,8 @@ def read_int(path: str) -> int | None:
 
 
 def write(path: str, value) -> None:
-    # Tek write() çağrısı: open() + with, hata olunca kapanışta yazmayı ikinci kez dener;
-    # yavaş firmware çağrılarında (dgpu_disable) bu bekleme süresini ikiye katlıyordu.
+    # A single write() call: with open(), an error makes close() try the write a second time;
+    # for slow firmware calls (dgpu_disable) that doubled the wait.
     fd = os.open(p(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
         os.write(fd, f"{value}\n".encode())
@@ -132,7 +132,7 @@ def set_attr(name: str, value: int) -> None:
 
 
 def model() -> str:
-    """Model adı (ör. "ROG Strix G713PV_G713PV")."""
+    """Model name (e.g. "ROG Strix G713PV_G713PV")."""
     return read(DMI_PRODUCT) or ""
 
 
@@ -141,7 +141,7 @@ def fan_required() -> bool:
     return any(x in m for x in FAN_REQUIRED_MODELS)
 
 
-# ---- performans profili -------------------------------------------------------
+# ---- performance profile ------------------------------------------------------
 
 def get_profile() -> str | None:
     return read(PLATFORM_PROFILE)
@@ -194,7 +194,7 @@ def temps() -> dict[str, int]:
     return out
 
 
-# ---- pil ----------------------------------------------------------------------
+# ---- battery ------------------------------------------------------------------
 
 def battery_dir() -> str | None:
     for d in sorted(glob.glob(p("/sys/class/power_supply/BAT*"))):
@@ -236,7 +236,7 @@ def set_charge_limit(value: int) -> None:
     write(d + "/charge_control_end_threshold", max(40, min(100, int(value))))
 
 
-# ---- klavye ışığı -------------------------------------------------------------
+# ---- keyboard light -----------------------------------------------------------
 
 def kbd_brightness() -> tuple[int | None, int | None]:
     return read_int(KBD_LED + "/brightness"), read_int(KBD_LED + "/max_brightness")

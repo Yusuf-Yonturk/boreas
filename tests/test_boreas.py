@@ -1,4 +1,4 @@
-"""Sahte sysfs ağacıyla testler: python3 -m unittest discover -s tests"""
+"""Tests on a fake sysfs tree: python3 -m unittest discover -s tests"""
 
 import contextlib
 import json
@@ -36,7 +36,7 @@ def get(path):
 
 
 def build_tree():
-    """G713PV'den alınan gerçek düzen."""
+    """The real layout, taken from a G713PV."""
     shutil.rmtree(R, ignore_errors=True)
     put(R + hw.PLATFORM_PROFILE, "balanced")
     put(R + hw.NB_WMI + "/charge_mode", 1)
@@ -97,7 +97,7 @@ class Base(unittest.TestCase):
             os.remove(os.environ["BOREAS_CONFIG"])
         except FileNotFoundError:
             pass
-        daemon.time.sleep = lambda s: None  # bekleme sürelerini atla
+        daemon.time.sleep = lambda s: None  # skip the waits
 
 
 class TestFans(Base):
@@ -107,7 +107,7 @@ class TestFans(Base):
         self.assertEqual(c[8:], [10, 10, 20, 30, 40, 50, 60, 100])
 
     def test_fix_curve_safety_floor(self):
-        # 70°C üstünde hız >= (t - 70) * 1.2
+        # above 70°C speed >= (t - 70) * 1.2
         c = fans.fix_curve([30, 40, 50, 60, 70, 80, 90, 100, 0, 0, 0, 0, 0, 0, 0, 0])
         self.assertEqual(c[8:], [0, 0, 0, 0, 0, 12, 24, 36])
 
@@ -184,7 +184,7 @@ class TestGpu(Base):
             d = daemon.Daemon(config.Config())
             d.handle({"cmd": "set_gpu", "target": gpu.ECO})
             self.assertTrue(d.eco_pending())
-            users[0] = []  # oturum kapandı
+            users[0] = []  # the session ended
             for _ in range(daemon.ECO_RETRY_TICKS):
                 d.tick()
             self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
@@ -200,22 +200,22 @@ class TestGpu(Base):
 
 
     def test_pending_reboot_plain_file_keeps_ultimate_target(self):
-        # Kernel 7.3 asus-armoury: pending_reboot dizin değil, düz dosya
+        # Kernel 7.3 asus-armoury: pending_reboot is a plain file, not a directory
         gpu._run = lambda *a: True
         shutil.rmtree(f"{ARM}/pending_reboot")
         put(f"{ARM}/pending_reboot", 1)
         d = daemon.Daemon(config.Config())
-        d.cfg["gpu_target"] = gpu.ULTIMATE  # MUX yazıldı, yeniden başlatma bekleniyor
+        d.cfg["gpu_target"] = gpu.ULTIMATE  # MUX written, waiting for a reboot
         self.assertTrue(gpu.state()["pending_reboot"])
         d.reapply()
         self.assertEqual(d.cfg["gpu_target"], gpu.ULTIMATE)
 
     def test_boot_adopts_external_mux_change(self):
-        # açılışta MUX'a yazmaz, donanımdaki modu benimser
+        # at boot the MUX is not written; the hardware mode is adopted
         gpu._run = lambda *a: True
         d = daemon.Daemon(config.Config())
         d.cfg["gpu_target"] = gpu.ECO
-        put(f"{ARM}/gpu_mux_mode/current_value", 0)  # BIOS'ta Ultimate seçildi
+        put(f"{ARM}/gpu_mux_mode/current_value", 0)  # Ultimate was chosen in the BIOS
         d.reapply(at_boot=True)
         self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
         self.assertEqual(d.cfg["gpu_target"], gpu.ULTIMATE)
@@ -243,7 +243,7 @@ class TestGpu(Base):
         return calls
 
     def test_busy_eco_does_not_bounce_services(self):
-        # KWin dGPU'yu tutuyorken her denemede nvidia-persistenced durdurulup başlatılmasın
+        # while KWin holds the dGPU, nvidia-persistenced must not be stopped and started on every try
         calls = self._gpu_calls()
         orig = gpu._nvidia_users
         gpu._nvidia_users = lambda ignore=(): ["kwin_wayland(1234)"]
@@ -270,7 +270,7 @@ class TestGpu(Base):
             n = len(calls)
             for _ in range(daemon.ECO_RETRY_TICKS * 2):
                 d.tick()
-            self.assertEqual(len(calls), n)  # sürücüyü 15 sn'de bir sökmeye çalışma
+            self.assertEqual(len(calls), n)  # do not try to unload the driver every 15 s
         finally:
             gpu._nvidia_users = orig
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
@@ -284,7 +284,7 @@ class TestGpu(Base):
             put(R + f"/sys/module/{m}/refcnt", 1)
 
     def _fake_proc(self, procs, fuser=False):
-        """procs: {pid: (komut, [açık dosyalar])}. fuser=False: fuser yokmuş gibi /proc'a bakılır."""
+        """procs: {pid: (command, [open files])}. fuser=False: look at /proc as if fuser were missing."""
         proc = TMP + "/proc"
         shutil.rmtree(proc, ignore_errors=True)
         for pid, (comm, files) in procs.items():
@@ -299,7 +299,7 @@ class TestGpu(Base):
         return stack
 
     def test_fuser_pids_read_from_stdout(self):
-        # fuser PID'leri stdout'a, dosya adı ve erişim harflerini stderr'e yazar
+        # fuser writes the PIDs to stdout and the file names and access letters to stderr
         self._fake_dgpu()
         seen = []
 
@@ -315,8 +315,8 @@ class TestGpu(Base):
         self.assertIn("/dev/dri/card1", seen[0])
 
     def test_nvidia_users_without_fuser_reads_proc(self):
-        # fuser (psmisc) yoksa /proc/PID/fd'ye bakılır;
-        # KWin sayılır, servisler (nvidia-powerd) ve dGPU'ya dokunmayanlar sayılmaz
+        # without fuser (psmisc), /proc/PID/fd is used;
+        # KWin counts; services (nvidia-powerd) and processes not touching the dGPU do not
         self._fake_dgpu()
         procs = {
             1510: ("kwin_wayland", ["/dev/null", "/dev/dri/card1"]),
@@ -332,7 +332,7 @@ class TestGpu(Base):
             self.assertIn("nvidia-powerd(883)", gpu._nvidia_users())
 
     def test_busy_message_names_kwin(self):
-        # dGPU'yu KWin tutuyorsa sürücüye dokunmadan ertele ve 15 sn'de bir yeniden dene
+        # if KWin holds the dGPU, postpone without touching the driver and retry every 15 s
         self._fake_dgpu()
         calls = self._gpu_calls()
         with self._fake_proc({1510: ("kwin_wayland", ["/dev/dri/card1"])}):
@@ -344,7 +344,7 @@ class TestGpu(Base):
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
     def test_eco_stops_nvidia_powerd(self):
-        # nvidia-powerd dGPU'yu açık tutar: durdurulup Eco uygulanmalı, Eco'dan çıkınca başlamalı
+        # nvidia-powerd keeps the dGPU open: stop it and apply Eco, start it again when leaving Eco
         self._fake_dgpu()
         running = {"nvidia-powerd.service"}
 
@@ -358,7 +358,7 @@ class TestGpu(Base):
         orig = gpu._nvidia_users
 
         def users(ignore=()):
-            if "nvidia-powerd.service" not in running:  # servis durunca süreci de biter
+            if "nvidia-powerd.service" not in running:  # its process ends when the service stops
                 shutil.rmtree(TMP + "/proc/883", ignore_errors=True)
             return orig(ignore)
         with self._fake_proc({883: ("nvidia-powerd", ["/dev/nvidia0"])}), \
@@ -368,7 +368,7 @@ class TestGpu(Base):
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
 
     def test_failed_eco_write_brings_dgpu_back(self):
-        # aygıt çıkarıldıktan sonra dgpu_disable yazılamazsa dGPU kaybolmasın
+        # if dgpu_disable cannot be written after the device was removed, the dGPU must not vanish
         self._fake_dgpu()
         calls = self._gpu_calls()
         real_set = hw.set_attr
@@ -381,16 +381,16 @@ class TestGpu(Base):
                 patch.object(gpu.hw, "set_attr", set_attr):
             with self.assertRaises(OSError):
                 gpu.set_eco(True)
-        self.assertTrue(os.path.exists(R + "/sys/bus/pci/rescan"))  # aygıt geri tarandı
+        self.assertTrue(os.path.exists(R + "/sys/bus/pci/rescan"))  # the device was rescanned
         unload = calls.index(("modprobe", "-r", "nvidia"))
-        self.assertIn(("modprobe", "nvidia_drm"), calls[unload:])  # sürücü geri yüklendi
+        self.assertIn(("modprobe", "nvidia_drm"), calls[unload:])  # the driver was reloaded
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
     def _bridge(self, name, child=False, control="auto"):
         d = R + f"/sys/bus/pci/devices/{name}"
         put(d + "/secondary_bus_number", 1)
         put(d + "/power/control", control)
-        # gerçek portlarda aygıt olmasa da bunlar hep var (G713PV: pcie002, pcie010)
+        # real ports always have these, even with no device (G713PV: pcie002, pcie010)
         for svc in ("pcie002", "pcie010"):
             os.makedirs(f"{d}/{name}:{svc}", exist_ok=True)
         os.makedirs(d + "/pci_bus/0000:01", exist_ok=True)
@@ -399,10 +399,10 @@ class TestGpu(Base):
         return d
 
     def test_leaving_eco_wakes_sleeping_port(self):
-        # G713PV: port uyurken dgpu_disable=0 firmware'de 30 sn bekleyip EIO veriyordu
+        # G713PV: with the port asleep, dgpu_disable=0 waited 30 s in the firmware and failed with EIO
         put(f"{ARM}/dgpu_disable/current_value", 1)
-        port = self._bridge("0000:00:01.1")             # Eco'da altı boş: dGPU'nun portu
-        busy = self._bridge("0000:00:02.1", child=True)  # altında aygıt var: dokunulmaz
+        port = self._bridge("0000:00:01.1")             # empty below in Eco: the dGPU's port
+        busy = self._bridge("0000:00:02.1", child=True)  # has a device below: left alone
         self._gpu_calls()
         seen = {}
         real_set = hw.set_attr
@@ -415,7 +415,7 @@ class TestGpu(Base):
         with patch.object(gpu.hw, "set_attr", set_attr):
             gpu.set_eco(False)
         self.assertEqual(seen, {"port": "on", "busy": "auto"})
-        self.assertEqual(get(port + "/power/control"), "auto")  # güç yönetimi geri açıldı
+        self.assertEqual(get(port + "/power/control"), "auto")  # power management is back on
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
     def test_port_restored_when_firmware_fails(self):
@@ -431,7 +431,7 @@ class TestGpu(Base):
         self.assertEqual(get(port + "/power/control"), "auto")
 
     def test_sysfs_write_is_attempted_once(self):
-        # open()+with hata olunca kapanışta yazmayı tekrarlıyordu (2 x 30 sn firmware beklemesi)
+        # with open() an error repeated the write on close (2 x 30 s of firmware waiting)
         tries = []
 
         def fail(fd, data):
@@ -447,13 +447,13 @@ class TestGpu(Base):
         d.cfg["gpu_target"] = gpu.STANDARD
         put(f"{ARM}/dgpu_disable/current_value", 1)
         with patch.object(gpu, "set_eco", side_effect=OSError(5, "Input/output error")):
-            d.reapply(at_boot=True)  # servis açılışta çökmemeli
+            d.reapply(at_boot=True)  # the service must not crash at boot
             self.assertIn("Could not change the GPU mode", d.notice)
-            with self.assertRaises(OSError):  # kullanıcı seçtiyse hata ona dönmeli
+            with self.assertRaises(OSError):  # if the user chose it, the error goes back to them
                 d.apply_gpu_target(gpu.STANDARD, explicit=True)
 
     def test_resume_after_unplug_applies_optimized(self):
-        # uyanınca otomatik GPU modu çalışır; uykuda fiş çekildiyse Eco'ya geçilmeli
+        # the automatic GPU mode runs on resume; if unplugged during sleep, switch to Eco
         self._gpu_calls()
         orig = gpu._nvidia_users
         gpu._nvidia_users = lambda ignore=(): []
@@ -467,7 +467,7 @@ class TestGpu(Base):
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
 
     def test_gpu_temp_not_polled_on_battery_hybrid(self):
-        # nvidia-smi dGPU'yu uyanık tutar; pilde hibrit modda sorgulanmamalı
+        # nvidia-smi keeps the dGPU awake; never query it on battery in hybrid mode
         put(R + "/sys/bus/pci/devices/0000:01:00.0/vendor", "0x10de")
         put(R + "/sys/bus/pci/devices/0000:01:00.0/class", "0x030000")
         put(R + "/sys/bus/pci/devices/0000:01:00.0/power/runtime_status", "active")
@@ -497,7 +497,7 @@ class TestGpu(Base):
 
 
 class FakeSmn:
-    """SMU posta kutusu: komut yazılınca yanıt kaydını doldurur."""
+    """SMU mailbox: fills the response register when a command is written."""
 
     def __init__(self, fam, statuses=None, idle=ryzen.OK, read_limit=None, follow_writes=True):
         self.fam, self.statuses = fam, statuses or {}
@@ -541,14 +541,14 @@ class TestCpuTemp(Base):
         put(R + ryzen.CPUINFO, "vendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\n")
         self.assertIsNone(ryzen.detect())
         put(R + ryzen.CPUINFO, "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 116\n")
-        self.assertIsNone(ryzen.detect())  # Phoenix: başka posta kutusu, desteklenmiyor
+        self.assertIsNone(ryzen.detect())  # Phoenix: a different mailbox, not supported
 
     def test_set_probes_version_then_sends_mp1_tctl(self):
         cpu = ryzen.CpuTemp()
         smn = fake_smu(cpu)
         cpu.set(85)
         cpu.set(80)
-        # Raphael ailesi: MP1 0x3F, ilk kullanımda bir kez sürüm sorgusu
+        # Raphael family: MP1 0x3F, one version query on first use
         self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 85), (0x3F, 80)])
         self.assertEqual(cpu.version_str(), "76.77.0")
         self.assertEqual(cpu.applied, 80)
@@ -586,7 +586,7 @@ class TestCpuTemp(Base):
         clock[0] += daemon.CPU_TEMP_REAPPLY - 0.1
         d.tick()
         self.assertEqual(len(smn.sent), n)
-        # Firmware hedefi iki kez sıfırlasa da izleyici yeniden gönderir.
+        # Even if the firmware resets the target twice, the watcher sends it again.
         for _ in range(2):
             smn.regs[smn.fam.arg] = 96
             clock[0] += daemon.CPU_TEMP_REAPPLY
@@ -599,14 +599,14 @@ class TestCpuTemp(Base):
         d.apply_mode(hw.BALANCED)
         self.assertTrue(d.cpu.readback_verified)
         n = len(smn.sent)
-        # Yüksek sıcaklık, limit silinmiş anlamına gelmez.
+        # A high temperature does not mean the limit was cleared.
         put(R + "/sys/class/hwmon/hwmon5/temp1_input", 94000)
         for _ in range(4):
             clock[0] += 1
             d.tick()
         self.assertEqual(len(smn.sent), n)
         self.assertEqual(d.status()["cpu_temp"]["control"], "readback")
-        smn.limit = 96  # firmware sıfırlaması
+        smn.limit = 96  # firmware reset
         put(R + "/sys/class/hwmon/hwmon5/temp1_input", 54000)
         clock[0] += 1
         d.tick()
@@ -659,7 +659,7 @@ class TestCpuTemp(Base):
     def test_adaptive_intervals_follow_temperature_changes_immediately(self):
         d, smn, clock = self._daemon(85)
         d.apply_mode(hw.BALANCED)
-        # İlk 3 saniyelik süre kurulmuş olsa da ani +5°C aşma 1 saniyede yeniler.
+        # Even with the first 3 s interval set, a sudden +5°C overshoot refreshes within 1 s.
         for current, delay in ((90000, 1), (87000, 2), (86000, 3), (54000, 3)):
             put(R + "/sys/class/hwmon/hwmon5/temp1_input", current)
             n = len(smn.sent)
@@ -692,13 +692,13 @@ class TestCpuTemp(Base):
     def test_default_untouched_until_lowered(self):
         d, smn, clock = self._daemon(None)
         d.apply_mode(hw.BALANCED)
-        self.assertEqual(smn.sent, [])  # hiç ayarlanmadıysa SMU'ya dokunma
+        self.assertEqual(smn.sent, [])  # never set: do not touch the SMU
         d.cfg.mode(hw.BALANCED)["cpu_temp"] = 85
         d.apply_mode(hw.BALANCED)
         d.cfg.mode(hw.BALANCED)["cpu_temp"] = None
         d.apply_mode(hw.BALANCED)
         d.apply_mode(hw.BALANCED)
-        # Düşürülmüş limit profilden hemen sonra ve güç yazımlarından sonra gider.
+        # A lowered limit is sent right after the profile and again after the power writes.
         self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 85), (0x3F, 85), (0x3F, 96)])
         clock[0] += daemon.CPU_TEMP_REAPPLY * 2
         d.tick()
@@ -746,12 +746,12 @@ class TestCpuTemp(Base):
         d.cfg.mode(hw.BALANCED).update(power_apply=True, ppt={"ppt_pl1_spl": 55},
                                        fans_apply=True, fan_cpu=fans.DEFAULTS[hw.BALANCED]["cpu"])
         d.apply_mode(hw.BALANCED)
-        # GUI tüm alanları gönderir; sadece CPU sıcaklığı değişti.
+        # The GUI sends all fields; only the CPU temperature changed.
         data = dict(d.cfg.mode(hw.BALANCED), cpu_temp=81)
         with patch.object(hw, "set_profile") as profile, \
              patch.object(fans, "write_curve") as curve, \
              patch.object(hw, "set_attr") as power:
-            for temp in (81, 81, None):  # tekrar Uygula ve Varsayılan da profili sıfırlamaz
+            for temp in (81, 81, None):  # applying again and Default do not reset the profile either
                 data["cpu_temp"] = temp
                 d.handle({"cmd": "update_mode", "mode": hw.BALANCED, "data": data})
                 self.assertEqual(smn.sent[-1], (0x3F, temp if temp else 96))
@@ -778,8 +778,8 @@ class TestCpuTemp(Base):
         self.assertEqual(smn.sent[-1], (0x3F, 85))
 
     def test_mode_change_restores_limit_before_fans_and_power(self):
-        # Profil yazımı firmware limitini sıfırlar; fan/güç yazımı ve bekleme
-        # boyunca CPU sınırsız kalmamalı.
+        # Writing the profile resets the firmware limit; the CPU must not be left without
+        # a limit during the fan/power writes and the wait.
         d, smn, clock = self._daemon(85)
         d.cfg.mode(hw.BALANCED).update(power_apply=True, ppt={"ppt_pl1_spl": 55},
                                        fans_apply=True, fan_cpu=fans.DEFAULTS[hw.BALANCED]["cpu"])
@@ -793,7 +793,7 @@ class TestCpuTemp(Base):
         self.assertEqual(smn.sent[-1], (0x3F, 85))
 
     def test_limit_rewritten_often_while_firmware_settles(self):
-        # G713PV: firmware profil yazımından ~3-4 sn sonra limiti bir kez daha sıfırlıyor.
+        # G713PV: the firmware resets the limit once more ~3-4 s after a profile write.
         d, smn, clock = self._daemon(85)
         d.apply_mode(hw.BALANCED)
         tctl = lambda: sum(1 for cmd, _ in smn.sent if cmd == 0x3F)
@@ -830,7 +830,7 @@ class TestCpuTemp(Base):
         d, smn, clock = self._daemon(None)
         lines = self._hot_run(d, clock, [70, 94, 96, 99, 97, 93, 92, 70])
         hot = [l for l in lines if "°C" in l]
-        self.assertEqual(len(hot), 2, hot)  # başlangıç + bitiş, her saniye değil
+        self.assertEqual(len(hot), 2, hot)  # start + end, not every second
         self.assertIn("96°C", hot[0])
         self.assertIn("threshold 95", hot[0])
         self.assertIn("peak 99°C", hot[1])
@@ -883,10 +883,10 @@ class TestAura(Base):
         self.assertEqual(aura.message("breathe", (0, 0, 0))[9], 0xFF)
 
     def test_find_device(self):
-        self.assertEqual(aura.find_device(), "/dev/hidraw1")  # 0x5D raporu olan arayüz
+        self.assertEqual(aura.find_device(), "/dev/hidraw1")  # the interface with report 0x5D
 
     def test_apply_writes_output_reports(self):
-        # HID output raporu, 64 bayta tamamlanmış
+        # HID output report, padded to 64 bytes
         open(R + "/dev/hidraw1", "w").close()
         aura.apply("static", (255, 0, 0))
         with open(R + "/dev/hidraw1", "rb") as f:
@@ -968,7 +968,7 @@ class TestDaemon(Base):
         self.assertEqual(d.cfg["mode"], hw.SILENT)
 
     def test_charger_bounce_ignored(self):
-        # güç kaynağı oturana kadar bekle, geri döndüyse bir şey yapma
+        # wait until the power source settles; do nothing if it switched back
         d = self.make()
         d.cfg["mode_battery"] = hw.SILENT
         put(R + "/sys/class/power_supply/ADP0/online", 0)
@@ -978,7 +978,7 @@ class TestDaemon(Base):
         self.assertEqual(d.cfg["mode"], hw.BALANCED)
 
     def test_power_forces_fans_on_fan_required_model(self):
-        # G713P vb. modellerde güç limiti özel fan eğrisi ister
+        # on the G713P and similar models the power limits need a custom fan curve
         d = self.make()
         d.cfg.mode(hw.TURBO).update(power_apply=True, ppt={"ppt_pl1_spl": 100})
         d.set_mode(hw.TURBO)
@@ -991,7 +991,7 @@ class TestDaemon(Base):
         self.assertEqual(get(R + "/sys/class/hwmon/hwmon9/pwm1_enable"), "2")
 
     def test_profile_always_written_without_toggle(self):
-        # profil her seferinde yazılır (firmware güç limitlerini sıfırlar)
+        # the profile is written every time (the firmware resets the power limits)
         d = self.make()
         d.cfg.mode(hw.TURBO).update(power_apply=True, ppt={"ppt_pl1_spl": 100})
         d.set_mode(hw.TURBO)
@@ -1033,7 +1033,7 @@ class TestDaemon(Base):
         self.assertEqual(d.cfg["mode"], hw.TURBO)
         self.assertEqual(d.cfg["gpu_target"], gpu.ULTIMATE)
         self.assertFalse(config.Config().fresh)
-        # ilk açılış GPU'ya dokunmamalı
+        # the first start must not touch the GPU
         self.assertEqual(d.apply_gpu_target(d.cfg["gpu_target"]), {})
 
     def test_status_shape(self):
@@ -1047,7 +1047,7 @@ class TestDaemon(Base):
 
 class TestBoot(Base):
     def test_waits_for_asus_drivers(self):
-        # asus_wmi açılışta udev ile geç yükleniyor (~5 sn); servis daha önce başlayabilir
+        # udev loads asus_wmi late at boot (~5 s); the service may start before it
         shutil.rmtree(R + "/sys/class/firmware-attributes")
         os.remove(R + hw.PLATFORM_PROFILE)
         steps = []
@@ -1103,7 +1103,7 @@ if __name__ == "__main__":
 
 
 class TestSelfUpdate(unittest.TestCase):
-    """Uygulama içi güncelleme: arşiv güvenle açılır, pkexec iptali ayrı ele alınır (ağ ve root yok)."""
+    """In-app update: the archive is extracted safely, a pkexec cancel is handled separately (no network, no root)."""
 
     def _tarball(self, files: dict, prefix="boreas-main/") -> bytes:
         import io
@@ -1175,6 +1175,6 @@ class TestSelfUpdate(unittest.TestCase):
             self.code = 1
             with self.assertRaises(RuntimeError):
                 update.run_update("9.0.0")
-            with self.assertRaises(ValueError):   # beklenenden eski bir arşiv kurulmaz
+            with self.assertRaises(ValueError):   # an archive older than expected is not installed
                 update.run_update("9.1.0")
 

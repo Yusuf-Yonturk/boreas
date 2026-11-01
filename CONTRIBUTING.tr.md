@@ -45,6 +45,7 @@ kullanır; lütfen böyle kalsın.
   yerde çalışır.
 - Kullanıcının gördüğü metinler İngilizce yazılır ve `_()` ile sarılır (arayüz) ya da düz İngilizce ileti
   olarak kalır (servis hataları); aşağıdaki Çeviriler bölümüne bak.
+- Kod yorumlarını ve açıklamaları (docstring) İngilizce yaz.
 - Önce bir issue'da konuşmadan yeni çalışma zamanı bağımlılığı ekleme.
 
 ## Çeviriler

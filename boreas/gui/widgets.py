@@ -1,4 +1,4 @@
-"""Tasarımdaki ortak bileşenler: anahtar, bölmeli düğme, kart, satır, kaydırıcı satırı."""
+"""Shared widgets from the design: switch, segmented button, card, row, slider row."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .common import T, u, uv
 
 
 class Switch(QAbstractButton):
-    """Tasarımdaki açma/kapama anahtarı. QCheckBox gibi checkable; clicked/toggled sinyalleri çalışır."""
+    """The on/off switch from the design. Checkable like QCheckBox; clicked/toggled signals work."""
 
     def __init__(self, w: int = 56, h: int = 30, parent=None):
         super().__init__(parent)
@@ -42,7 +42,7 @@ class Switch(QAbstractButton):
 
 
 class CheckDot(QWidget):
-    """Durum satırındaki daire içinde onay işareti."""
+    """Check mark in a circle, for the status row."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,7 +68,7 @@ class CheckDot(QWidget):
 
 
 class FlowLayout(QLayout):
-    """Sığmayan öğeleri alt satıra saran yerleşim (Qt FlowLayout örneği)."""
+    """Layout that wraps items that do not fit onto the next line (Qt FlowLayout example)."""
 
     def __init__(self, parent=None, margin: int = 0, hspacing: int = 6, vspacing: int = 6):
         super().__init__(parent)
@@ -127,7 +127,7 @@ class FlowLayout(QLayout):
 
 
 class Segmented(QFrame):
-    """Bölmeli düğme (Sessiz | Dengeli | Turbo). Seçim dışarıdan set_checked ile işaretlenir."""
+    """Segmented button (Silent | Balanced | Turbo). The choice is marked from outside with set_checked."""
 
     def __init__(self, on_click=None, width: int = 340, flow: bool = False, parent=None):
         width = u(width) if width else 0
@@ -158,7 +158,7 @@ class Segmented(QFrame):
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             self.layout().addWidget(b)
         else:
-            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)  # genişlik yalnız stretch oranından
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)  # width comes only from the stretch factor
             self.layout().addWidget(b, stretch)
         return b
 
@@ -172,8 +172,8 @@ class Segmented(QFrame):
             b.deleteLater()
 
     def _clicked(self, key):
-        # grup "tek seçim" değil (hiçbiri seçili olmayabilir); tıklananı hemen tek seçili yap,
-        # yoksa eski seçim servis cevabına kadar onunla birlikte işaretli kalır
+        # the group is not exclusive (nothing may be selected); make the clicked one the only one right away,
+        # otherwise the old choice stays checked with it until the service replies
         self.set_checked(key)
         if self.on_click:
             self.on_click(key)
@@ -184,7 +184,7 @@ class Segmented(QFrame):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self.flow:  # sarılan satırlar yüksekliği artırsın (HBox heightForWidth'u iletmez)
+        if self.flow:  # wrapped rows should add to the height (HBox does not pass heightForWidth on)
             h = self.layout().heightForWidth(self.width())
             if h > 0 and h != self.minimumHeight():
                 self.setMinimumHeight(h)
@@ -198,7 +198,7 @@ def hline() -> QFrame:
 
 
 def card(title: str) -> tuple[QFrame, QVBoxLayout, QLabel]:
-    """Başlık satırı (sol başlık, sağ bilgi) ve alt çizgili kart. (kart, düzen, bilgi etiketi)"""
+    """Card with a header row (title left, info right) and dividers. (card, layout, info label)"""
     frame = QFrame()
     frame.setObjectName("card")
     lay = QVBoxLayout(frame)
@@ -212,7 +212,7 @@ def card(title: str) -> tuple[QFrame, QVBoxLayout, QLabel]:
     info = QLabel()
     info.setObjectName("dim")
     info.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-    # uzun çevirilerde bilgi metni kartı genişletmesin, kalan yere sığsın
+    # with long translations the info text must not widen the card; it fits the space left
     info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     info.setMinimumWidth(u(40))
     h.addWidget(t)
@@ -223,7 +223,7 @@ def card(title: str) -> tuple[QFrame, QVBoxLayout, QLabel]:
 
 
 def row(label, control=None, height: int = 58) -> QWidget:
-    """Sol etiket, sağ denetim. label str ya da QWidget olabilir."""
+    """Label on the left, control on the right. label can be a str or a QWidget."""
     w = QWidget()
     w.setFixedHeight(uv(height))
     h = QHBoxLayout(w)
@@ -231,11 +231,11 @@ def row(label, control=None, height: int = 58) -> QWidget:
     h.setSpacing(u(12))
     if isinstance(label, str):
         label = QLabel(label)
-        label.setWordWrap(True)  # uzun çeviri denetimi pencere dışına itmesin, iki satıra insin
+        label.setWordWrap(True)  # a long translation wraps to two lines instead of pushing the control out of the window
     h.addWidget(label, 1)
     if control is not None:
         if isinstance(control, QWidget):
-            h.addWidget(control, 0, Qt.AlignVCenter)  # satır boyunca uzayıp çizgilere değmesin
+            h.addWidget(control, 0, Qt.AlignVCenter)  # do not stretch over the row and touch the dividers
         else:
             h.addLayout(control)
     return w
@@ -259,7 +259,7 @@ def scroll_page(content: QWidget) -> QScrollArea:
 
 
 def footer_bar(inner: QHBoxLayout) -> QWidget:
-    """Üstte ince çizgi, 72 px yüksekliğinde alt çubuk."""
+    """Bottom bar, 72 px high, with a thin line on top."""
     outer = QWidget()
     v = QVBoxLayout(outer)
     v.setContentsMargins(u(24), 0, u(24), 0)
@@ -283,9 +283,9 @@ class ValueSlider(QWidget):
         lay.setSpacing(u(20))
         self.name = QLabel(label)
         self.name.setFixedWidth(u(176))
-        self.name.setWordWrap(True)  # uzun çeviriler iki satıra insin
+        self.name.setWordWrap(True)  # long translations wrap to two lines
         self.slider = QSlider(Qt.Horizontal)
-        self.slider.setFixedHeight(max(u(28), 22))  # tutamaç (negatif kenar boşluğu) kırpılmasın
+        self.slider.setFixedHeight(max(u(28), 22))  # do not clip the handle (negative margin)
         self.slider.setRange(lo, hi)
         self.slider.setValue(value)
         self.value = QLabel()
@@ -330,7 +330,7 @@ _THEME_SVG = {
 
 
 def theme_icon(kind: str, color: str) -> QIcon | None:
-    """kind: auto | light | dark | lang (dil düğmesi)"""
+    """kind: auto | light | dark | lang (language button)"""
     return fan_icon(color, _THEME_SVG[kind])
 
 

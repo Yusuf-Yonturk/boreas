@@ -1,14 +1,14 @@
-"""GPU modları: Eco / Standart / Optimized / Ultimate.
+"""GPU modes: Eco / Standard / Optimized / Ultimate.
 
-Eşleme:
-  Ultimate  = gpu_mux_mode 0 (ekran doğrudan dGPU'da, yeniden başlatma gerekir)
-  Standart  = gpu_mux_mode 1, dgpu_disable 0
+Mapping:
+  Ultimate  = gpu_mux_mode 0 (display wired straight to the dGPU, needs a reboot)
+  Standard  = gpu_mux_mode 1, dgpu_disable 0
   Eco       = gpu_mux_mode 1, dgpu_disable 1
-  Optimized = prizde Standart, pilde Eco
+  Optimized = Standard on AC, Eco on battery
 
-dgpu_disable sürücü hâlâ bağlıyken yazılırsa sistem kilitlenebilir; bu yüzden
-önce NVIDIA modülleri kaldırılır ve PCI aygıtı çıkarılır. Modüller kullanılıyorsa
-(KWin, oyun, CUDA) Eco bir sonraki açılışa ertelenir.
+Writing dgpu_disable while the driver is still bound can freeze the system, so the
+NVIDIA modules are unloaded and the PCI device is removed first. If the modules are in
+use (KWin, games, CUDA), Eco is postponed until the next boot.
 """
 
 from __future__ import annotations
@@ -23,16 +23,16 @@ from . import hw
 
 ECO, STANDARD, ULTIMATE, OPTIMIZED = "eco", "standard", "ultimate", "optimized"
 NV_MODULES = ("nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia")
-# dGPU'yu açık tutan NVIDIA servisleri: Eco öncesi durdurulur, Eco'dan çıkınca yeniden başlatılır
+# NVIDIA services that keep the dGPU open: stopped before Eco, started again when leaving Eco
 NV_SERVICES = ("nvidia-persistenced.service", "nvidia-powerd.service")
-# /proc/PID/comm adları (çekirdek 15 karakterde keser)
+# /proc/PID/comm names (the kernel cuts them at 15 characters)
 NV_SERVICE_COMMANDS = ("nvidia-persiste", "nvidia-powerd")
 PROC = "/proc"
 PCI_ADDR = re.compile(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]")
 
 
 class GpuBusy(Exception):
-    """hard: süreç değil sürücü bırakmıyor; kendiliğinden yeniden denemenin anlamı yok."""
+    """hard: the driver, not a process, does not let go; retrying on its own is pointless."""
 
     def __init__(self, users: list[str], hard: bool = False):
         super().__init__("dGPU in use: " + ", ".join(users))
@@ -55,7 +55,7 @@ def state() -> dict:
         mode = ECO
     else:
         mode = STANDARD
-    # kernel 7.3 asus-armoury: düz dosya; önceki sürümler: pending_reboot/current_value
+    # kernel 7.3 asus-armoury: plain file; earlier versions: pending_reboot/current_value
     pending = hw.read_int(hw.ARMOURY + "/pending_reboot")
     if pending is None:
         pending = hw.read_int(hw.ARMOURY + "/pending_reboot/current_value")
@@ -71,7 +71,7 @@ def state() -> dict:
 
 
 def nvidia_pci_devices() -> list[str]:
-    """dGPU'nun PCI fonksiyonları (GPU + HDMI ses)."""
+    """PCI functions of the dGPU (GPU + HDMI audio)."""
     out = []
     for d in sorted(glob.glob(hw.p("/sys/bus/pci/devices/*"))):
         if hw.read(d[len(hw.ROOT):] + "/vendor") == "0x10de":
@@ -99,15 +99,15 @@ def _comm(pid: str) -> str:
     try:
         with open(f"{PROC}/{pid}/comm") as f:
             return f.read().strip()
-    except OSError:  # süreç bu arada bitti
+    except OSError:  # the process exited in the meantime
         return "?"
 
 
 def _fuser_pids(nodes: list[str]) -> set[str] | None:
-    """fuser ile aygıtları kullanan PID'ler (açık dosya ve bellek eşlemesi); fuser yoksa None.
+    """PIDs using the devices according to fuser (open files and memory maps); None without fuser.
 
-    fuser PID'leri stdout'a, dosya adlarını ve erişim harflerini stderr'e yazar;
-    bu yüzden yalnız stdout okunur ve süreç adları /proc/PID/comm'dan alınır.
+    fuser writes the PIDs to stdout and the file names and access letters to stderr, so only
+    stdout is read and the process names come from /proc/PID/comm.
     """
     try:
         r = subprocess.run(["fuser", *nodes], capture_output=True, text=True, timeout=10)
@@ -117,7 +117,7 @@ def _fuser_pids(nodes: list[str]) -> set[str] | None:
 
 
 def _proc_pids(nodes: list[str]) -> set[str]:
-    """fuser (psmisc) yoksa yedek: /proc/PID/fd bağlantılarına bakar."""
+    """Fallback without fuser (psmisc): looks at the /proc/PID/fd links."""
     wanted = set(nodes)
     try:
         pids = [p for p in os.listdir(PROC) if p.isdigit()]
@@ -127,7 +127,7 @@ def _proc_pids(nodes: list[str]) -> set[str]:
     for pid in pids:
         try:
             fds = os.listdir(f"{PROC}/{pid}/fd")
-        except OSError:  # süreç bitti ya da erişim yok
+        except OSError:  # the process exited or access was denied
             continue
         for fd in fds:
             try:
@@ -141,7 +141,7 @@ def _proc_pids(nodes: list[str]) -> set[str]:
 
 
 def _nvidia_users(ignore: tuple[str, ...] = ()) -> list[str]:
-    """dGPU aygıt dosyalarını kullanan süreçler, "komut(PID)" biçiminde."""
+    """Processes using the dGPU device files, as "command(PID)"."""
     nodes = glob.glob("/dev/nvidia*")
     for d in nvidia_pci_devices():
         nodes += [f"/dev/dri/{os.path.basename(x)}" for x in glob.glob(hw.p(d) + "/drm/*")
@@ -164,7 +164,7 @@ def _run(*cmd: str) -> bool:
 
 
 def _detach_dgpu() -> None:
-    # Servislere dokunmadan önce bak: KWin vb. tutuyorsa her denemede servisi oynatma
+    # Check before touching the services: if KWin etc. holds it, do not restart them on every try
     users = _nvidia_users(ignore=NV_SERVICE_COMMANDS)
     if users:
         raise GpuBusy(users)
@@ -181,7 +181,7 @@ def _detach_dgpu() -> None:
         raise GpuBusy(users)
     for m in NV_MODULES:
         if _loaded(m) and not _run("modprobe", "-r", m):
-            # yarıda kalmasın: yükleneni ve servisleri geri getir
+            # do not leave it half done: reload what was loaded and restart the services
             _run("modprobe", "nvidia_drm")
             restore()
             raise GpuBusy([f"module {m} could not be unloaded"], hard=True)
@@ -193,7 +193,7 @@ def _detach_dgpu() -> None:
 
 
 def _attach_dgpu(tries: int = 5) -> None:
-    # dgpu_disable=0 sonrası GPU veri yolunda hemen görünmeyebilir
+    # after dgpu_disable=0 the GPU may not show up on the bus right away
     for _ in range(tries):
         hw.write("/sys/bus/pci/rescan", 1)
         if dgpu_present():
@@ -206,13 +206,13 @@ def _attach_dgpu(tries: int = 5) -> None:
 
 
 def _empty_bridges() -> list[str]:
-    """Altında aygıt olmayan PCI köprüleri (Eco'da dGPU'nun bağlı olduğu port böyledir)."""
+    """PCI bridges with no device below them (in Eco this is the port the dGPU sits on)."""
     out = []
     for d in sorted(glob.glob(hw.p("/sys/bus/pci/devices/*"))):
         if not os.path.exists(d + "/secondary_bus_number"):
             continue
-        # yalnız gerçek PCI aygıtları ("0000:01:00.0"); portun kendi servisleri
-        # ("0000:00:01.1:pcie002" gibi) her zaman orada durur, sayılmamalı
+        # only real PCI devices ("0000:01:00.0"); the port's own services
+        # (like "0000:00:01.1:pcie002") are always there and must not count
         children = [c for c in os.listdir(os.path.realpath(d)) if PCI_ADDR.fullmatch(c)]
         if not children:
             out.append(d[len(hw.ROOT):])
@@ -220,18 +220,18 @@ def _empty_bridges() -> list[str]:
 
 
 def _wake_bridges() -> dict[str, str]:
-    """Boş köprüleri uyanık tut; eski power/control değerlerini döndürür.
+    """Keep the empty bridges awake; returns their previous power/control values.
 
-    Eco'da dGPU'nun PCIe portu derin uykuya (D3cold) geçer. Port uyurken dgpu_disable=0
-    yazılırsa firmware (ACPI) dGPU'nun açılmasını 30 sn bekleyip hata verir (G713PV'de ölçüldü);
-    port uyanıkken aynı yazma 1 sn'den kısa sürer.
+    In Eco the dGPU's PCIe port goes into deep sleep (D3cold). If dgpu_disable=0 is written
+    while the port sleeps, the firmware (ACPI) waits 30 s for the dGPU to power up and fails
+    (measured on a G713PV); with the port awake the same write takes less than a second.
     """
     saved = {}
     for b in _empty_bridges():
         old = hw.read(b + "/power/control")
         if old and old != "on":
             try:
-                hw.write(b + "/power/control", "on")  # yazınca çekirdek portu hemen uyandırır
+                hw.write(b + "/power/control", "on")  # the kernel wakes the port up as soon as this is written
                 saved[b] = old
             except OSError:
                 pass
@@ -257,7 +257,7 @@ def set_eco(enabled: bool) -> None:
         try:
             hw.set_attr("dgpu_disable", 1)
         except (OSError, ValueError):
-            # aygıt çıkarıldı ama Eco yazılamadı: dGPU'yu ve sürücüyü geri getir
+            # the device was removed but Eco could not be written: bring the dGPU and the driver back
             _attach_dgpu()
             raise
     else:
@@ -266,14 +266,14 @@ def set_eco(enabled: bool) -> None:
             hw.set_attr("dgpu_disable", 0)
             _attach_dgpu()
         finally:
-            _restore_bridges(saved)  # dGPU bağlıyken port ondan bağımsız uyumaz
+            _restore_bridges(saved)  # with the dGPU attached, the port does not sleep on its own
 
 
 def set_mux(ultimate: bool) -> None:
     if hw.get_attr("gpu_mux_mode") is None:
         raise ValueError("MUX is not supported")
     if ultimate:
-        # önce Eco kapanmalı, kapanmadıysa MUX'a dokunma
+        # Eco has to be off first; if it is not, do not touch the MUX
         set_eco(False)
         eco = hw.get_attr("dgpu_disable")
         if eco is not None and eco.current == 1:

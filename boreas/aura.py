@@ -1,9 +1,9 @@
-"""Klavye RGB (Aura): ASUS Aura HID protokolü, hidraw üzerinden.
+"""Keyboard RGB (Aura): ASUS Aura HID protocol over hidraw.
 
-N-KEY cihazına 0x5D raporlu HID output paketleri gönderilir:
-  [5D B3 bölge mod R G B hız yön rastgele R2 G2 B2]  efekt
-  [5D B5 00 00 00]                                  ayarla
-  [5D B4]                                           uygula
+HID output packets with report ID 0x5D are sent to the N-KEY device:
+  [5D B3 zone mode R G B speed direction random R2 G2 B2]  effect
+  [5D B5 00 00 00]                                         set
+  [5D B4]                                                  apply
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from . import hw
 
 AURA_ID = 0x5D
 REPORT_LEN = 64
-# Aura klavye denetleyicisi ürün kimlikleri
+# product IDs of the Aura keyboard controller
 PIDS = {0x1a30, 0x1854, 0x1869, 0x1866, 0x19b6, 0x1822, 0x1837, 0x184a, 0x183d, 0x8502,
         0x1807, 0x17e0, 0x1abe, 0x1b4c, 0x1b6e, 0x1b2c, 0x8854, 0x1ce7, 0x1ce6, 0x1bf2,
         0x1bf3, 0x1cd7, 0x1cd8, 0x4b42}
@@ -28,7 +28,7 @@ MSG_APPLY = bytes([AURA_ID, 0xB4])
 
 
 def _has_aura_report(d: str) -> bool | None:
-    """Rapor tanımında "Report ID 0x5D" (85 5D) var mı; okunamazsa None."""
+    """Whether the report descriptor contains "Report ID 0x5D" (85 5D); None if it cannot be read."""
     try:
         with open(d + "/device/report_descriptor", "rb") as f:
             return b"\x85\x5d" in f.read()
@@ -37,7 +37,7 @@ def _has_aura_report(d: str) -> bool | None:
 
 
 def find_device() -> str | None:
-    """Aynı PID'nin birden çok hidraw arayüzü olabilir; 0x5D raporu olanı seç."""
+    """The same PID can have several hidraw interfaces; pick the one with report 0x5D."""
     fallback = None
     for d in sorted(glob.glob(hw.p("/sys/class/hidraw/hidraw*"))):
         uevent = hw.read(d[len(hw.ROOT):] + "/device/uevent") or ""

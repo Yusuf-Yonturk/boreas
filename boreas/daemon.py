@@ -1,8 +1,8 @@
-"""boreasd: root olarak çalışan tek servis (asusd + supergfxd yerine).
+"""boreasd: the single service running as root (replaces asusd + supergfxd).
 
-Arayüz /run/boreas.sock üzerinden satır başına bir JSON istek gönderir.
-Servis ayarları saklar; açılışta, uykudan dönüşte, mod değişiminde (Fn+F5 ve KDE
-güç profili dahil) ve priz takılıp çıkarıldığında ayarları yeniden uygular.
+The UI sends one JSON request per line over /run/boreas.sock.
+The service stores the settings and applies them again at boot, after sleep, on a mode
+change (including Fn+F5 and the KDE power profile) and when the charger is plugged in or out.
 """
 
 from __future__ import annotations
@@ -24,17 +24,17 @@ SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
 POLL_SECONDS = 1.0
 ECO_RETRY_TICKS = 15
-CPU_TEMP_REAPPLY = 3.0  # Firmware limiti profil değişmeden de sıfırlayabilir.
-# G713PV'de firmware profil yazımından ~3-4 sn sonra limiti bir kez daha sıfırlıyor;
-# bu süre boyunca sık yaz ki CPU sınırsız kalmasın.
+CPU_TEMP_REAPPLY = 3.0  # The firmware can reset the limit even without a profile change.
+# On the G713PV the firmware resets the limit once more ~3-4 s after a profile write;
+# write it often during that time so the CPU is never left without a limit.
 CPU_TEMP_SETTLE = 10.0
 CPU_TEMP_SETTLE_STEP = 0.25
-# Yüksek sıcaklık kaydı: 95 °C ya da düşürülmüş limitin 5 °C üstü. Her saniye değil,
-# bölüm başına iki satır (başlangıç + bitiş, en yüksek değerle) journal'a yazılır.
+# High temperature log: 95 °C, or 5 °C above a lowered limit. Not every second:
+# two lines per episode (start + end, with the peak) go to the journal.
 HOT_TEMP = 95
 HOT_OVER_LIMIT = 5
 HOT_HYSTERESIS = 3
-CONFLICT_CHECK_TICKS = 30  # başka SMU yazıcısı (ryzenadj) taraması, ~30 sn'de bir
+CONFLICT_CHECK_TICKS = 30  # scan for another SMU writer (ryzenadj), every ~30 s
 CONFLICT_NOTICE = "ryzenadj is also writing the CPU limit"
 GPU_TARGETS = (gpu.ECO, gpu.STANDARD, gpu.OPTIMIZED, gpu.ULTIMATE)
 
@@ -44,13 +44,13 @@ def log(msg: str) -> None:
 
 
 def wait_for_hardware(timeout: float = 20) -> bool:
-    """asus_wmi / asus_armoury udev ile geç yüklenebilir (açılışta ~5 sn); gelene kadar bekle."""
+    """asus_wmi / asus_armoury can be loaded late by udev (~5 s at boot); wait until they appear."""
     deadline = time.monotonic() + timeout
     while not (hw.exists(hw.PLATFORM_PROFILE) and hw.exists(hw.NB_WMI)):
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.25)
-    # armoury, asus_wmi'nin hemen ardından yüklenir; eski çekirdeklerde hiç olmayabilir
+    # armoury loads right after asus_wmi; older kernels may not have it at all
     deadline = min(deadline, time.monotonic() + 3)
     while not hw.exists(hw.ARMOURY) and time.monotonic() < deadline:
         time.sleep(0.25)
@@ -64,21 +64,21 @@ class Daemon:
         self.last_profile = hw.get_profile()
         self.last_ac = hw.ac_online()
         self.custom_power = False
-        self.eco_stuck = False  # sürücü bırakmadı: yalnız elle ya da açılışta yeniden dene
+        self.eco_stuck = False  # the driver did not let go: retry only on request or at boot
         self.notice = ""
         self.gpu_temp_cache: tuple[float, int | None] = (0.0, None)
         self.ticks = 0
         self.cpu = ryzen.CpuTemp()
         self.cpu_temp_last_attempt: float | None = None
         self.cpu_settle_until = 0.0
-        self.hot: dict | None = None  # süren yüksek sıcaklık bölümü
-        self.temp_peak: dict | None = None  # servis açıldığından beri en yüksek
+        self.hot: dict | None = None  # the ongoing high temperature episode
+        self.temp_peak: dict | None = None  # highest since the service started
         self.smu_conflict: list[int] = []
         if self.cfg.fresh:
             self.import_current()
 
     def import_current(self) -> None:
-        """İlk açılış: asusd'nin bıraktığı değerleri koru, mevcut mod ve GPU'yu benimse."""
+        """First start: keep the values asusd left behind, adopt the current mode and GPU mode."""
         c = self.cfg
         c["charge_limit"] = hw.battery_info().get("limit")
         c["kbd_brightness"] = hw.kbd_brightness()[0]
@@ -91,7 +91,7 @@ class Daemon:
         c.save()
         log(f"first start: adopted current settings (charge {c['charge_limit']}%, GPU {c['gpu_target']})")
 
-    # ---- yardımcılar ----------------------------------------------------------
+    # ---- helpers ---------------------------------------------------------------
 
     def source_key(self, ac: bool | None = None) -> str:
         return "mode_ac" if (self.last_ac if ac is None else ac) else "mode_battery"
@@ -100,29 +100,29 @@ class Daemon:
         self.notice = msg
         log(msg)
 
-    # ---- performans modu -------------------------------------------------------
+    # ---- performance mode ------------------------------------------------------
 
     def apply_mode(self, mode_id: int, write_profile: bool = True) -> None:
-        """Yazım sırası: profil → fan → güç."""
+        """Write order: profile → fans → power."""
         with self.lock:
             if not self.cfg.has_mode(mode_id):
                 mode_id = hw.BALANCED
             m = self.cfg.mode(mode_id)
             profile = hw.PROFILE_BY_BASE[m["base"]]
 
-            # profil her seferinde yazılır; aynı değer de firmware'de
-            # throttle policy'yi yeniden çalıştırır ve özel güç limitlerini sıfırlar
+            # the profile is written every time; even the same value makes the firmware
+            # rerun the throttle policy and reset the custom power limits
             if write_profile:
                 hw.set_profile(profile)
                 time.sleep(0.1)
             self.last_profile = hw.get_profile()
             self.cfg["mode"] = mode_id
             self.custom_power = False
-            # Profil firmware'in sıcaklık limitini de sıfırlar. Fan/güç yazımı ve
-            # bekleme boyunca CPU sınırsız ısınmasın diye hemen geri yaz; sonda tekrar.
+            # The profile also resets the firmware temperature limit. Write it back right away
+            # so the CPU does not heat up unlimited during the fan/power writes; again at the end.
             self.apply_cpu_temp(m.get("cpu_temp"))
 
-            # bu modellerde güç limiti özel fan eğrisi olmadan tutmuyor
+            # on these models the power limits do not hold without a custom fan curve
             force_fans = m["power_apply"] and not m["fans_apply"] and hw.fan_required()
             for fan in fans.available_fans():
                 curve = m.get(f"fan_{fan}")
@@ -155,14 +155,14 @@ class Daemon:
                 f"{f' +cpu {self.cpu.applied}°C' if self.cpu.applied < ryzen.DEFAULT_TEMP else ''}")
 
     def apply_cpu_temp(self, temp: int | None) -> bool:
-        """Varsayılana dönüşte yalnız daha önce düşürdüysek yazar."""
+        """When going back to the default, writes only if we lowered the limit before."""
         if not self.cpu.supported():
             return False
         lowered = temp is not None and ryzen.MIN_TEMP <= temp < ryzen.DEFAULT_TEMP
         want = temp if lowered else ryzen.DEFAULT_TEMP
         if not lowered and self.cpu.applied == ryzen.DEFAULT_TEMP:
             return False
-        # Başarısız yazımlar da yenileme aralığına dahildir.
+        # Failed writes count towards the refresh interval too.
         self.cpu_temp_last_attempt = time.monotonic()
         try:
             self.cpu.set(want)
@@ -183,7 +183,7 @@ class Daemon:
         self.smu_conflict = pids
 
     def maintain_cpu_temp(self) -> None:
-        """Doğrulanmış geri okumayla kontrol; yoksa sıcaklığa göre yenile."""
+        """Control through a verified readback; otherwise refresh based on temperature."""
         if not self.cpu.supported():
             return
         target = self.cfg.mode(self.cfg["mode"]).get("cpu_temp")
@@ -193,7 +193,7 @@ class Daemon:
             if self.cpu.readback_verified:
                 actual = self.cpu.read_limit()
                 if actual == target:
-                    return  # Sıcaklık aşsa da hedef duruyorsa aynı komutu tekrarlama.
+                    return  # If the target still holds, do not repeat the command even when the temperature is above it.
                 if actual is not None:
                     interval = 1.0
             if not self.cpu.readback_verified:
@@ -219,7 +219,7 @@ class Daemon:
     # ---- GPU -------------------------------------------------------------------
 
     def apply_gpu_target(self, target: str | None, explicit: bool = False) -> dict:
-        """explicit: kullanıcı seçti. Yalnız o zaman MUX'a yazılır (yeniden başlatma ister)."""
+        """explicit: chosen by the user. Only then is the MUX written (needs a reboot)."""
         if not target or not gpu.supported():
             return {}
         st = gpu.state()
@@ -229,7 +229,7 @@ class Daemon:
                 if explicit:
                     gpu.set_mux(target == gpu.ULTIMATE)
                     return {"reboot": True}
-                # MUX başka yerden (BIOS vb.) değiştiyse donanımı benimse
+                # if the MUX was changed elsewhere (BIOS etc.), adopt the hardware state
                 if not st["pending_reboot"]:
                     self.cfg["gpu_target"] = st["mode"]
                     self.cfg.save()
@@ -248,8 +248,8 @@ class Daemon:
                                    "It will be applied automatically when the dGPU is free (usually after a reboot)."))
                 return {"busy": e.users, "deferred": True}
             except OSError as e:
-                # firmware isteği reddetti; açılışta servisin çökmesine (ve ekran yöneticisini
-                # bekletmesine) yol açmasın. Kullanıcı seçtiyse hatayı ona da ilet.
+                # the firmware rejected the request; do not let it crash the service at boot (and keep
+                # the display manager waiting). If the user chose the mode, pass the error on to them.
                 self.set_notice(f"Could not change the GPU mode: {e}")
                 if explicit:
                     raise
@@ -257,7 +257,7 @@ class Daemon:
             return {}
 
     def eco_pending(self) -> bool:
-        """Eco isteniyor ama dGPU meşgul olduğu için henüz uygulanamadı."""
+        """Eco is wanted but could not be applied yet because the dGPU is busy."""
         target = self.cfg["gpu_target"]
         if target not in (gpu.ECO, gpu.OPTIMIZED) or self.eco_stuck or not gpu.supported():
             return False
@@ -267,9 +267,9 @@ class Daemon:
         return st["has_eco"] and st["mux"] != 0 and st["mode"] != gpu.ECO
 
     def gpu_temp(self) -> int | None:
-        """nvidia-smi yalnızca dGPU zaten uyanıksa çalıştırılır (uyandırmamak için).
+        """nvidia-smi only runs when the dGPU is already awake (so it does not wake it up).
 
-        Pilde hibrit modda hiç sorulmaz: her sorgu dGPU'nun uykuya dalmasını geciktirir.
+        Never queried on battery in hybrid mode: every query delays the dGPU going to sleep.
         """
         ts, val = self.gpu_temp_cache
         if time.monotonic() - ts < 5:
@@ -287,7 +287,7 @@ class Daemon:
         self.gpu_temp_cache = (time.monotonic(), val)
         return val
 
-    # ---- tüm ayarları uygula ------------------------------------------------------
+    # ---- apply all settings ----------------------------------------------------
 
     def apply_extras(self) -> None:
         c = self.cfg
@@ -315,10 +315,10 @@ class Daemon:
             if at_boot:
                 self.apply_gpu_target(self.cfg["gpu_target"])
             elif self.cfg["gpu_target"] == gpu.OPTIMIZED:
-                # uykudayken fiş takılıp çıkarılmış olabilir (uyanınca otomatik GPU modu)
+                # the charger may have been plugged in or out during sleep (automatic GPU mode on resume)
                 self.apply_gpu_target(gpu.OPTIMIZED)
 
-    # ---- izleyici --------------------------------------------------------------
+    # ---- watcher ---------------------------------------------------------------
 
     def watch(self) -> None:
         while True:
@@ -332,7 +332,7 @@ class Daemon:
                 log(traceback.format_exc())
 
     def settle_sleep(self, seconds: float) -> None:
-        """Bekle; mod değişiminin ardından CPU_TEMP_SETTLE boyunca limiti sık yeniden yaz."""
+        """Wait; for CPU_TEMP_SETTLE after a mode change, rewrite the limit often."""
         end = time.monotonic() + seconds
         while (left := end - time.monotonic()) > 0:
             if time.monotonic() >= self.cpu_settle_until:
@@ -345,8 +345,8 @@ class Daemon:
     def tick(self) -> None:
         ac = hw.ac_online()
         if ac != self.last_ac:
-            # güç kaynağı oturana kadar bekle (en az 2 sn);
-            # bazı modeller prizde profili de kendisi değiştiriyor. Kilit dışında bekle.
+            # wait until the power source settles (at least 2 s);
+            # some models also change the profile themselves on AC. Wait outside the lock.
             time.sleep(2)
             if hw.ac_online() != ac:
                 return
@@ -372,7 +372,7 @@ class Daemon:
 
             profile = hw.get_profile()
             if profile and profile != self.last_profile:
-                # Fn+F5 (çekirdek) ya da KDE / power-profiles-daemon değiştirdi
+                # changed by Fn+F5 (kernel) or KDE / power-profiles-daemon
                 base = hw.BASE_BY_PROFILE.get(profile, hw.BALANCED)
                 cur = self.cfg["mode"]
                 mode_id = cur if self.cfg.mode(cur)["base"] == base else base
@@ -407,7 +407,7 @@ class Daemon:
                 f"{time.monotonic() - self.hot['start']:.0f} s")
             self.hot = None
 
-    # ---- durum -------------------------------------------------------------------
+    # ---- status ----------------------------------------------------------------
 
     def status(self) -> dict:
         c = self.cfg
@@ -452,7 +452,7 @@ class Daemon:
             "notice": self.notice,
         }
 
-    # ---- komutlar ------------------------------------------------------------
+    # ---- commands --------------------------------------------------------------
 
     def handle(self, req: dict) -> dict:
         cmd = req.get("cmd")
@@ -485,8 +485,8 @@ class Daemon:
                         entry[k] = value
                 c.save()
                 if mode_id == c["mode"]:
-                    # Arayüz değişmeyen alanları da gönderir. Yalnız sıcaklık
-                    # düzenlenince profili sıfırlayıp fan/güç ayarlarını bozma.
+                    # The UI also sends the unchanged fields. When only the temperature
+                    # was edited, do not reset the profile and disturb the fan/power settings.
                     if changed - {"cpu_temp", "name"}:
                         self.apply_mode(mode_id)
                     elif "cpu_temp" in changed or not changed:
@@ -596,7 +596,7 @@ def main() -> None:
 
 
 def sd_notify(msg: str) -> None:
-    """Type=notify: ekran yöneticisi GPU modu uygulandıktan sonra başlasın."""
+    """Type=notify: the display manager starts after the GPU mode has been applied."""
     addr = os.environ.get("NOTIFY_SOCKET")
     if not addr:
         return

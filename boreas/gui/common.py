@@ -4,11 +4,11 @@ import os
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
-ACCENT = "#4cc2ff"  # tepsi / pencere simgesi
-MODE_COLORS = {2: "#5aa9e6", 0: "#e8e8e8", 1: "#ff5c5c"}  # Sessiz / Dengeli / Turbo
+ACCENT = "#4cc2ff"  # tray / window icon
+MODE_COLORS = {2: "#5aa9e6", 0: "#e8e8e8", 1: "#ff5c5c"}  # Silent / Balanced / Turbo
 
-# Tasarım paletleri (açık / koyu). T, tema değişince yerinde güncellenir;
-# özel çizilen bileşenler her çizimde buradan okur.
+# Design palettes (light / dark). T is updated in place when the theme changes;
+# custom-painted widgets read it on every paint.
 DARK = dict(
     name="dark", win="#1c1d20", card="#232428", border="#34353a", text="#f2f2f4", dim="#a3a3a8",
     seg="#2a2b2f", segBorder="#37383d", segOn="#4a4b51", segOnText="#ffffff", segText="#d6d6da",
@@ -25,8 +25,8 @@ LIGHT = dict(
 )
 T: dict = dict(DARK)
 
-# Tasarım ölçüleri 592 px genişlikteki taslağa göre; gerçek ekranda küçültmek için tek katsayı.
-# BOREAS_SCALE=1 ile taslağın birebir boyutu, 0.8 ile daha küçük.
+# Design sizes follow the 592 px wide mockup; a single factor scales them down on a real screen.
+# BOREAS_SCALE=1 gives the mockup's exact size, 0.8 a smaller one.
 try:
     SCALE = min(1.6, max(0.5, float(os.environ.get("BOREAS_SCALE", "0.78"))))
 except ValueError:
@@ -34,20 +34,20 @@ except ValueError:
 
 
 def u(n: float) -> int:
-    """Tasarım pikselini ölçekle."""
+    """Scale a design pixel."""
     return max(1, round(n * SCALE))
 
 
-_VCOMP = 0.86  # dikey ölçüler yatay olandan biraz daha sıkı: pencere kısa kalsın
+_VCOMP = 0.86  # vertical sizes are a bit tighter than horizontal ones, to keep the window short
 
 
 def uv(n: float) -> int:
-    """Dikey ölçüler (satır yüksekliği, boşluk)."""
+    """Vertical sizes (row height, spacing)."""
     return max(1, round(n * SCALE * _VCOMP))
 
 
 def fs(n: float, floor: int = 12) -> int:
-    """Yazı boyutu: ölçeklenir ama okunaklı kalması için alt sınırı vardır."""
+    """Font size: scaled, with a lower bound so it stays readable."""
     return max(floor, round(n * SCALE))
 
 
@@ -59,7 +59,7 @@ bus = _ThemeBus()
 
 
 def _assets(p: dict) -> tuple[str, str]:
-    """QSS'in url() ile kullandığı küçük SVG'ler (açılır liste oku, onay işareti)."""
+    """Small SVGs used by the QSS through url() (combo box arrow, check mark)."""
     d = os.path.join(os.path.expanduser("~/.cache"), "boreas")
     os.makedirs(d, exist_ok=True)
     chev = os.path.join(d, f"chevron-{p['name']}.svg")
@@ -77,12 +77,12 @@ def _assets(p: dict) -> tuple[str, str]:
 
 def build_style(p: dict) -> str:
     chev, check = _assets(p)
-    both = lambda sel: f"{sel}, QFrame#card {sel}"  # noqa: E731  (kart içinde de aynı özgüllük)
-    hw = u(19)                     # kaydırıcı tutamacı (kenarlık hariç)
+    both = lambda sel: f"{sel}, QFrame#card {sel}"  # noqa: E731  (same specificity inside cards)
+    hw = u(19)                     # slider handle (without the border)
     ht = hw + 2
     groove = u(5)
     hm = -((ht - groove) // 2)
-    hr = ht // 2 - 1               # yarıçap yarı boydan büyük olursa Qt kare çizer
+    hr = ht // 2 - 1               # Qt draws a square if the radius exceeds half the height
     return f"""
 QWidget {{ background:transparent; color:{p['text']}; font-size:{fs(15)}px; }}
 QWidget#root, QDialog, QMessageBox {{ background:{p['win']}; }}
@@ -147,13 +147,13 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:trans
 
 
 def scheme_pref() -> str:
-    """auto | light | dark: BOREAS_THEME ortam değişkeni ya da ayar dosyası."""
+    """auto | light | dark: BOREAS_THEME environment variable or the settings file."""
     try:
         from PySide6.QtCore import QSettings
         v = str(QSettings("boreas", "boreas").value("theme", "auto")).lower()
     except Exception:
         v = "auto"
-    if v in ("light", "dark"):  # başlıktaki düğmeyle seçilmiş
+    if v in ("light", "dark"):  # chosen with the button in the header
         return v
     env = os.environ.get("BOREAS_THEME", "").lower()
     return env if env in ("light", "dark") else "auto"
@@ -169,7 +169,7 @@ def resolve_theme(app, pref: str = "auto") -> dict:
         scheme = app.styleHints().colorScheme()
         if scheme == Qt.ColorScheme.Light:
             return LIGHT
-    except Exception:  # eski Qt: koyu varsay
+    except Exception:  # old Qt: assume dark
         pass
     return DARK
 
@@ -186,7 +186,7 @@ def apply_theme(app, pref: str | None = None) -> None:
 
 
 def watch_system_theme(app) -> None:
-    """Sistem açık/koyu tema değiştirince (auto ise) yeniden uygula."""
+    """Apply again when the system switches between light and dark (in auto)."""
     try:
         app.styleHints().colorSchemeChanged.connect(lambda *_: apply_theme(app) if scheme_pref() == "auto" else None)
     except Exception:
@@ -205,7 +205,7 @@ class _Job(QRunnable):
     def run(self):
         try:
             res = self.fn()
-        except Exception as e:  # sonucu ana iş parçacığına hata olarak ilet
+        except Exception as e:  # pass it to the main thread as an error result
             res = e
         self.signals.done.emit(res)
 
@@ -214,7 +214,7 @@ _alive: set = set()
 
 
 def run_async(fn, callback=None) -> None:
-    """fn'i iş parçacığında çalıştırır, sonucu (ya da istisnayı) callback'e ana iş parçacığında verir."""
+    """Runs fn in a thread and hands the result (or the exception) to callback on the main thread."""
     sig = _Signals()
     _alive.add(sig)
 

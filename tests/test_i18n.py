@@ -1,4 +1,4 @@
-"""Çeviri testleri: her kaynak metnin her dilde karşılığı var mı, yer tutucular korunmuş mu."""
+"""Translation tests: every source text has a translation in every language, placeholders are kept."""
 
 import ast
 import os
@@ -15,7 +15,7 @@ from boreas.translations import MESSAGES, ORDER, _T  # noqa: E402
 
 
 def gui_sources() -> set:
-    """Arayüz kodunda _("...") ile çevrilen metinler ve _() ile kullanılan sabit tabloların değerleri."""
+    """Texts translated with _("...") in the UI code and the values of constant tables used with _()."""
     keys = set()
     for f in ("boreas/gui/app.py", "boreas/gui/fans.py", "boreas/i18n.py"):
         with open(os.path.join(ROOT, f), encoding="utf-8") as fh:
@@ -78,7 +78,7 @@ class TestLookup(unittest.TestCase):
         os.environ["BOREAS_LANG"] = "pt_BR.UTF-8"
         self.assertEqual(i18n.choose(S()), "pt")
         os.environ["BOREAS_LANG"] = "xx"
-        self.assertEqual(i18n.choose(S()), "de")  # bilinmeyen dil atlanır
+        self.assertEqual(i18n.choose(S()), "de")  # unknown languages are skipped
 
     def test_daemon_messages_translated(self):
         i18n.set_language("tr")
@@ -89,14 +89,14 @@ class TestLookup(unittest.TestCase):
         self.assertEqual(i18n.tr_msg("something new"), "something new")
 
     def test_daemon_messages_match_templates(self):
-        """Servisin ürettiği iletiler katalogdaki şablonlarla eşleşmeli (kaynak değişirse test kırılır)."""
+        """Messages produced by the service must match the catalog templates (the test breaks if the source changes)."""
         with open(os.path.join(ROOT, "boreas/daemon.py"), encoding="utf-8") as fh:
             src = fh.read()
         for m in re.findall(r'set_notice\((f?"[^"]+")', src):
             text = m.lstrip("f").strip('"')
             if text.startswith("{CONFLICT_NOTICE}"):
                 continue
-            if text.endswith(". "):  # iki parçalı Eco iletisi: ikinci parça ayrı dizgede
+            if text.endswith(". "):  # two-part Eco message: the second part is a separate string
                 text += "It will be applied after a reboot."
             pattern = re.sub(r"\{[^}]+\}", "X", text)
             i18n.set_language("tr")
@@ -111,7 +111,7 @@ class TestLookup(unittest.TestCase):
 
 class TestNoLongDashes(unittest.TestCase):
     def test_no_em_or_en_dash(self):
-        """Projede uzun çizgi (U+2014, U+2013) kullanılmaz."""
+        """The project never uses long dashes (U+2014, U+2013)."""
         bad = []
         for base, dirs, files in os.walk(ROOT):
             dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]

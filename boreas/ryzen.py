@@ -1,8 +1,9 @@
-"""CPU sıcaklık limiti, Ryzen SMU üzerinden (ryzenadj set_tctl_temp ile aynı komut).
+"""CPU temperature limit through the Ryzen SMU (the same command as ryzenadj set_tctl_temp).
 
-SMU'nun posta kutusu SMN adres uzayındadır. Ona kök kompleksin (00:00.0) PCI yapılandırma
-alanındaki 0xB8/0xBC dizin/veri çiftiyle ulaşılır (ryzenadj nb_smu_ops.h). Çekirdeğin amd_smn'i
-(k10temp) 0x60/0x64 çiftini kullandığı için çakışmaz. Root ve kapalı kernel lockdown gerekir.
+The SMU mailbox lives in the SMN address space. It is reached through the 0xB8/0xBC
+index/data pair in the PCI config space of the root complex (00:00.0) (ryzenadj nb_smu_ops.h).
+The kernel's amd_smn (k10temp) uses the 0x60/0x64 pair, so the two do not collide.
+Needs root and kernel lockdown turned off.
 """
 
 from __future__ import annotations
@@ -22,10 +23,10 @@ SMN_ADDR, SMN_DATA = 0xB8, 0xBC
 OK, FAILED, UNKNOWN_CMD, REJECTED_PREREQ, BUSY = 0x01, 0xFF, 0xFE, 0xFD, 0xFC
 STATUS_NAMES = {FAILED: "failed", UNKNOWN_CMD: "unknown command",
                 REJECTED_PREREQ: "prerequisite rejected", BUSY: "busy"}
-TIMEOUT = 0.2  # posta kutusu yanıt süresi (sn)
+TIMEOUT = 0.2  # mailbox response timeout (s)
 GET_SMU_VERSION = 0x02
 
-# en düşük / firmware varsayılanı; 96 "varsayılan" sayılır
+# lowest / firmware default; 96 counts as "default"
 MIN_TEMP, DEFAULT_TEMP = 75, 96
 
 
@@ -39,8 +40,8 @@ class Family:
     get_limit: int | None = None
 
 
-# (cpu family, model) → MP1 posta kutusu ve tctl komutu; ryzenadj cpuid.c / nb_smu_ops.c / api.c
-# ile aynı değerler. Diğer aileler (Phoenix, Strix Point…) başka adres ve komut ister; denenmeden eklenmedi.
+# (cpu family, model) → MP1 mailbox and tctl command; the same values as ryzenadj cpuid.c /
+# nb_smu_ops.c / api.c. Other families (Phoenix, Strix Point…) need other addresses and commands; not added untested.
 _RAPHAEL_MP1 = (0x03B10530, 0x03B1057C, 0x03B109C4)
 FAMILIES = {
     (0x19, 0x61): Family("Dragon Range", *_RAPHAEL_MP1, tctl=0x3F, get_limit=0x23),
@@ -53,10 +54,10 @@ class SmuError(Exception):
 
 
 def other_writers() -> list[int]:
-    """Aynı 0xB8/0xBC çiftini kullanan ryzenadj süreçleri (ör. eski bir ryzenadj.service).
+    """ryzenadj processes using the same 0xB8/0xBC pair (e.g. an old ryzenadj.service).
 
-    Süreçler arası kilit yok: iki yazıcının dizin/veri yazımları araya girerse SMU'ya
-    yanlış komut gidebilir, ayrıca birbirlerinin limitini ezerler.
+    There is no lock between processes: if the index/data writes of two writers interleave,
+    the SMU can receive a wrong command, and they overwrite each other's limit as well.
     """
     pids = []
     try:
@@ -81,7 +82,7 @@ def detect() -> Family | None:
     info = {}
     for line in (hw.read(CPUINFO) or "").splitlines():
         if not line.strip():
-            break  # ilk çekirdek yeter
+            break  # the first core is enough
         k, _, v = line.partition(":")
         info[k.strip()] = v.strip()
     if info.get("vendor_id") != "AuthenticAMD":
@@ -115,9 +116,9 @@ class Smu:
             time.sleep(0.001)
 
     def send(self, cmd: int, arg: int = 0) -> tuple[int, int]:
-        """Posta kutusu çağrısı: boşta bekle, yanıtı sıfırla, 6 argüman ve komutu yaz, yanıtı bekle.
+        """Mailbox call: wait until idle, clear the response, write 6 arguments and the command, wait.
 
-        (durum, arg0 yanıtı) döner.
+        Returns (status, arg0 response).
         """
         with self.lock:
             fd = os.open(self.path, os.O_RDWR)
@@ -135,14 +136,14 @@ class Smu:
 
 
 class CpuTemp:
-    """Servisin kullandığı katman. SMU'ya ilk dokunuşta posta kutusunu sürüm sorgusuyla doğrular."""
+    """The layer the service uses. Verifies the mailbox with a version query on first SMU access."""
 
     def __init__(self):
         self.family = detect()
         self.smu = Smu(self.family) if self.family and hw.exists(ROOT_COMPLEX) else None
         self.version: int | None = None
         self.error = ""
-        self.applied = DEFAULT_TEMP  # açılışta firmware varsayılanı
+        self.applied = DEFAULT_TEMP  # firmware default at boot
         self.reported_limit: int | None = None
         self.readback_verified = False
         self.readback_error = ""
@@ -178,8 +179,8 @@ class CpuTemp:
             raise SmuError(f"The SMU rejected the command ({STATUS_NAMES.get(status, hex(status))})")
         self.applied = temp
         after = self.read_limit()
-        # 0x23 bazı firmware'lerde BIOS'un sabit değerini döndürebilir. Yalnız
-        # farklı eski değerin yazdığımız hedefe geçtiği gözlenirse güven.
+        # On some firmware 0x23 may return the fixed BIOS value. Trust it only once a
+        # different old value has been seen to change to the target we wrote.
         if before is not None and before != temp and after == temp:
             self.readback_verified = True
         elif after != temp:
@@ -187,8 +188,8 @@ class CpuTemp:
 
     def read_limit(self) -> int | None:
         """Raphael MP1 0x23, arg0[7:0]: ZenStates-Core Zen4Settings /
-        GetSystemConfiguredPowerLimit. Dinamik limit olduğu ayrıca doğrulanır.
-        Okuma hatası sıcaklık yazma desteğini kapatmaz.
+        GetSystemConfiguredPowerLimit. That it is the live limit is verified separately.
+        A read error does not disable writing the temperature limit.
         """
         self.reported_limit = None
         if not self.supported() or self.family.get_limit is None or self._readback_disabled:

@@ -1,13 +1,13 @@
 #!/bin/bash
-# ASUS EC'nin bildirdiği CPU sıcaklığını (DEVID 0x00120094) Tctl ile yan yana okur.
-# Yalnız okur; hiçbir ayarı değiştirmez. sudo ile çalıştırın.
+# Reads the CPU temperature reported by the ASUS EC (DEVID 0x00120094) next to Tctl.
+# Read-only; changes no settings. Run with sudo.
 set -e
 mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug
 W=/sys/kernel/debug/asus-nb-wmi
 K=$(dirname "$(grep -l k10temp /sys/class/hwmon/*/name)")
 A=$(dirname "$(grep -lx acpitz /sys/class/hwmon/*/name)")
 OUT=${OUT:-$(dirname "$0")/ec_vs_tctl.log}
-echo "zaman     EC_Temp_CPU  Tctl  Tccd1  acpitz  (ham dsts)" | tee "$OUT"
+echo "time      EC_Temp_CPU  Tctl  Tccd1  acpitz  (raw dsts)" | tee "$OUT"
 for i in $(seq 1 30); do
     echo 0x00120094 > "$W/dev_id"
     raw=$(cat "$W/dsts")

@@ -1,4 +1,4 @@
-"""Fanlar ve güç sayfası. Ana pencerenin içinde bir sayfa olarak açılır."""
+"""The Fans and power page. Opens as a page inside the main window."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ TITLES = {"cpu": "CPU fan", "gpu": "GPU fan", "mid": "Mid fan"}
 
 
 class CurveEditor(QWidget):
-    """8 noktalı fan eğrisi; noktalar sürüklenir, sıcaklık ve hız monoton tutulur.
-    role: 'cpu' | 'gpu' | 'mid'; çizgi rengi temadan okunur."""
+    """8-point fan curve; the points can be dragged, temperature and speed stay monotonic.
+    role: 'cpu' | 'gpu' | 'mid'; the line color comes from the theme."""
 
     changed = Signal()
 
@@ -64,7 +64,7 @@ class CurveEditor(QWidget):
         qp.setRenderHint(QPainter.Antialiasing)
         a = self._area()
         col = self.color
-        # başlık: renkli nokta + ad
+        # title: colored dot + name
         qp.setPen(Qt.NoPen)
         qp.setBrush(col)
         qp.drawEllipse(QPointF(u(6), u(12)), u(5.5), u(5.5))
@@ -133,7 +133,7 @@ class CurveEditor(QWidget):
         hi_t = self.curve[i + 1] if i < POINTS - 1 else T_MAX
         self.curve[i] = max(lo_t, min(hi_t, t))
         self.curve[POINTS + i] = max(safety_floor(self.curve[i]), min(100, s))
-        # hız monotonluğu: sağdakileri yukarı, soldakileri aşağı it
+        # keep speeds monotonic: push the points on the right up and the ones on the left down
         for j in range(i + 1, POINTS):
             self.curve[POINTS + j] = max(self.curve[POINTS + j], self.curve[POINTS + i])
         for j in range(i - 1, -1, -1):
@@ -149,7 +149,7 @@ class CurveEditor(QWidget):
 
 
 class FansWindow(QWidget):
-    """Mod seçimi, fan eğrileri, güç limitleri ve pil kartı; altta Kaydedildi / Uygula."""
+    """Mode choice, fan curves, power limits and the battery card; Saved / Apply at the bottom."""
 
     def __init__(self, main, parent=None):
         super().__init__(parent)
@@ -167,7 +167,7 @@ class FansWindow(QWidget):
         root.setContentsMargins(u(24), uv(18), u(24), uv(16))
         root.setSpacing(uv(16))
 
-        # Mod
+        # Mode
         mc = QFrame()
         mc.setObjectName("card")
         ml = QVBoxLayout(mc)
@@ -195,7 +195,7 @@ class FansWindow(QWidget):
         ml.addLayout(btns)
         root.addWidget(mc)
 
-        # Fan eğrileri
+        # Fan curves
         fc, fl, _info = card(_("Fan curves"))
         self.editors: dict[str, CurveEditor] = {}
         fl.addSpacing(uv(10))
@@ -227,7 +227,7 @@ class FansWindow(QWidget):
         fl.addWidget(rw)
         root.addWidget(fc)
 
-        # Güç
+        # Power
         pc, pl, _info = card(_("Power"))
         self.sliders: dict[str, ValueSlider] = {}
         attrs = main.status.get("attrs", {})
@@ -243,7 +243,7 @@ class FansWindow(QWidget):
         self.power_apply = Switch()
         self.power_apply.toggled.connect(self._dirty)
         pl.addWidget(row(_("Apply power limits"), self.power_apply, height=56))
-        # CPU sıcaklık limiti, güç kutusundan bağımsız; en üst değer = firmware varsayılanı
+        # CPU temperature limit, independent of the power box; the top value = firmware default
         self.cpu_temp = None
         ct = main.status.get("cpu_temp")
         if ct:
@@ -255,21 +255,21 @@ class FansWindow(QWidget):
         pl.addSpacing(uv(4))
         root.addWidget(pc)
 
-        # Pil kartı ana pencerede kurulur; tasarımda bu sayfada görünür
+        # The battery card is built in the main window; the design shows it on this page
         pil = getattr(main, "pil_card", None)
         if pil is not None:
             root.addWidget(pil)
         root.addStretch(1)
         outer.addWidget(scroll_page(content), 1)
 
-        # Alt çubuk: durum + Uygula
+        # Bottom bar: status + Apply
         bottom = QHBoxLayout()
         bottom.setSpacing(u(10))
         self.result_icon = CheckDot()
         self.result_icon.hide()
         self.result = QLabel()
         self.result.setObjectName("dim")
-        self.result.setWordWrap(True)  # uzun hata iletisi kesilmesin
+        self.result.setWordWrap(True)  # do not cut off a long error message
         self.result.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         apply = QPushButton(_("Apply"))
         apply.setObjectName("primary")
@@ -284,7 +284,7 @@ class FansWindow(QWidget):
 
         self.reload_modes(main.status["mode"])
 
-    # ---- durum satırı ----
+    # ---- status row ----
 
     def _set_status(self, text: str):
         self.result.setText(tr_msg(text))
@@ -294,7 +294,7 @@ class FansWindow(QWidget):
         if not self._loading:
             self._set_status("Not saved")
 
-    # ---- modlar ----
+    # ---- modes ----
 
     def reload_modes(self, select: int):
         modes = self.main.status["modes"]
@@ -327,7 +327,7 @@ class FansWindow(QWidget):
             stored = {**(self.entry.get("ppt") or {}), **(self.entry.get("nv") or {})}
             for name, s in self.sliders.items():
                 v = stored.get(name)
-                # kayıt yoksa önceki modun değeri kalmasın (varsayılana dönülür)
+                # without a saved value, do not keep the previous mode's value (back to the default)
                 s.slider.setValue(int(v if v is not None else self._fallback(name)))
             if self.cpu_temp:
                 self.cpu_temp.slider.setValue(self.entry.get("cpu_temp") or self.cpu_temp.slider.maximum())
@@ -359,7 +359,7 @@ class FansWindow(QWidget):
         run_async(lambda: self.main.call("default_curve", fan=fan, mode=mode), done)
 
     def _factory(self):
-        # fabrika ayarı: eğriler, güç limitleri ve iki onay kutusu sıfırlanır
+        # factory settings: reset the curves, the power limits and both check boxes
         for fan in self.editors:
             self._load_default(fan)
         self.fans_apply.setChecked(False)

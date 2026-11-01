@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kaldırır ve asusd / supergfxd'yi geri açar. Servis ayarları /etc/boreas içinde kalır.
+# Uninstalls Boreas and brings asusd / supergfxd back. Service settings stay in /etc/boreas.
 set -e
 systemctl disable --now boreasd.service 2>/dev/null || true
 rm -rf /usr/lib/boreas
@@ -16,7 +16,7 @@ for s in asusd.service asus-shutdown.service supergfxd.service; do
     fi
 done
 systemctl daemon-reload
-# supergfxd normal etkin birimdir; asusd / asus-shutdown udev ile gelir (static)
+# supergfxd is a normal enabled unit; asusd / asus-shutdown come from udev (static)
 systemctl enable supergfxd.service 2>/dev/null || true
 systemctl start asusd.service asus-shutdown.service supergfxd.service 2>/dev/null || true
 echo "Removed. Settings are kept in /etc/boreas."
