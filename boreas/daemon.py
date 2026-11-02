@@ -11,31 +11,25 @@ import grp
 import json
 import os
 import socketserver
+import signal
 import subprocess
 import sys
 import threading
 import time
 import traceback
 
-from . import aura, fans, gpu, hw, ryzen
+from . import aura, fans, gpu, hw, thermal
 from .config import BUILTIN, Config
 
 SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
 POLL_SECONDS = 1.0
 ECO_RETRY_TICKS = 15
-CPU_TEMP_REAPPLY = 3.0  # The firmware can reset the limit even without a profile change.
-# On the G713PV the firmware resets the limit once more ~3-4 s after a profile write;
-# write it often during that time so the CPU is never left without a limit.
-CPU_TEMP_SETTLE = 10.0
-CPU_TEMP_SETTLE_STEP = 0.25
 # High temperature log: 95 °C, or 5 °C above a lowered limit. Not every second:
 # two lines per episode (start + end, with the peak) go to the journal.
 HOT_TEMP = 95
 HOT_OVER_LIMIT = 5
 HOT_HYSTERESIS = 3
-CONFLICT_CHECK_TICKS = 30  # scan for another SMU writer (ryzenadj), every ~30 s
-CONFLICT_NOTICE = "ryzenadj is also writing the CPU limit"
 GPU_TARGETS = (gpu.ECO, gpu.STANDARD, gpu.OPTIMIZED, gpu.ULTIMATE)
 
 
@@ -60,6 +54,7 @@ def wait_for_hardware(timeout: float = 20) -> bool:
 class Daemon:
     def __init__(self, config: Config | None = None):
         self.cfg = config or Config()
+        gpu.gpu_engine.set_config_backend(self.cfg.data.get("gpu_backend"))
         self.lock = threading.RLock()
         self.last_profile = hw.get_profile()
         self.last_ac = hw.ac_online()
@@ -68,12 +63,9 @@ class Daemon:
         self.notice = ""
         self.gpu_temp_cache: tuple[float, int | None] = (0.0, None)
         self.ticks = 0
-        self.cpu = ryzen.CpuTemp()
-        self.cpu_temp_last_attempt: float | None = None
-        self.cpu_settle_until = 0.0
+        self.cpu = thermal.Controller()
         self.hot: dict | None = None  # the ongoing high temperature episode
         self.temp_peak: dict | None = None  # highest since the service started
-        self.smu_conflict: list[int] = []
         if self.cfg.fresh:
             self.import_current()
 
@@ -87,7 +79,8 @@ class Daemon:
         base = hw.BASE_BY_PROFILE.get(hw.get_profile() or "", hw.BALANCED)
         c["mode"] = c[self.source_key()] = base
         if gpu.supported():
-            c["gpu_target"] = gpu.state()["mode"]
+            current = gpu.state()["mode"]
+            c["gpu_target"] = current if current in GPU_TARGETS else None
         c.save()
         log(f"first start: adopted current settings (charge {c['charge_limit']}%, GPU {c['gpu_target']})")
 
@@ -102,7 +95,8 @@ class Daemon:
 
     # ---- performance mode ------------------------------------------------------
 
-    def apply_mode(self, mode_id: int, write_profile: bool = True) -> None:
+    def apply_mode(self, mode_id: int, write_profile: bool = True,
+                   external_profile: bool = False) -> None:
         """Write order: profile → fans → power."""
         with self.lock:
             if not self.cfg.has_mode(mode_id):
@@ -110,6 +104,8 @@ class Daemon:
             m = self.cfg.mode(mode_id)
             profile = hw.PROFILE_BY_BASE[m["base"]]
 
+            self.cpu.stop(restore=not external_profile)
+            restore_error = self.cpu.error
             # the profile is written every time; even the same value makes the firmware
             # rerun the throttle policy and reset the custom power limits
             if write_profile:
@@ -118,23 +114,32 @@ class Daemon:
             self.last_profile = hw.get_profile()
             self.cfg["mode"] = mode_id
             self.custom_power = False
-            # The profile also resets the firmware temperature limit. Write it back right away
-            # so the CPU does not heat up unlimited during the fan/power writes; again at the end.
-            self.apply_cpu_temp(m.get("cpu_temp"))
-
-            # on these models the power limits do not hold without a custom fan curve
-            force_fans = m["power_apply"] and not m["fans_apply"] and hw.fan_required()
+            target = m.get("cpu_temp")
+            thermal_on = target is not None and target < thermal.DEFAULT_TEMP
+            force_fans = (m["power_apply"] or thermal_on) and not m["fans_apply"] and hw.fan_required()
+            thermal_ready = not restore_error
+            if thermal_on and hw.fan_required() and not fans.available_fans():
+                self.cpu.fail("Required ASUS fan curve interface unavailable")
+                thermal_ready = False
             for fan in fans.available_fans():
                 curve = m.get(f"fan_{fan}")
                 try:
                     if force_fans and not curve:
                         curve = fans.factory_curve(fan)
+                    if thermal_on and hw.fan_required() and not curve:
+                        # A selected custom curve may not have been saved yet.
+                        curve = fans.factory_curve(fan)
+                        if not curve:
+                            raise ValueError("Required ASUS fan curve unavailable")
                     if (m["fans_apply"] or force_fans) and curve:
                         fans.write_curve(fan, curve)
                     elif fans.is_enabled(fan):
                         fans.disable_curve(fan)
                 except (OSError, ValueError) as e:
                     self.set_notice(f"Could not write the {fan} fan curve: {e}")
+                    if thermal_on and hw.fan_required():
+                        self.cpu.fail(str(e))
+                        thermal_ready = False
 
             if m["power_apply"]:
                 time.sleep(0.5)
@@ -146,64 +151,43 @@ class Daemon:
                         self.custom_power = True
                     except (OSError, ValueError) as e:
                         self.set_notice(f"Could not write {name}: {e}")
+                        if thermal_on and name in thermal.POWER_ATTRS:
+                            self.cpu.fail(str(e))
+                            thermal_ready = False
 
-            self.apply_cpu_temp(m.get("cpu_temp"))
-            self.cpu_settle_until = time.monotonic() + CPU_TEMP_SETTLE
+            if thermal_ready:
+                self.apply_cpu_temp(target)
+            elif thermal_on:
+                self.report_thermal_error()
+
+            boost_mode = m.get("cpu_boost") or "default"
+            if hw.cpu_boost_supported():
+                try:
+                    hw.set_cpu_boost(boost_mode, m["base"])
+                except (OSError, ValueError) as e:
+                    self.set_notice(f"Could not write CPU boost: {e}")
 
             log(f"mode: {m['name']} ({profile})"
                 f"{' +fan' if m['fans_apply'] else ''}{' +power' if self.custom_power else ''}"
-                f"{f' +cpu {self.cpu.applied}°C' if self.cpu.applied < ryzen.DEFAULT_TEMP else ''}")
+                f"{f' +boost {boost_mode}' if boost_mode != 'default' else ''}"
+                f"{f' +cpu target {self.cpu.target}°C' if self.cpu.target is not None else ''}")
+
+    def report_thermal_error(self) -> None:
+        if self.cpu.error:
+            msg = f"Could not apply the CPU temperature limit: {self.cpu.error}"
+            if self.notice != msg:
+                self.set_notice(msg)
 
     def apply_cpu_temp(self, temp: int | None) -> bool:
-        """When going back to the default, writes only if we lowered the limit before."""
-        if not self.cpu.supported():
-            return False
-        lowered = temp is not None and ryzen.MIN_TEMP <= temp < ryzen.DEFAULT_TEMP
-        want = temp if lowered else ryzen.DEFAULT_TEMP
-        if not lowered and self.cpu.applied == ryzen.DEFAULT_TEMP:
-            return False
-        # Failed writes count towards the refresh interval too.
-        self.cpu_temp_last_attempt = time.monotonic()
-        try:
-            self.cpu.set(want)
-        except (ryzen.SmuError, ValueError) as e:
-            self.set_notice(f"Could not apply the CPU temperature limit: {e}")
-            return False
-        return True
-
-    def check_smu_conflict(self) -> None:
-        if not self.cpu.supported():
-            return
-        pids = ryzen.other_writers()
-        if pids and pids != self.smu_conflict:
-            self.set_notice(f"{CONFLICT_NOTICE} (pid {', '.join(map(str, pids))}): the two overwrite "
-                            "each other's limit. Disable ryzenadj.service.")
-        elif not pids and self.notice.startswith(CONFLICT_NOTICE):
+        self.cpu.start(temp)
+        self.report_thermal_error()
+        if not self.cpu.error and self.notice.startswith("Could not apply the CPU temperature limit:"):
             self.notice = ""
-        self.smu_conflict = pids
+        return not self.cpu.error
 
     def maintain_cpu_temp(self) -> None:
-        """Control through a verified readback; otherwise refresh based on temperature."""
-        if not self.cpu.supported():
-            return
-        target = self.cfg.mode(self.cfg["mode"]).get("cpu_temp")
-        lowered = target is not None and ryzen.MIN_TEMP <= target < ryzen.DEFAULT_TEMP
-        interval = CPU_TEMP_REAPPLY
-        if lowered:
-            if self.cpu.readback_verified:
-                actual = self.cpu.read_limit()
-                if actual == target:
-                    return  # If the target still holds, do not repeat the command even when the temperature is above it.
-                if actual is not None:
-                    interval = 1.0
-            if not self.cpu.readback_verified:
-                current = hw.temps().get("cpu")
-                if current is not None:
-                    excess = current - target
-                    interval = 1.0 if excess >= 5 else 2.0 if excess >= 2 else CPU_TEMP_REAPPLY
-        if (self.cpu_temp_last_attempt is None or
-                time.monotonic() - self.cpu_temp_last_attempt >= interval):
-            self.apply_cpu_temp(target)
+        self.cpu.tick()
+        self.report_thermal_error()
 
     def _later(self, delay: float, fn) -> None:
         t = threading.Timer(delay, fn)
@@ -218,11 +202,73 @@ class Daemon:
 
     # ---- GPU -------------------------------------------------------------------
 
+    def set_gpu_backend(self, backend: str) -> dict:
+        if backend not in ("firmware", "ebpf"):
+            raise ValueError("GPU backend must be 'firmware' or 'ebpf'")
+        if os.environ.get("BOREAS_GPU_BACKEND") is not None:
+            raise ValueError("Remove the BOREAS_GPU_BACKEND systemd override and restart boreasd to use the backend switch")
+        c = self.cfg
+        previous = c["gpu_backend"]
+        target = c["gpu_target"]
+        if backend == previous:
+            return {"backend": backend}
+        if backend == "ebpf":
+            if not gpu.supported():
+                raise ValueError("GPU switching is not supported on this device")
+            mux = hw.get_attr("gpu_mux_mode")
+            if (mux and mux.current == 0) or target == gpu.ULTIMATE:
+                raise ValueError("Leave Ultimate and reboot before selecting the eBPF engine")
+        try:
+            next_target = target
+            if backend == "firmware":
+                # Changing the backend must never change the MUX or request a reboot.
+                # Preserve Ultimate (including a pending request); otherwise release
+                # the eBPF blocks into Standard without firmware/driver writes.
+                mux = hw.get_attr("gpu_mux_mode")
+                next_target = gpu.ULTIMATE if (mux and mux.current == 0) or target == gpu.ULTIMATE else gpu.STANDARD
+                gpu.gpu_engine.reset()
+            gpu.gpu_engine.set_config_backend(backend)
+            if backend == "ebpf":
+                gpu.gpu_engine.get().request("status")
+            result = self.apply_gpu_target(target, explicit=True) if backend == "ebpf" else {}
+            if result.get("deferred") or result.get("reboot"):
+                raise OSError("Backend transition could not be applied immediately")
+            c["gpu_backend"] = backend
+            c["gpu_target"] = next_target
+            c.save()
+        except Exception as exc:
+            c["gpu_backend"] = previous
+            c["gpu_target"] = target
+            gpu.gpu_engine.set_config_backend(previous)
+            try:
+                if backend == "ebpf":
+                    gpu.gpu_engine.reset()
+                # Restore only the old eBPF policy; a rejected opt-in must never
+                # trigger firmware writes or driver detach as a side effect.
+                if previous == "ebpf":
+                    self.apply_gpu_target(target, explicit=True)
+            except Exception as restore_error:
+                self.set_notice(f"Backend rollback failed: {restore_error}")
+                raise OSError(f"{exc}; rollback failed: {restore_error}") from exc
+            raise
+        return {"backend": backend}
+
     def apply_gpu_target(self, target: str | None, explicit: bool = False) -> dict:
         """explicit: chosen by the user. Only then is the MUX written (needs a reboot)."""
         if not target or not gpu.supported():
             return {}
         st = gpu.state()
+        if st.get("backend_error") and explicit and gpu.gpu_engine.selected():
+            # The user asked for a mode: release the faulted helper and start a
+            # fresh one for this request only. Periodic paths never restart it.
+            log(f"GPU engine fault, starting a fresh helper: {st['backend_error']}")
+            gpu.gpu_engine.reset()
+            st = gpu.state()
+        if st.get("backend_error"):
+            self.set_notice(st["backend_error"])
+            if explicit:
+                raise OSError(st["backend_error"])
+            return {}
         with self.lock:
             ultimate = st["mux"] == 0
             if st["has_mux"] and (target == gpu.ULTIMATE) != ultimate:
@@ -258,6 +304,8 @@ class Daemon:
 
     def eco_pending(self) -> bool:
         """Eco is wanted but could not be applied yet because the dGPU is busy."""
+        if gpu.gpu_engine.selected():
+            return False  # eBPF errors require explicit retry, never periodic reblocking.
         target = self.cfg["gpu_target"]
         if target not in (gpu.ECO, gpu.OPTIMIZED) or self.eco_stuck or not gpu.supported():
             return False
@@ -271,6 +319,8 @@ class Daemon:
 
         Never queried on battery in hybrid mode: every query delays the dGPU going to sleep.
         """
+        if gpu.gpu_engine.selected():
+            return None  # Do not probe hidden GPU nodes or wake the dGPU with nvidia-smi.
         ts, val = self.gpu_temp_cache
         if time.monotonic() - ts < 5:
             return val
@@ -311,7 +361,15 @@ class Daemon:
         with self.lock:
             self.last_ac = hw.ac_online()
             self.apply_extras()
-            self.apply_mode(self.cfg[self.source_key()])
+            try:
+                self.apply_mode(self.cfg[self.source_key()])
+            except OSError as e:
+                if not at_boot:
+                    raise
+                # A kernel may expose platform_profile but reject its writes.
+                # Keep the socket and independent controls available; do not
+                # continue the failed mode's fan/power writes or claim success.
+                self.set_notice(f"Could not apply the startup performance mode: {e}")
             if at_boot:
                 self.apply_gpu_target(self.cfg["gpu_target"])
             elif self.cfg["gpu_target"] == gpu.OPTIMIZED:
@@ -332,15 +390,8 @@ class Daemon:
                 log(traceback.format_exc())
 
     def settle_sleep(self, seconds: float) -> None:
-        """Wait; for CPU_TEMP_SETTLE after a mode change, rewrite the limit often."""
-        end = time.monotonic() + seconds
-        while (left := end - time.monotonic()) > 0:
-            if time.monotonic() >= self.cpu_settle_until:
-                time.sleep(left)
-                return
-            time.sleep(min(left, CPU_TEMP_SETTLE_STEP))
-            with self.lock:
-                self.apply_cpu_temp(self.cfg.mode(self.cfg["mode"]).get("cpu_temp"))
+        """The feedback controller runs at most once per second."""
+        time.sleep(seconds)
 
     def tick(self) -> None:
         ac = hw.ac_online()
@@ -354,6 +405,11 @@ class Daemon:
             if ac != self.last_ac:
                 self.last_ac = ac
                 log(f"power source: {'AC' if ac else 'battery'}")
+                if ac and self.cfg["charge_limit"] is not None:
+                    try:
+                        hw.set_charge_limit(self.cfg["charge_limit"])
+                    except (OSError, ValueError) as e:
+                        log(f"could not reapply charge_limit on AC: {e}")
                 self.apply_mode(self.cfg[self.source_key(ac)])
                 if self.cfg["gpu_target"] == gpu.OPTIMIZED:
                     self.apply_gpu_target(gpu.OPTIMIZED)
@@ -361,8 +417,6 @@ class Daemon:
                 return
 
             self.ticks += 1
-            if self.ticks % CONFLICT_CHECK_TICKS == 1:
-                self.check_smu_conflict()
             if self.ticks % ECO_RETRY_TICKS == 0 and self.eco_pending():
                 try:
                     gpu.set_eco(True)
@@ -378,7 +432,7 @@ class Daemon:
                 mode_id = cur if self.cfg.mode(cur)["base"] == base else base
                 log(f"profile changed externally: {profile}")
                 self.cfg[self.source_key()] = mode_id
-                self.apply_mode(mode_id, write_profile=False)
+                self.apply_mode(mode_id, write_profile=False, external_profile=True)
                 self.cfg.save()
 
             self.maintain_cpu_temp()
@@ -392,7 +446,7 @@ class Daemon:
         if self.temp_peak is None or t > self.temp_peak["max"]:
             self.temp_peak = {"max": t, "at": time.strftime("%d.%m %H:%M:%S"), "mode": m["name"]}
         limit = m.get("cpu_temp")
-        lowered = limit is not None and ryzen.MIN_TEMP <= limit < ryzen.DEFAULT_TEMP
+        lowered = limit is not None and thermal.MIN_TEMP <= limit < thermal.DEFAULT_TEMP
         if self.hot is None:
             threshold = min(HOT_TEMP, limit + HOT_OVER_LIMIT) if lowered else HOT_TEMP
             if t >= threshold:
@@ -440,14 +494,8 @@ class Daemon:
             "aura_device": aura.find_device() is not None,
             "attrs": attrs,
             "custom_power": self.custom_power,
-            "cpu_temp": ({"min": ryzen.MIN_TEMP, "max": ryzen.DEFAULT_TEMP, "applied": self.cpu.applied,
-                          "reported_limit": self.cpu.reported_limit,
-                          "readback_verified": self.cpu.readback_verified,
-                          "readback_error": self.cpu.readback_error,
-                          "control": "readback" if self.cpu.readback_verified else "adaptive",
-                          "conflict": self.smu_conflict,
-                          "cpu": self.cpu.family.name, "smu": self.cpu.version_str()}
-                         if self.cpu.supported() else None),
+            "cpu_boost_supported": hw.cpu_boost_supported(),
+            "cpu_temp": (self.cpu.status() if self.cpu.supported() or self.cpu.error else None),
             "temp_peak": self.temp_peak,
             "notice": self.notice,
         }
@@ -474,8 +522,11 @@ class Daemon:
                 mode_id = int(req["mode"])
                 entry = c.mode(mode_id)
                 t = req["data"].get("cpu_temp")
-                if t is not None and not ryzen.MIN_TEMP <= int(t) <= ryzen.DEFAULT_TEMP:
-                    raise ValueError(f"CPU temperature limit must be {ryzen.MIN_TEMP}..{ryzen.DEFAULT_TEMP}")
+                if t is not None and (type(t) is not int or not thermal.MIN_TEMP <= t <= thermal.DEFAULT_TEMP):
+                    raise ValueError(f"CPU temperature limit must be {thermal.MIN_TEMP}..{thermal.DEFAULT_TEMP}")
+                b = req["data"].get("cpu_boost")
+                if b is not None and b not in hw.CPU_BOOST_MODES:
+                    raise ValueError(f"Invalid CPU boost mode: {b}")
                 changed = set()
                 for k, v in req["data"].items():
                     if k in entry and k != "base":
@@ -485,12 +536,24 @@ class Daemon:
                         entry[k] = value
                 c.save()
                 if mode_id == c["mode"]:
-                    # The UI also sends the unchanged fields. When only the temperature
+                    # The UI also sends the unchanged fields. When only temperature or boost
                     # was edited, do not reset the profile and disturb the fan/power settings.
-                    if changed - {"cpu_temp", "name"}:
+                    if changed - {"cpu_temp", "cpu_boost", "name"}:
                         self.apply_mode(mode_id)
-                    elif "cpu_temp" in changed or not changed:
-                        self.apply_cpu_temp(entry.get("cpu_temp"))
+                    else:
+                        if "cpu_boost" in changed and hw.cpu_boost_supported():
+                            try:
+                                hw.set_cpu_boost(entry.get("cpu_boost"), entry["base"])
+                            except (OSError, ValueError) as e:
+                                self.set_notice(f"Could not write CPU boost: {e}")
+                        if "cpu_temp" in changed or not changed:
+                            target = entry.get("cpu_temp")
+                            enabled = target is not None and target < thermal.DEFAULT_TEMP
+                            if enabled != (self.cpu.target is not None):
+                                # Enabling/disabling may require or release a factory fan curve.
+                                self.apply_mode(mode_id)
+                            else:
+                                self.apply_cpu_temp(target)
                 return {"mode": entry}
             if cmd == "default_curve":
                 fan = req["fan"]
@@ -520,6 +583,8 @@ class Daemon:
                 c["gpu_target"] = req["target"]
                 c.save()
                 return self.apply_gpu_target(req["target"], explicit=True)
+            if cmd == "set_gpu_backend":
+                return self.set_gpu_backend(req.get("backend"))
             if cmd == "set_charge_limit":
                 hw.set_charge_limit(int(req["value"]))
                 c["charge_limit"] = int(req["value"])
@@ -592,7 +657,16 @@ def main() -> None:
 
     threading.Thread(target=d.watch, daemon=True).start()
     sd_notify("READY=1")
-    server.serve_forever()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        server.serve_forever()
+    finally:
+        with d.lock:
+            d.cpu.stop()
+            d.report_thermal_error()
+        if gpu.gpu_engine._instance is not None:
+            gpu.gpu_engine._instance.close()
+        server.server_close()
 
 
 def sd_notify(msg: str) -> None:

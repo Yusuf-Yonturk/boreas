@@ -27,9 +27,10 @@ Deutsch, 日本語.
 | Silent / Balanced / Turbo | ✓ | `platform_profile` |
 | Custom modes (Custom 1, 2…) | ✓ | bound to a built-in mode on the same base |
 | Per-mode fan curves | ✓ (CPU, GPU, mid) | `asus_custom_fan_curve` hwmon |
+| CPU Boost mode (per mode) | ✓ (`Default` / `Disabled` / `Efficient` / `Balanced` / `Aggressive` / `Max`) | `cpufreq/boost`, `energy_performance_preference` |
 | Power limits (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / temp target | ✓ | asus-armoury `nv_*` |
-| CPU temperature limit (75-95 °C, per mode) | ✓ (Dragon Range, Fire Range) | Ryzen SMU tctl; kernel lockdown must be off |
+| CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury |
 | Auto mode on battery / AC | ✓ | `power_supply` |
 | GPU: Eco / Standard / Optimized / Ultimate | ✓ | `dgpu_disable`, `gpu_mux_mode` |
 | Display 60 Hz / max / Auto | ✓ (KDE) | `kscreen-doctor` |
@@ -107,40 +108,42 @@ sudo ./install.sh
 Then press **Quit** in the window and start `boreas` again. The check can be turned off from the tray
 menu (**Check for updates**) or with `BOREAS_NO_UPDATE_CHECK=1`.
 
-## CPU temperature limit
+## CPU temperature target
 
-Only the limit of the active mode is maintained. On Dragon Range the MP1 0x23 query is tried
-([ZenStates-Core sources](https://github.com/irusanov/ZenStates-Core/blob/869b7e82572337e5a673e92230edc92bddf0e44b/Hardware/Smu/Commands/GetSystemConfiguredPowerLimit.cs)).
-The readback is trusted only after it has been seen to follow a write from the old value to the new
-target, because some firmware reports the fixed BIOS limit. Once verified, the service queries
-about once a second and rewrites only if the limit changed.
+Boreas now approaches the selected 75-95 °C target by adjusting ASUS CPU power
+limits through `asus-armoury` sysfs. It does not instantiate the old raw SMU
+backend or fall back to PCI access. No BIOS-version allowlist or custom kernel
+module is needed for this path. Support requires a CPU sensor and valid current,
+minimum and maximum values for the exposed CPU power controls, including SPL.
+This is capability detection, not a promise of support for every ASUS laptop.
 
-If the readback cannot be verified or fails, the limit is re-sent based on temperature: every 3 s
-when less than 2 °C above target, 2 s at 2-4 °C, 1 s at 5 °C or more; 3 s if the sensor can't be
-read. This is not a guarantee that the temperature is pinned. Choosing "default" stops the writes
-and restores 96 °C.
+The controller lowers SPL and available SPPT/FPPT at most once per second near
+the target. After five cool seconds it recovers 1 W, never exceeding the values
+captured after applying the selected profile and optional user power limits.
+On models requiring custom fans, the profile's factory curves are enabled unless
+the user selected custom curves. Choosing Default stops feedback and restores
+power values still owned by the controller. Mode changes and resume reconfigure it.
+An external profile change discards the previous profile's saved power values.
 
-`cpu_temp` fields in `boreasctl status`:
-- `applied`: last write accepted by the SMU (not a value read back from hardware).
-- `reported_limit`: value reported by the last query; `null` without a valid reading.
-- `readback_verified`: has the value been seen following a limit change?
-- `control`: `readback` (verified) or `adaptive` (3/2/1 s refresh).
-- `readback_error`: query error. Without query support, temperature writes still work.
-- `conflict`: pids of ryzenadj processes writing to the SMU at the same time (scanned every ~30 s).
+A missing sensor, rejected write, readback mismatch or external power change
+stops feedback and reports an error; there is no automatic retry or SMU fallback.
+Already lowered caps remain until Default or an explicit mode reapply. Do not run
+another power tuning service concurrently. Sysfs readback can be cached by the
+driver: it confirms the requested setting, not actual physical enforcement.
 
-`temp_peak` in `status` gives the highest CPU temperature since the service started (with time and
-mode). When the CPU goes above 95 °C, or 5 °C above a lowered limit, start and end lines are
-logged: `journalctl -u boreasd | grep "high temperature"`.
+`boreasctl cputemp 85` sets the active mode's target; `cputemp default` disables it.
+`cpu_temp` status reports `control: power-feedback`, `target`, `state`, `error`,
+`ceilings_w`, `requested_w`, and `hard_limit: false`. `applied` is null because no
+hardware temperature limit was programmed. The existing saved targets are reused.
+A previous SMU setting is not reset by this backend; the normal firmware policy
+or reboot may be needed to clear an old setting.
 
-Writing a profile on mode change resets the firmware temperature limit, so the limit is sent right
-after the profile (before fan/power writes) and once more at the end. On the G713PV the firmware
-resets it again ~3-4 s later, so for 10 s after a mode change the limit is rewritten every 0.25 s.
-
-**Do not use together with ryzenadj.** Both use the same SMU mailbox without an inter-process
-lock: they overwrite each other's limit and interleaved writes can send a wrong command to the SMU.
-Disable any service running a `ryzenadj --tctl-temp` loop; Boreas shows a warning when it sees one.
-
-The readback method has not yet been verified live on the 7845HX; it is not enabled for Fire Range.
+**This is a software target, not a hard temperature ceiling.** Boost, firmware,
+shared GPU cooling and service delays can cause overshoots. At minimum power the
+state becomes `limited` if temperature is still above target. An experimental
+opt-in kernel SMU bridge (`smu-bridge`) is restricted to the documented G713PV /
+G713PV.336 configuration; it is not a general ASUS SMU backend.
+See [controller details](docs/cpu-temperature.md).
 
 ## GPU modes
 
@@ -152,6 +155,33 @@ The readback method has not yet been verified live on the 7845HX; it is not enab
   service retries every 15 s and applies it before the display manager on boot. On KDE Plasma
   (Wayland) KWin keeps the dGPU open for the whole session, so there Eco is applied on the next
   boot. If the NVIDIA module is never released, it stops retrying until the next reboot.
+
+## Experimental embedded GPU engine
+
+An opt-in eBPF backend adapted from Cardwire is included (`boreas-gpu-engine`).
+`sudo ./install.sh` installs a locally built `gpu-engine/target/release/boreas-gpu-engine`
+if present, or falls back to the bundled prebuilt x86_64 helper binary (remaining disabled
+by default). You can toggle **eBPF engine (no-reboot Eco) · Experimental** inside the **GPU mode**
+card in the UI, or from the CLI:
+
+```bash
+boreasctl gpu-backend ebpf       # enable eBPF GPU blocking
+boreasctl gpu-backend firmware   # return to default ASUS firmware backend
+```
+
+Install a patched helper at `/etc/boreas/boreas-gpu-engine` to preserve it across
+upgrades; Boreas prefers this path and checks protocol compatibility. The installer
+also preserves checksum-detected edits to its managed helper; unknown legacy
+copies are backed up without auto-activation. Remove an old systemd backend
+environment override before using the switch. Returning to firmware selects
+**Standard**, preserving Ultimate and pending MUX requests.
+
+Eco policy alone does not prove the GPU is asleep. In the 2026-11-02 G713PV test on
+Linux `7.3.0-5-cachyos`, access blocking/restoration passed, but the GPU remained
+`D0 / active` after 60 seconds and RTD3 reported `Not supported`. This is not a
+power-saving or general hardware compatibility claim.
+
+See [build instructions, limitations and validation checklist](docs/gpu-engine.md).
 
 ## Development
 
@@ -172,6 +202,10 @@ you own an ASUS laptop other than the ROG Strix G713PV. See [CONTRIBUTING.md](CO
 workflow, tests and how to add a language.
 
 ## Acknowledgements
+
+- [Cardwire](https://github.com/OpenGamingCollective/cardwire), by luytan and contributors,
+  for the GPL-3.0 GPU access-control code used in the experimental Rust engine.
+  See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 - Serge and the [G-Helper](https://github.com/seerge/g-helper) community, for their open-source work on
   ASUS hardware.

@@ -3,3 +3,9 @@ __pycache__/
 # output of the measurement tools
 tools/*.log
 tools/*.txt
+
+# Rust GPU engine build output
+gpu-engine/target/
+
+# Local test outputs
+outputs/

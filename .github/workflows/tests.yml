@@ -28,3 +28,26 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
+
+  gpu-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchains
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup toolchain install nightly-2026-08-12 --profile minimal --component rust-src
+      - name: Pinned BPF linker (includes LLVM)
+        run: |
+          curl -fL --retry 3 -o /tmp/bpf-linker.tar.zst https://github.com/aya-rs/bpf-linker/releases/download/v0.12.0/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          echo '6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679  /tmp/bpf-linker.tar.zst' | sha256sum -c -
+          tar --zstd -xf /tmp/bpf-linker.tar.zst -C "$HOME/.cargo/bin"
+      - name: Rust tests and release build
+        run: |
+          cargo +1.95.0 test --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
+          cargo +1.95.0 build --release --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
+      - name: Built and bundled protocol checks (no GPU access)
+        run: |
+          for helper in gpu-engine/target/release/boreas-gpu-engine data/bin/boreas-gpu-engine; do
+            "$helper" --protocol-info | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["protocol_version"] == 1; assert {"status","eco","standard"} <= set(d["capabilities"])'
+          done

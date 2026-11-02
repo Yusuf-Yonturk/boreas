@@ -14,13 +14,12 @@ class DaemonError(Exception):
 
 
 def call(cmd: str, timeout: float = 30, **kw) -> dict:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    try:
-        s.connect(SOCKET)
-    except OSError as e:
-        raise DaemonError(f"Could not connect to boreasd ({e}). Is the service running?") from e
-    with s:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        try:
+            s.connect(SOCKET)
+        except OSError as e:
+            raise DaemonError(f"Could not connect to boreasd ({e}). Is the service running?") from e
         s.sendall((json.dumps({"cmd": cmd, **kw}) + "\n").encode())
         buf = b""
         while not buf.endswith(b"\n"):
@@ -38,9 +37,10 @@ USAGE = """usage: boreasctl COMMAND
   status                  status (JSON)
   mode silent|balanced|turbo|next|prev|<id>
   gpu eco|standard|optimized|ultimate
+  gpu-backend firmware|ebpf
   charge 40..100          charge limit
   kbd 0..3                keyboard backlight
-  cputemp 75..95|default  CPU temperature limit of the active mode
+  cputemp 75..95|default  CPU temperature target of the active mode
   reapply [--boot]        re-apply all settings
 """
 
@@ -67,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("The GPU mode will take effect after a reboot.")
             if r.get("deferred"):
                 print("dGPU in use: " + ", ".join(r["busy"]))
+        elif a[0] == "gpu-backend" and len(a) > 1:
+            r = call("set_gpu_backend", backend=a[1].lower(), timeout=90)
+            print(f"GPU backend: {r.get('backend')}")
         elif a[0] == "charge" and len(a) > 1:
             call("set_charge_limit", value=int(a[1]))
         elif a[0] == "kbd" and len(a) > 1:

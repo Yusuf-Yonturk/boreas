@@ -31,7 +31,8 @@ def _mode_entry(base: int, name: str) -> dict:
         "power_apply": False,
         "ppt": {},
         "nv": {},
-        "cpu_temp": None,  # °C; None = firmware default
+        "cpu_temp": None,  # °C software target; None = no feedback power control
+        "cpu_boost": "default",  # default | disabled | efficient | balanced | aggressive | max
     }
 
 
@@ -41,6 +42,7 @@ DEFAULT = {
     "mode_battery": hw.SILENT,
     "modes": {str(b): _mode_entry(b, n) for b, n in BUILTIN.items()},
     "gpu_target": None,
+    "gpu_backend": "firmware",
     "charge_limit": None,
     "kbd_brightness": None,
     "aura": None,

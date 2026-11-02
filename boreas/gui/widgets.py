@@ -157,6 +157,9 @@ class Segmented(QFrame):
         if self.flow:
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             self.layout().addWidget(b)
+        elif stretch == 0:
+            b.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+            self.layout().addWidget(b)
         else:
             b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)  # width comes only from the stretch factor
             self.layout().addWidget(b, stretch)

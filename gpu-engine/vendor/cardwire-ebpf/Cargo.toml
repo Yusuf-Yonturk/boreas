@@ -1,0 +1,21 @@
+[package]
+name = "cardwire-ebpf"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+aya-ebpf.workspace = true
+aya-log-ebpf.workspace = true
+
+[[bin]]
+name = "cardwire-ebpf"
+path = "src/main.rs"
+test = false
+doc = false
+
+[build-dependencies]
+which.workspace = true

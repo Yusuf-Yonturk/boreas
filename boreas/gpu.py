@@ -19,7 +19,7 @@ import re
 import subprocess
 import time
 
-from . import hw
+from . import hw, gpu_engine
 
 ECO, STANDARD, ULTIMATE, OPTIMIZED = "eco", "standard", "ultimate", "optimized"
 NV_MODULES = ("nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nvidia")
@@ -49,8 +49,17 @@ def state() -> dict:
     eco = hw.get_attr("dgpu_disable")
     mux_v = mux.current if mux else None
     eco_v = eco.current if eco else None
+    engine = None
+    engine_error = None
+    if gpu_engine.selected() and mux_v != 0:
+        try:
+            engine = gpu_engine.get().request("status")
+        except OSError as exc:
+            engine_error = str(exc)
     if mux_v == 0:
         mode = ULTIMATE
+    elif gpu_engine.selected():
+        mode = engine["policy"] if engine else "unknown"
     elif eco_v == 1:
         mode = ECO
     else:
@@ -65,8 +74,12 @@ def state() -> dict:
         "dgpu_disable": eco_v,
         "has_mux": mux is not None,
         "has_eco": eco is not None,
+        "ebpf_available": os.path.isfile(gpu_engine.helper_path()),
+        "backend": "ebpf" if gpu_engine.selected() else "firmware",
+        "backend_error": engine_error,
+        "engine": engine,
         "pending_reboot": bool(pending),
-        "dgpu_runtime": dgpu_runtime_status(),
+        "dgpu_runtime": engine.get("runtime_status") if engine else (None if gpu_engine.selected() else dgpu_runtime_status()),
     }
 
 
@@ -247,6 +260,9 @@ def _restore_bridges(saved: dict[str, str]) -> None:
 
 
 def set_eco(enabled: bool) -> None:
+    if gpu_engine.selected():
+        gpu_engine.get().set_eco(enabled)
+        return
     cur = hw.get_attr("dgpu_disable")
     if cur is None:
         raise ValueError("Eco mode is not supported")

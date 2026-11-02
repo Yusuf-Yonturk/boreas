@@ -7,6 +7,21 @@ Yeni dil eklemek: ORDER'a kodu, her satıra çeviriyi, i18n.LANGUAGES'a adı ekl
 ORDER = ("tr", "zh", "hi", "es", "ar", "fr", "pt", "ru", "de", "ja")
 
 _T = {
+    "CPU temperature target": (
+        "CPU sıcaklık hedefi", "CPU 温度目标", "CPU तापमान लक्ष्य", "Temperatura objetivo de CPU",
+        "درجة حرارة المعالج المستهدفة", "Température cible du CPU", "Temperatura alvo da CPU",
+        "Целевая температура CPU", "CPU-Zieltemperatur", "CPU目標温度"),
+    "Adjusts CPU power to approach the target; brief overshoots are possible.": (
+        "Hedefe yaklaşmak için CPU gücünü ayarlar; kısa süreli aşımlar olabilir.",
+        "调整 CPU 功率以接近目标；可能短暂超出。",
+        "लक्ष्य के करीब पहुँचने के लिए CPU पावर बदलता है; तापमान थोड़ी देर अधिक हो सकता है।",
+        "Ajusta la potencia de CPU para acercarse al objetivo; puede superarlo brevemente.",
+        "يضبط طاقة المعالج للاقتراب من الهدف؛ قد تحدث تجاوزات قصيرة.",
+        "Ajuste la puissance du CPU vers la cible ; de brefs dépassements sont possibles.",
+        "Ajusta a potência da CPU para se aproximar do alvo; pode ultrapassá-lo brevemente.",
+        "Регулирует мощность CPU для приближения к цели; возможны краткие превышения.",
+        "Passt die CPU-Leistung an den Zielwert an; kurze Überschreitungen sind möglich.",
+        "目標に近づくようCPU電力を調整します。一時的に超える場合があります。"),
     # ---- ana pencere ----
     "Device settings and performance": (
         "Cihaz ayarları ve performans", "设备设置与性能", "डिवाइस सेटिंग्स और परफ़ॉर्मेंस", "Ajustes del equipo y rendimiento",
@@ -80,6 +95,14 @@ _T = {
         "dGPU قيد الاستخدام، سيُطبَّق عند الإقلاع التالي", "dGPU utilisé, sera appliqué au prochain démarrage",
         "dGPU em uso, será aplicado na próxima inicialização", "dGPU занят, применится при следующей загрузке",
         "dGPU in Benutzung, wird beim nächsten Start angewendet", "dGPU 使用中、次回起動時に適用されます"),
+    "Experimental": ("Deneysel", "实验性", "प्रयोगात्मक", "Experimental", "تجريبي",
+                     "Expérimental", "Experimental", "Экспериментально", "Experimentell", "実験的"),
+    "eBPF engine (no-reboot Eco)": (
+        "eBPF motoru (yeniden başlatmadan Eco)", "eBPF 引擎（免重启节能）",
+        "eBPF इंजन (बिना रीस्टार्ट Eco)", "Motor eBPF (Eco sin reiniciar)",
+        "محرك eBPF (وضع Eco بدون إعادة تشغيل)", "Moteur eBPF (Éco sans redémarrage)",
+        "Motor eBPF (Eco sem reiniciar)", "Движок eBPF (Эко без перезагрузки)",
+        "eBPF-Engine (Eco ohne Neustart)", "eBPF エンジン（再起動なし Eco）"),
     "Built-in display": ("Dahili ekran", "内置屏幕", "बिल्ट-इन डिस्प्ले", "Pantalla integrada", "الشاشة المدمجة",
                          "Écran intégré", "Tela integrada", "Встроенный экран", "Internes Display", "内蔵ディスプレイ"),
     "Refresh rate": ("Yenileme hızı", "刷新率", "रिफ़्रेश रेट", "Frecuencia de actualización", "معدل التحديث",
@@ -295,6 +318,16 @@ _T = {
     "CPU temperature limit": ("CPU sıcaklık limiti", "CPU 温度上限", "CPU तापमान लिमिट", "Límite de temperatura de CPU",
                               "حد حرارة CPU", "Limite de température CPU", "Limite de temperatura da CPU",
                               "Лимит температуры CPU", "CPU-Temperaturgrenze", "CPU 温度上限"),
+    "CPU Boost": ("CPU Boost", "CPU 睿频", "CPU बूस्ट", "CPU Boost", "تعزيز CPU", "CPU Boost", "CPU Boost",
+                  "Ускорение CPU", "CPU-Boost", "CPU ブースト"),
+    "Disabled": ("Kapalı", "禁用", "अक्षम", "Desactivado", "معطّل", "Désactivé", "Desativado",
+                 "Отключено", "Deaktiviert", "無効"),
+    "Efficient": ("Verimli", "高效", "कुशल", "Eficiente", "كفؤ", "Efficace", "Eficiente",
+                  "Эффективный", "Effizient", "効率優先"),
+    "Aggressive": ("Agresif", "激进", "आक्रामक", "Agresivo", "عدواني", "Agressif", "Agressivo",
+                   "Агрессивный", "Aggressiv", "アグレッシブ"),
+    "Max": ("Maks", "最大", "अधिकतम", "Máx", "الأقصى", "Max", "Máx",
+            "Макс", "Max", "最大"),
     "Default": ("Varsayılan", "默认", "डिफ़ॉल्ट", "Predeterminado", "افتراضي", "Par défaut", "Padrão", "По умолчанию",
                 "Standard", "既定"),
     "Apply": ("Uygula", "应用", "लागू करें", "Aplicar", "تطبيق", "Appliquer", "Aplicar", "Применить", "Anwenden", "適用"),
@@ -336,6 +369,12 @@ _T = {
         "Impossible d'appliquer la limite de température CPU : {error}", "Não foi possível aplicar o limite de temperatura da CPU: {error}",
         "Не удалось применить лимит температуры CPU: {error}", "CPU-Temperaturgrenze konnte nicht angewendet werden: {error}",
         "CPU 温度上限を適用できませんでした: {error}"),
+    "Backend rollback failed: {error}": (
+        "Önceki GPU yöntemine dönülemedi: {error}", "无法恢复 GPU 后端：{error}",
+        "GPU बैकएंड बहाल नहीं हुआ: {error}", "No se pudo restaurar el motor GPU: {error}",
+        "تعذرت استعادة محرك GPU: {error}", "Impossible de restaurer le moteur GPU : {error}",
+        "Não foi possível restaurar o motor GPU: {error}", "Не удалось восстановить GPU: {error}",
+        "GPU-Backend konnte nicht wiederhergestellt werden: {error}", "GPU バックエンドを復元できません: {error}"),
     "Could not change the GPU mode: {error}": (
         "GPU modu değiştirilemedi: {error}", "无法切换 GPU 模式：{error}", "GPU मोड नहीं बदला जा सका: {error}",
         "No se pudo cambiar el modo de GPU: {error}", "تعذّر تغيير وضع GPU: {error}",

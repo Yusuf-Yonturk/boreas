@@ -4,6 +4,12 @@ set -e
 D="${DESTDIR:-}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
+# Fail before modifying files when root is required.
+if [ -z "$D" ] && [ "$(id -u)" != 0 ]; then
+    echo "Run as root: sudo ./install.sh" >&2
+    exit 1
+fi
+
 # clear the code folder so modules left over from an older version do not linger
 rm -rf "$D/usr/lib/boreas/boreas"
 install -d "$D/usr/lib/boreas/boreas/gui"
@@ -20,6 +26,39 @@ install -Dm644 "$SRC/data/boreas.svg" "$D/usr/share/icons/hicolor/scalable/apps/
 for s in 16 22 24; do
     install -Dm644 "$SRC/data/boreas-small.svg" "$D/usr/share/icons/hicolor/${s}x${s}/apps/boreas.svg"
 done
+
+# The Rust helper is optional and installing it never selects eBPF.
+helper_src=""
+if [ -f "$SRC/gpu-engine/target/release/boreas-gpu-engine" ]; then
+    helper_src="$SRC/gpu-engine/target/release/boreas-gpu-engine"
+elif [ -f "$SRC/data/bin/boreas-gpu-engine" ]; then
+    helper_src="$SRC/data/bin/boreas-gpu-engine"
+fi
+if [ -n "$helper_src" ]; then
+    helper_dest="$D/usr/lib/boreas/boreas-gpu-engine"
+    helper_stamp="$helper_dest.sha256"
+    local_helper="$D/etc/boreas/boreas-gpu-engine"
+    if [ -f "$helper_dest" ] && ! cmp -s "$helper_src" "$helper_dest"; then
+        existing_hash=$(sha256sum "$helper_dest" | cut -d' ' -f1)
+        recorded_hash=$(cat "$helper_stamp" 2>/dev/null || true)
+        if [ "$existing_hash" != "$recorded_hash" ]; then
+            # A checksum identifies edits to managed files on subsequent upgrades.
+            # Legacy files without a checksum are preserved but not auto-activated:
+            # they may be stock helpers predating protocol negotiation.
+            if [ -n "$recorded_hash" ] && [ ! -e "$local_helper" ] && [ ! -L "$local_helper" ]; then
+                preserve="$local_helper"
+            else
+                preserve="$D/etc/boreas/preserved-gpu-engines/$existing_hash"
+            fi
+            install -Dm755 "$helper_dest" "$preserve"
+            echo "Preserved existing GPU engine: $preserve"
+        fi
+    fi
+    install -m755 "$helper_src" "$helper_dest"
+    sha256sum "$helper_dest" | cut -d' ' -f1 > "$helper_stamp"
+fi
+install -Dm644 "$SRC/THIRD_PARTY_NOTICES.md" "$D/usr/share/doc/boreas/THIRD_PARTY_NOTICES.md"
+install -Dm644 "$SRC/gpu-engine/vendor/LICENSE.cardwire" "$D/usr/share/doc/boreas/LICENSE.cardwire"
 
 [ "$1" = "--files-only" ] && exit 0
 

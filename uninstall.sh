@@ -2,7 +2,7 @@
 # Uninstalls Boreas and brings asusd / supergfxd back. Service settings stay in /etc/boreas.
 set -e
 systemctl disable --now boreasd.service 2>/dev/null || true
-rm -rf /usr/lib/boreas
+rm -rf /usr/lib/boreas /usr/share/doc/boreas
 rm -f /usr/bin/boreas /usr/bin/boreasd /usr/bin/boreasctl \
       /usr/lib/systemd/system/boreasd.service /usr/lib/systemd/system-sleep/boreas \
       /usr/share/applications/boreas.desktop /usr/share/icons/hicolor/scalable/apps/boreas.svg \

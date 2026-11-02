@@ -258,6 +258,12 @@ class MainWindow(QWidget):
         lay.addWidget(row(_("Mode"), self.gpu_seg, height=SEG_ROW))
         self.gpu_label = hint()
         lay.addWidget(self.gpu_label)
+        self.gpu_ebpf_div = hline()
+        lay.addWidget(self.gpu_ebpf_div)
+        self.gpu_ebpf = Switch()
+        self.gpu_ebpf.clicked.connect(self.set_gpu_backend)
+        self.gpu_ebpf_row = row(_("eBPF engine (no-reboot Eco)") + " · " + _("Experimental"), self.gpu_ebpf, height=56)
+        lay.addWidget(self.gpu_ebpf_row)
         self.gpu_card = card_
         cl.addWidget(card_)
 
@@ -675,8 +681,23 @@ class MainWindow(QWidget):
                 text += " · " + _("waiting for a reboot")
             elif target == "eco" and active != "eco":
                 text += " · " + _("dGPU in use, will be applied on the next boot")
+            if g.get("backend") == "ebpf":
+                engine = g.get("engine") or {}
+                text = g.get("backend_error") or ("eBPF · " + str(engine.get("policy", "?"))
+                    + " · " + str(engine.get("power_state") or "?")
+                    + " / " + str(engine.get("runtime_status") or "?"))
+                rtd3 = engine.get("rtd3_status")
+                if rtd3 and any(word in rtd3.lower() for word in ("disabled", "not supported")):
+                    text += " · RTD3: " + rtd3
+                users = engine.get("users") or []
+                if users:
+                    text += " · " + ", ".join(users)
             self.gpu_label.setText(text)
             self.gpu_info.setText(f"GPU {t['gpu']}°" if "gpu" in t else (g.get("dgpu_runtime") or ""))
+            ebpf_avail = bool(g.get("ebpf_available") or g.get("backend") == "ebpf")
+            self.gpu_ebpf_div.setVisible(ebpf_avail)
+            self.gpu_ebpf_row.setVisible(ebpf_avail)
+            self.gpu_ebpf.setChecked(self._held("gpu_backend", g.get("backend")) == "ebpf")
 
         od = s["attrs"].get("panel_overdrive")
         self.overdrive_row.setVisible(od is not None)
@@ -838,6 +859,10 @@ class MainWindow(QWidget):
                     _("Eco will be applied automatically when the dGPU is free; since KWin holds the dGPU, "
                       "this usually happens at reboot."))
         self.action("set_gpu", after=after, hold=("gpu", target), target=target)
+
+    def set_gpu_backend(self):
+        backend = "ebpf" if self.gpu_ebpf.isChecked() else "firmware"
+        self.action("set_gpu_backend", hold=("gpu_backend", backend), backend=backend)
 
     def set_overdrive(self):
         self.action("set_overdrive", value=1 if self.overdrive.isChecked() else 0)

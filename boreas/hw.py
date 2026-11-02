@@ -153,6 +153,12 @@ def get_profile_choices() -> list[str]:
 
 
 def set_profile(name: str) -> None:
+    # ASUS kernels use either quiet or low-power for the same Silent policy.
+    # Choose the alias only when the kernel explicitly advertises it.
+    if name == "quiet":
+        choices = get_profile_choices()
+        if "quiet" not in choices and "low-power" in choices:
+            name = "low-power"
     write(PLATFORM_PROFILE, name)
 
 
@@ -245,3 +251,69 @@ def kbd_brightness() -> tuple[int | None, int | None]:
 def set_kbd_brightness(value: int) -> None:
     _, mx = kbd_brightness()
     write(KBD_LED + "/brightness", max(0, min(mx or 3, int(value))))
+
+
+# ---- CPU boost & energy performance preference (EPP) --------------------------
+
+CPU_BOOST_PATH = "/sys/devices/system/cpu/cpufreq/boost"
+CPU_BOOST_MODES = ("default", "disabled", "efficient", "balanced", "aggressive", "max")
+EPP_BY_BOOST_MODE = {
+    "efficient": "power",
+    "balanced": "balance_power",
+    "aggressive": "balance_performance",
+    "max": "performance",
+}
+DEFAULT_EPP_BY_BASE = {
+    SILENT: "power",
+    BALANCED: "balance_performance",
+    TURBO: "performance",
+}
+
+
+def cpu_boost_paths() -> list[str]:
+    """Global cpufreq/boost, or the per-policy boost files amd-pstate exposes instead."""
+    if exists(CPU_BOOST_PATH):
+        return [CPU_BOOST_PATH]
+    return sorted(f[len(ROOT):] for f in glob.glob(p("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/boost")))
+
+
+def cpu_boost_supported() -> bool:
+    return bool(cpu_boost_paths()) or bool(glob.glob(p("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference")))
+
+
+def set_cpu_boost(mode: str | None, base: int = BALANCED) -> None:
+    """Apply CPU boost and EPP policy ('default', 'disabled', 'efficient', 'balanced', 'aggressive', 'max')."""
+    mode = (mode or "default").lower()
+    if mode not in CPU_BOOST_MODES:
+        raise ValueError(f"Invalid CPU boost mode: {mode}")
+    boost_on = 0 if mode == "disabled" else 1
+    errors = []
+    for rel in cpu_boost_paths():
+        try:
+            write(rel, boost_on)
+            if read_int(rel) != boost_on:
+                raise OSError("boost readback mismatch")
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+    if mode == "disabled" and not cpu_boost_paths():
+        # EPP alone cannot switch boost off; say so instead of pretending.
+        errors.append("cpufreq/boost is not available on this system, only EPP was applied")
+    epp = "power" if mode == "disabled" else EPP_BY_BOOST_MODE.get(mode, DEFAULT_EPP_BY_BASE.get(base, "balance_performance"))
+    for epp_file in sorted(glob.glob(p("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference"))):
+        rel = epp_file[len(ROOT):]
+        avail_path = os.path.dirname(rel) + "/energy_performance_available_preferences"
+        avail = (read(avail_path) or "").split()
+        target_epp = epp
+        if avail and target_epp not in avail:
+            for fallback in ("balance_power", "balance_performance", "default", "performance", "power"):
+                if fallback in avail:
+                    target_epp = fallback
+                    break
+        try:
+            write(rel, target_epp)
+            if read(rel) != target_epp:
+                raise OSError("EPP readback mismatch")
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+    if errors:
+        raise OSError("; ".join(errors))

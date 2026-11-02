@@ -114,7 +114,7 @@ class TestNoLongDashes(unittest.TestCase):
         """The project never uses long dashes (U+2014, U+2013)."""
         bad = []
         for base, dirs, files in os.walk(ROOT):
-            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "target")]
             for name in files:
                 if name.endswith((".png", ".svg", ".pyc", ".log", ".txt")) or name == "LICENSE":
                     continue

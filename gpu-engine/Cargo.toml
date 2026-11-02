@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = ["engine", "vendor/cardwire-ebpf", "vendor/cardwire-ebpf-userspace", "vendor/cardwire-core"]
+default-members = ["engine"]
+
+[workspace.package]
+version = "0.13.0-alpha.1"
+authors = ["luytan <luytan@khora.me>"]
+repository = "https://github.com/OpenGamingCollective/cardwire"
+edition = "2024"
+rust-version = "1.95.0"
+license = "GPL-3.0"
+
+[workspace.dependencies]
+tokio = { version = "1.52.3", features = ["full"] }
+zbus = { version = "5.16.0", features = ["tokio", "option-as-array"] }
+clap = { version = "4.6.1", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+log = "0.4.32"
+thiserror = "2.0.18"
+clap_complete = "4.6.5"
+anyhow = "1.0.102"
+env_logger = "0.11"
+toml = "1.0.3"
+vulkano = "0.35.2"
+khronos-egl = { version = "6.0.0", features = ["dynamic", "1_5"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+libdrm_amdgpu_sys = { version = "0.9.0", default-features = false, features = [
+    "dynamic_loading",
+] }
+nvml-wrapper = "0.13.0"
+
+# EBPF
+aya = "0.14.0"
+aya-build = "0.2.0"
+aya-log = "0.3.0"
+aya-ebpf = "0.2.1"
+aya-log-ebpf = "0.2.0"
+which = "8.0.5"
+cargo_metadata = "0.23.1"
+
+
+serde_json = "1.0.150"
+tokio-stream = "0.1.18"
+xdg = "3.0.0"
+freedesktop-desktop-entry = "0.8.1"
+udev = { version = "^0.9.3", features = ["send", "sync"] }
+# don't use default-features to remove X11
+# cardwire doesn't support X11 and will never support it unless someone maintains it
+iced = { version = "0.14.0", default-features = false, features = [
+    "crisp",
+    "image",
+    "linux-theme-detection",
+    "svg",
+    "tokio",
+    "tiny-skia",
+    "wayland",
+    "web-colors",
+    "wgpu",
+] }
+iced_aw = "0.14.1"
+strum = { version = "0.28", features = ["derive"] }
+ksni = "0.3.6"
+chrono = "0.4.45"
+inotify = "0.11.4"
+
+[profile.dev]
+overflow-checks = true
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+lto = "fat"
+opt-level = 3
+strip = true
+# Before: 7.3M After: 5.0M

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSizePolicy,
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from ..fans import POINTS, fix_curve, safety_floor
@@ -178,7 +178,7 @@ class FansWindow(QWidget):
         mod_lb = QLabel(_("Mode"))
         mod_lb.setContentsMargins(0, 6, 0, 0)
         top.addWidget(mod_lb, 0, Qt.AlignTop)
-        self.mode_seg = Segmented(self._select_mode, width=0, flow=True)
+        self.mode_seg = Segmented(lambda m: self._select_mode(m, activate=True), width=0, flow=True)
         top.addWidget(self.mode_seg, 1, Qt.AlignTop)
         ml.addLayout(top)
         btns = QHBoxLayout()
@@ -229,6 +229,25 @@ class FansWindow(QWidget):
 
         # Power
         pc, pl, _info = card(_("Power"))
+        # CPU Boost (boost + EPP selector) at the top of the Power card, above SPL
+        self.cpu_boost_cb: QComboBox | None = None
+        if main.status.get("cpu_boost_supported", True):
+            cb = QComboBox()
+            cb.setFixedWidth(u(220))
+            cb.setCursor(Qt.PointingHandCursor)
+            for b_key, b_label in (
+                ("default", _("Default")),
+                ("disabled", _("Disabled")),
+                ("efficient", _("Efficient")),
+                ("balanced", _("Balanced")),
+                ("aggressive", _("Aggressive")),
+                ("max", _("Max")),
+            ):
+                cb.addItem(b_label, b_key)
+            cb.currentIndexChanged.connect(self._dirty)
+            self.cpu_boost_cb = cb
+            pl.addWidget(row(_("CPU Boost"), cb, height=56))
+            pl.addWidget(hline())
         self.sliders: dict[str, ValueSlider] = {}
         attrs = main.status.get("attrs", {})
         for name, label in {**PPT_LABELS, **NV_LABELS}.items():
@@ -239,19 +258,23 @@ class FansWindow(QWidget):
             s.slider.valueChanged.connect(self._dirty)
             self.sliders[name] = s
             pl.addWidget(s)
-        pl.addWidget(hline())
-        self.power_apply = Switch()
-        self.power_apply.toggled.connect(self._dirty)
-        pl.addWidget(row(_("Apply power limits"), self.power_apply, height=56))
-        # CPU temperature limit, independent of the power box; the top value = firmware default
+        # CPU temperature target, independent of the power box; top value disables feedback
         self.cpu_temp = None
         ct = main.status.get("cpu_temp")
         if ct:
             pl.addWidget(hline())
-            self.cpu_temp = ValueSlider(_("CPU temperature limit"), ct["min"], ct["max"], ct["max"], "°C",
+            self.cpu_temp = ValueSlider(_("CPU temperature target"), ct["min"], ct["max"], ct["max"], "°C",
                                         max_text=_("Default"))
             self.cpu_temp.slider.valueChanged.connect(self._dirty)
             pl.addWidget(self.cpu_temp)
+            hint = QLabel(_("Adjusts CPU power to approach the target; brief overshoots are possible."))
+            hint.setWordWrap(True)
+            hint.setObjectName("hint")
+            pl.addWidget(hint)
+        pl.addWidget(hline())
+        self.power_apply = Switch()
+        self.power_apply.toggled.connect(self._dirty)
+        pl.addWidget(row(_("Apply power limits"), self.power_apply, height=56))
         pl.addSpacing(uv(4))
         root.addWidget(pc)
 
@@ -304,7 +327,7 @@ class FansWindow(QWidget):
             self.mode_seg.add(m["id"], mode_name(m))
         self._select_mode(select if select in self.mode_names else next(iter(self.mode_names), None))
 
-    def _select_mode(self, mode_id):
+    def _select_mode(self, mode_id, activate: bool = False):
         if mode_id is None:
             return
         self.mode_id = mode_id
@@ -312,7 +335,15 @@ class FansWindow(QWidget):
         builtin = mode_id in (0, 1, 2)
         self.rename.setEnabled(not builtin)
         self.remove.setEnabled(not builtin)
-        run_async(lambda: self.main.call("get_mode", mode=mode_id), self._show_entry)
+        def fetch():
+            if activate and self.main.status.get("mode") != mode_id:
+                self.main.call("set_mode", mode=mode_id)
+            return self.main.call("get_mode", mode=mode_id)
+        def after(r):
+            self._show_entry(r)
+            if activate:
+                self.main.refresh()
+        run_async(fetch, after)
 
     def _show_entry(self, r):
         if isinstance(r, Exception):
@@ -329,6 +360,10 @@ class FansWindow(QWidget):
                 v = stored.get(name)
                 # without a saved value, do not keep the previous mode's value (back to the default)
                 s.slider.setValue(int(v if v is not None else self._fallback(name)))
+            if self.cpu_boost_cb is not None:
+                b_val = self.entry.get("cpu_boost") or "default"
+                idx = self.cpu_boost_cb.findData(b_val)
+                self.cpu_boost_cb.setCurrentIndex(idx if idx >= 0 else 0)
             if self.cpu_temp:
                 self.cpu_temp.slider.setValue(self.entry.get("cpu_temp") or self.cpu_temp.slider.maximum())
             for fan, ed in self.editors.items():
@@ -368,6 +403,8 @@ class FansWindow(QWidget):
             a = self.main.status.get("attrs", {}).get(name) or {}
             if a.get("default") is not None:
                 s.slider.setValue(a["default"])
+        if self.cpu_boost_cb is not None:
+            self.cpu_boost_cb.setCurrentIndex(0)
         if self.cpu_temp:
             self.cpu_temp.slider.setValue(self.cpu_temp.slider.maximum())
         self._set_status("Not saved")
@@ -399,6 +436,8 @@ class FansWindow(QWidget):
             "ppt": {n: s.slider.value() for n, s in self.sliders.items() if n in PPT_LABELS},
             "nv": {n: s.slider.value() for n, s in self.sliders.items() if n in NV_LABELS},
         }
+        if self.cpu_boost_cb is not None:
+            data["cpu_boost"] = self.cpu_boost_cb.currentData() or "default"
         if self.cpu_temp:
             v = self.cpu_temp.slider.value()
             data["cpu_temp"] = v if v < self.cpu_temp.slider.maximum() else None
@@ -407,7 +446,12 @@ class FansWindow(QWidget):
         mode = self.mode_id
         self._set_status("Applying…")
 
+        def apply_and_activate():
+            if self.main.status.get("mode") != mode:
+                self.main.call("set_mode", mode=mode)
+            return self.main.call("update_mode", mode=mode, data=data)
+
         def done(r):
             self._set_status(str(r) if isinstance(r, Exception) else "Saved")
             self.main.refresh()
-        run_async(lambda: self.main.call("update_mode", mode=mode, data=data), done)
+        run_async(apply_and_activate, done)

@@ -3,6 +3,43 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## 0.1.3
+
+CPU temperature targets, per-mode CPU boost controls and an optional experimental GPU backend.
+
+- Per-mode **CPU Boost** selector in Fans & Power (`Default`, `Disabled`, `Efficient`, `Balanced`, `Aggressive`, `Max`) using `cpufreq/boost` and `energy_performance_preference` (EPP)
+- Bounded closed-loop **CPU temperature target** (`power-feedback`) via `asus-armoury` power limits (`ppt_pl1_spl`, `ppt_pl2_sppt`, `ppt_pl3_fppt`) without raw userspace PCI `0xB8/0xBC` SMU access, plus opt-in kernel SMU bridge (`smu-bridge`) support
+- Selecting or applying a mode on the Fans & Power page now immediately activates that mode
+- Battery charge limit is re-applied to the embedded controller whenever AC power is connected
+- Silent mode now supports kernels that advertise `low-power` instead of `quiet` in `platform_profile`
+- Optional Rust/eBPF GPU engine (`boreas-gpu-engine`), selectable from the GPU mode card or `boreasctl gpu-backend firmware|ebpf`; firmware remains the default
+- Backend changes validate helper protocol v1 and apply the requested policy before saving; rejected activation preserves the previous preference, and repeated enable/disable starts a fresh helper
+- Returning to firmware releases GPU access blocks and restores nvidia-powerd; it preserves Ultimate and pending Ultimate requests without changing the MUX or requesting a reboot
+- Separate Eco policy and real GPU power/runtime status in the UI; Eco access blocking alone is not evidence of GPU sleep
+- Custom helper override at `/etc/boreas/boreas-gpu-engine`; upgrades preserve checksum-detected edits and back up unknown legacy helpers instead of silently discarding them
+- CPU Boost/EPP writes report failures and verify readback rather than silently accepting partial application
+- Added staged upgrade regression tests, a Rust CI build/test job, a backup-based local installer and repeatable live GPU/CPU boost probes
+- Choosing a GPU mode after a helper fault (timeout, crash, bad response) starts a fresh helper for that request; periodic re-application still never restarts it
+- `cpufreq/boost` writes verify readback (global or per-policy amd-pstate files); `Disabled` reports when no boost control exists instead of silently applying EPP only
+- `tools/install-reviewed.sh` also protocol-checks a `/etc/boreas/boreas-gpu-engine` override, since that is the helper boreasd runs
+- The helper caches its open-handle scan of `/proc` for 5 seconds between status polls
+- The bundled helper is rebuilt with build paths remapped, so it carries no local directory names
+
+Local validation on 2026-11-02: 183 Python tests and 11 Rust tests passed; one
+root/hardware Rust test was excluded. On the tested G713PV with Linux
+`7.3.0-5-cachyos`, Eco blocked new GPU access and Standard restored it, including
+a second backend enable/disable cycle. After 60 seconds the GPU remained
+`D0 / active` and RTD3 reported `Not supported`: actual sleep and power savings
+were not demonstrated on that kernel. On the same laptop with Linux
+`6.18.55-2-cachyos-lts` and `NVreg_DynamicPowerManagement=0x02` (2026-11-01),
+the same Eco reached `D3cold / suspended` after 60 seconds, so the 7.3 result is
+a driver/kernel combination issue, not a Boreas one. One s2idle suspend/resume
+cycle on that LTS kernel kept Eco, D3cold and the access block after wake-up;
+suspend/resume was not tried on 7.3. CPU Boost/EPP application
+and restoration passed. These results do not establish compatibility with other
+laptops, BIOS versions or kernels. Details: [GPU validation](docs/gpu-engine.md) and
+[CPU control scope](docs/cpu-temperature.md).
+
 ## 0.1.1
 
 GPU mode fixes, tested on a ROG Strix G713PV.

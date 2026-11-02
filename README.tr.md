@@ -28,9 +28,10 @@ Deutsch, 日本語.
 | Sessiz / Dengeli / Turbo | ✓ | `platform_profile` |
 | Özel modlar (Özel 1, 2…) | ✓ | aynı tabanda yerleşik moda bağlı |
 | Mod başına fan eğrisi | ✓ (CPU, GPU, orta) | `asus_custom_fan_curve` hwmon |
+| CPU Boost modu (mod başına) | ✓ (`Varsayılan` / `Kapalı` / `Verimli` / `Dengeli` / `Agresif` / `Maks`) | `cpufreq/boost`, `energy_performance_preference` |
 | Güç limitleri (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / sıcaklık hedefi | ✓ | asus-armoury `nv_*` |
-| CPU sıcaklık limiti (75-95 °C, mod başına) | ✓ (Dragon Range, Fire Range) | Ryzen SMU tctl; kernel lockdown kapalı olmalı |
+| CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol |
 | Pil/prize göre otomatik mod | ✓ | `power_supply` |
 | GPU: Eco / Standart / Optimized / Ultimate | ✓ | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran 60 Hz / maks / Otomatik | ✓ (KDE) | `kscreen-doctor` |
@@ -90,47 +91,29 @@ Zorlamak için `BOREAS_THEME=light boreas` ya da `dark`. `BOREAS_SCALE=1` arayü
 (varsayılan `0.78`), `BOREAS_LANG=tr boreas` dili zorlar. Sağ üstteki **Fanlar ve güç** düğmesi aynı pencerede fan eğrileri,
 güç limitleri ve pil sayfasını açar; tekrar basınca ana sayfaya döner.
 
-CPU sıcaklık yönetimi yalnız etkin modun limitini korur. Dragon Range için MP1
-0x23 sorgusu denenir ([ZenStates-Core kaynakları](https://github.com/irusanov/ZenStates-Core/blob/869b7e82572337e5a673e92230edc92bddf0e44b/Hardware/Smu/Commands/GetSystemConfiguredPowerLimit.cs)).
-Sorgunun eski değerden yeni hedefe geçtiği bir yazımda gözlenmeden geri okumaya
-güvenilmez: bazı firmware'ler BIOS'un sabit limitini bildirebilir. Doğrulanırsa
-servis yaklaşık saniyede bir sorgular, yalnız limit değişmişse tekrar yazar.
-Limit duruyorsa sıcaklık aşması yeni yazım tetiklemez.
+CPU sıcaklık hedefi artık ASUS'un `asus-armoury` güç arayüzü üzerinden yönetilir.
+Boreas hedefe yaklaşınca CPU'nun SPL ve mevcut SPPT/FPPT watt sınırlarını azaltır.
+Beş saniye yeterince soğuk kalınca 1 W artırır; seçili profil ve kullanıcı güç
+ayarlarından alınan başlangıç tavanlarını aşmaz. SMU/PCI erişimine geri dönmez.
+BIOS sürüm listesi veya özel kernel modülü gerektirmez; geçerli güç aralıkları,
+SPL kontrolü ve CPU sıcaklık sensörü gerekir. Her ASUS destekleniyor demek değildir.
 
-Geri okuma doğrulanamazsa veya hata verirse sıcaklığa göre yeniden gönderim yapılır:
-hedefin 2 °C'den az üzerindeyken 3 sn, 2-4 °C üzerindeyken 2 sn, en az 5 °C
-üzerindeyken 1 sn. Sensör okunamazsa 3 sn kullanılır. Servis diğer donanım işlemleriyle
-meşgulse süre uzayabilir; bu bir kesin sıcaklık sabitleme garantisi değildir.
-Varsayılan seçilince düzenli yazım durur, önceki düşük limit 96 °C'ye döner.
+Güç kontrolü için özel fan eğrisi gerektiren modellerde, kullanıcı eğrisi yoksa
+profilin fabrika eğrileri etkinleştirilir. Varsayılan seçimi kontrolü kapatır ve
+hâlâ Boreas'ın yönettiği watt değerlerini geri yükler. Profil ve uyku dönüşünde
+kontrol yeniden hazırlanır. Sensör kaybı, yazma hatası veya dışarıdan güç değişimi
+kontrolü durdurur ve hata gösterir; otomatik SMU geçişi yapılmaz.
 
-`boreasctl status` içindeki `cpu_temp` alanları:
-- `applied`: SMU'nun kabul ettiği son yazım; donanımdan geri okunan limit değildir.
-- `reported_limit`: son sorgunun bildirdiği değer; geçerli okuma yoksa `null`.
-- `readback_verified`: değerin bir limit değişimini takip ettiği gözlendi mi?
-- `control`: `readback` (geri okuma doğrulandı) veya `adaptive` (3/2/1 sn yenileme).
-- `readback_error`: sorgu hatası. Sorgu desteği yoksa sıcaklık yazımı çalışmaya devam eder.
-- `conflict`: SMU'ya aynı anda yazan ryzenadj süreçlerinin pid'leri (~30 sn'de bir taranır).
+`boreasctl cputemp 85` etkin modun hedefini ayarlar; `cputemp default` kapatır.
+Durumda `control: power-feedback`, `target`, `state`, `error`, `ceilings_w` ve
+`requested_w` bulunur. `applied` null'dır; donanıma sıcaklık limiti yazılmaz.
+Eski kayıtlı hedefler kullanılır, önceki SMU ayarı bu yöntemle sıfırlanmaz.
 
-`status` içindeki `temp_peak`, servis açıldığından beri görülen en yüksek CPU sıcaklığını
-(zaman ve mod ile) verir. CPU 95 °C'ye ya da düşürülmüş limitin 5 °C üstüne çıkınca journal'a
-başlangıç ve bitiş satırı (en yüksek değer ve süreyle) yazılır:
-`journalctl -u boreasd | grep "high temperature"`.
-
-Mod değişiminde profil yazımı firmware'in sıcaklık limitini sıfırlar. Bu yüzden limit
-profilden hemen sonra, fan/güç yazımlarından önce bir kez gönderilir, sonda bir kez daha.
-G713PV'de firmware ~3-4 sn sonra limiti bir kez daha sıfırlıyor (tam yükte 85 → 91 °C
-sıçrama ölçüldü); bu yüzden mod değişiminden sonraki 10 sn boyunca limit 0,25 sn'de bir
-yeniden yazılır.
-
-**ryzenadj ile birlikte kullanmayın.** İkisi aynı SMU posta kutusunu (kök kompleks
-0xB8/0xBC) süreçler arası kilit olmadan kullanır: birbirlerinin limitini ezerler ve yazımlar
-araya girerse SMU'ya yanlış komut gidebilir. `ryzenadj --tctl-temp` döngüsü çalıştıran bir
-servis varsa kapatın (`sudo systemctl disable --now ryzenadj.service`); servis bunu görünce
-uyarı gösterir.
-
-Bu geri okuma yöntemi 7845HX üzerinde henüz canlı doğrulanmadı; Fire Range için
-geri okuma sorgusu etkin değildir. Yalnız sıcaklık değiştirilince profil/fan/güç
-ayarları baştan uygulanmaz.
+**Bu kesin sıcaklık tavanı değildir.** Kısa süreli aşım olabilir; en düşük güçte
+bile hedefe ulaşılamazsa `limited` durumu bildirilir. İsteğe bağlı deneysel çekirdek
+SMU köprüsü (`smu-bridge`) yalnızca belgelenen G713PV / G713PV.336 yapılandırmasıyla
+sınırlıdır; genel ASUS SMU desteği değildir. Başka bir güç
+ayarlama servisiyle birlikte çalıştırmayın. Ayrıntılar: [CPU kontrolü](docs/cpu-temperature.md).
 
 ## Güncelleme
 
@@ -161,6 +144,33 @@ Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol 
   tuttuğu için Eco orada bir sonraki açılışta uygulanır. NVIDIA modülü hiç bırakılmıyorsa yeniden
   başlatmaya kadar tekrar denemez.
 
+## Deneysel gömülü GPU motoru
+
+Cardwire kodundan uyarlanmış isteğe bağlı eBPF arka ucu (`boreas-gpu-engine`) pakete dahildir.
+`sudo ./install.sh` varsa kullanıcının kendi derlediği `gpu-engine/target/release/boreas-gpu-engine`
+dosyasını, yoksa paketteki hazır x86_64 ikili dosyasını kurar (varsayılan olarak kapalı kalır).
+Arayüzdeki **GPU modu** kartında bulunan **eBPF motoru (yeniden başlatmadan Eco) · Deneysel** anahtarıyla
+veya komut satırından geçiş yapabilirsiniz:
+
+```bash
+boreasctl gpu-backend ebpf       # eBPF GPU motorunu etkinleştir
+boreasctl gpu-backend firmware   # varsayılan ASUS firmware yöntemine dön
+```
+
+Özel/yamalı motorunuzu güncellemelerden korumak için `/etc/boreas/boreas-gpu-engine`
+konumuna kurun; Boreas bu dosyaya öncelik verir ve protokol uyumunu denetler.
+Kurulum, kaydettiği sağlama toplamına göre değiştirilmiş motorları da korur;
+sağlama toplamı bilinmeyen eski dosyaları otomatik etkinleştirmeden yedekler.
+Eski systemd ortam değişkeni varsa UI seçimini kullanmadan önce kaldırılmalıdır.
+Firmware’e dönüş **Standart** modunu seçer; Ultimate ve bekleyen MUX isteği korunur.
+
+Eco politikası tek başına GPU’nun uyuduğunu göstermez. 2 Kasım 2026 tarihli G713PV
+canlı testinde Linux `7.3.0-5-cachyos` üzerinde erişim engelleme ve geri açma başarılı
+oldu; ancak GPU 60 saniye sonra `D0 / active` kaldı ve RTD3 `Not supported` bildirdi.
+Bu sonuç güç tasarrufu veya tüm cihazlarda uyumluluk garantisi değildir.
+
+[Derleme, sınırlamalar ve doğrulama adımları](docs/gpu-engine.md).
+
 ## Geliştirme
 
 ```bash
@@ -180,6 +190,10 @@ karşılanır; özellikle ROG Strix G713PV dışında bir ASUS laptopunuz varsa.
 yeni dil ekleme için [CONTRIBUTING.tr.md](CONTRIBUTING.tr.md) dosyasına bakın.
 
 ## Teşekkürler
+
+- Deneysel Rust motorunda kullanılan GPL-3.0 GPU erişim kontrolü kodu için
+  luytan, katkıcıları ve [Cardwire](https://github.com/OpenGamingCollective/cardwire) projesine.
+  [Üçüncü taraf bildirimleri](THIRD_PARTY_NOTICES.md).
 
 - ASUS donanımı üzerine yaptıkları açık kaynak çalışma için Serge'ye ve
   [G-Helper](https://github.com/seerge/g-helper) topluluğuna.

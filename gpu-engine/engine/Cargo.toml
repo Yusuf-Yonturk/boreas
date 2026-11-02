@@ -1,0 +1,14 @@
+[package]
+name = "boreas-gpu-engine"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+aya.workspace = true
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+cardwire-ebpf-userspace = { path = "../vendor/cardwire-ebpf-userspace", features = ["bpf"] }
+cardwire-core = { path = "../vendor/cardwire-core", features = ["gpu"] }
