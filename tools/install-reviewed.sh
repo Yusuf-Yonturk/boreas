@@ -7,6 +7,9 @@ STAGE=$(mktemp -d /tmp/boreas-reviewed.XXXXXX)
 trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 DESTDIR="$STAGE" sh "$REPO/install.sh" --files-only
 "$STAGE/usr/lib/boreas/boreas-gpu-engine" --protocol-info
+# The live install below reuses the staged helper, so the checked file is the installed one
+# and a downloaded helper is fetched only once. An explicit BOREAS_GPU_ENGINE keeps precedence.
+export BOREAS_GPU_ENGINE="${BOREAS_GPU_ENGINE:-$STAGE/usr/lib/boreas/boreas-gpu-engine}"
 if [ -e /etc/boreas/boreas-gpu-engine ]; then
     # boreasd prefers the local override, so the staged helper above is not the one that runs.
     echo "Local helper override /etc/boreas/boreas-gpu-engine is in use; checking it too" >&2

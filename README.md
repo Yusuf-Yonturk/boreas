@@ -59,6 +59,12 @@ cd boreas
 sudo ./install.sh
 ```
 
+The optional eBPF GPU helper (`boreas-gpu-engine`) is not in the repository: CI builds it from
+the Rust source and attaches it to the GitHub Release of each version, and the installer downloads
+it for the version being installed and checks its sha256 before writing anything. Offline, or to
+install your own build, point the installer at a file: `sudo BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine ./install.sh`.
+See [docs/gpu-engine.md](docs/gpu-engine.md).
+
 The installer asks for the interface language (Enter = English). To skip the question:
 `sudo BOREAS_LANG=de ./install.sh`. Each user can change the language later with the globe button in
 the window. Chinese and Japanese need `noto-fonts-cjk`; Hindi and Arabic need `noto-fonts`.
@@ -159,8 +165,8 @@ See [controller details](docs/cpu-temperature.md).
 ## Experimental embedded GPU engine
 
 An opt-in eBPF backend adapted from Cardwire is included (`boreas-gpu-engine`).
-`sudo ./install.sh` installs a locally built `gpu-engine/target/release/boreas-gpu-engine`
-if present, or falls back to the bundled prebuilt x86_64 helper binary (remaining disabled
+`sudo ./install.sh` installs the x86_64 helper that CI built for this version from the GitHub
+Release, after checking its sha256, or the file named by `BOREAS_GPU_ENGINE` (it remains disabled
 by default). You can toggle **eBPF engine (no-reboot Eco) · Experimental** inside the **GPU mode**
 card in the UI, or from the CLI:
 
@@ -193,7 +199,9 @@ python3 -m boreas.gui.app               # UI (the service must be running)
 Settings: `/etc/boreas/config.json`. Socket: `/run/boreas.sock` (`wheel` group).
 
 To publish a new version, raise `__version__` in `boreas/__init__.py`, add a section to
-[CHANGELOG.md](CHANGELOG.md) and push to `main`; installed copies show the update note within a day.
+[CHANGELOG.md](CHANGELOG.md), push to `main` and push the tag `v<version>`; CI then attaches the GPU
+helper to that version's GitHub Release, which the installer downloads. Installed copies show the
+update note within a day.
 
 ## Contributing
 

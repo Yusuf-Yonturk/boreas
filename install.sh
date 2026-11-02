@@ -10,6 +10,49 @@ if [ -z "$D" ] && [ "$(id -u)" != 0 ]; then
     exit 1
 fi
 
+# The Rust GPU helper is built by CI and attached to the GitHub Release of each version;
+# the checkout does not carry it. It is resolved and verified before anything is written:
+#   1. BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine (offline installs, developer builds)
+#   2. data/bin/boreas-gpu-engine next to this script (release tarball or a copied build)
+#   3. download for the version in boreas/__init__.py and check its sha256
+# Installing the helper never selects the eBPF backend.
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 -o "$2" "$1"
+    else
+        python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$1" "$2"
+    fi
+}
+helper_tmp=""
+if [ -n "${BOREAS_GPU_ENGINE:-}" ]; then
+    helper_src="$BOREAS_GPU_ENGINE"
+    if [ ! -f "$helper_src" ]; then
+        echo "BOREAS_GPU_ENGINE does not point to a file: $helper_src" >&2
+        exit 1
+    fi
+elif [ -f "$SRC/data/bin/boreas-gpu-engine" ]; then
+    helper_src="$SRC/data/bin/boreas-gpu-engine"
+else
+    version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$SRC/boreas/__init__.py")
+    base="${BOREAS_GPU_ENGINE_URL:-https://github.com/Yusuf-Yonturk/boreas/releases/download/v$version}"
+    helper_tmp=$(mktemp -d)
+    trap 'rm -rf "$helper_tmp"' EXIT HUP INT TERM
+    helper_src="$helper_tmp/boreas-gpu-engine"
+    echo "Downloading the GPU helper for Boreas $version from $base"
+    if ! fetch "$base/boreas-gpu-engine" "$helper_src" || ! fetch "$base/boreas-gpu-engine.sha256" "$helper_src.sha256"; then
+        echo "Could not download the GPU helper from $base" >&2
+        echo "Check the network, or install offline with BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine" >&2
+        exit 1
+    fi
+    expected=$(cut -d' ' -f1 "$helper_src.sha256")
+    actual=$(sha256sum "$helper_src" | cut -d' ' -f1)
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+        echo "GPU helper checksum mismatch: expected $expected, got $actual" >&2
+        echo "Nothing was installed. Retry, or install offline with BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine" >&2
+        exit 1
+    fi
+fi
+
 # clear the code folder so modules left over from an older version do not linger
 rm -rf "$D/usr/lib/boreas/boreas"
 install -d "$D/usr/lib/boreas/boreas/gui"
@@ -27,13 +70,7 @@ for s in 16 22 24; do
     install -Dm644 "$SRC/data/boreas-small.svg" "$D/usr/share/icons/hicolor/${s}x${s}/apps/boreas.svg"
 done
 
-# The Rust helper is optional and installing it never selects eBPF.
-helper_src=""
-if [ -f "$SRC/gpu-engine/target/release/boreas-gpu-engine" ]; then
-    helper_src="$SRC/gpu-engine/target/release/boreas-gpu-engine"
-elif [ -f "$SRC/data/bin/boreas-gpu-engine" ]; then
-    helper_src="$SRC/data/bin/boreas-gpu-engine"
-fi
+# Install the verified helper, preserving locally modified managed copies.
 if [ -n "$helper_src" ]; then
     helper_dest="$D/usr/lib/boreas/boreas-gpu-engine"
     helper_stamp="$helper_dest.sha256"

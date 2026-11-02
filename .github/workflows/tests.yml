@@ -3,6 +3,7 @@ name: tests
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -23,7 +24,7 @@ jobs:
       - name: Install PySide6
         run: pip install PySide6-Essentials
       - name: Shell scripts
-        run: sh -n install.sh && sh -n uninstall.sh && sh -n data/boreas.sleep
+        run: sh -n install.sh && sh -n uninstall.sh && sh -n data/boreas.sleep && sh -n tools/install-reviewed.sh && sh -n tools/rustc-remap.sh
       - name: Unit tests
         env:
           QT_QPA_PLATFORM: offscreen
@@ -42,12 +43,54 @@ jobs:
           curl -fL --retry 3 -o /tmp/bpf-linker.tar.zst https://github.com/aya-rs/bpf-linker/releases/download/v0.12.0/bpf-linker-x86_64-unknown-linux-musl.tar.zst
           echo '6789717c8cb6a2a5d920f3b6bfac2bd7efc00f6228ecd149108a99699a75c679  /tmp/bpf-linker.tar.zst' | sha256sum -c -
           tar --zstd -xf /tmp/bpf-linker.tar.zst -C "$HOME/.cargo/bin"
-      - name: Rust tests and release build
+      - name: Rust tests
+        run: cargo +1.95.0 test --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
+      - name: Release build with build paths remapped
+        env:
+          RUSTC_WRAPPER: ${{ github.workspace }}/tools/rustc-remap.sh
+        run: cargo +1.95.0 build --release --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
+      - name: No build-machine paths in the helper
         run: |
-          cargo +1.95.0 test --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
-          cargo +1.95.0 build --release --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
-      - name: Built and bundled protocol checks (no GPU access)
+          if strings gpu-engine/target/release/boreas-gpu-engine | grep -F '/home/'; then
+            echo 'The helper still contains build-machine paths' >&2
+            exit 1
+          fi
+      - name: Protocol check (no GPU access)
         run: |
-          for helper in gpu-engine/target/release/boreas-gpu-engine data/bin/boreas-gpu-engine; do
-            "$helper" --protocol-info | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["protocol_version"] == 1; assert {"status","eco","standard"} <= set(d["capabilities"])'
-          done
+          gpu-engine/target/release/boreas-gpu-engine --protocol-info | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["protocol_version"] == 1; assert {"status","eco","standard"} <= set(d["capabilities"])'
+      - name: Collect the helper and its checksum
+        run: |
+          mkdir -p dist
+          cp gpu-engine/target/release/boreas-gpu-engine dist/
+          (cd dist && sha256sum boreas-gpu-engine > boreas-gpu-engine.sha256 && cat boreas-gpu-engine.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boreas-gpu-engine
+          path: |
+            dist/boreas-gpu-engine
+            dist/boreas-gpu-engine.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, gpu-engine]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches boreas/__init__.py
+        run: |
+          version=$(python3 -c 'import boreas; print(boreas.__version__)')
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match version $version" >&2; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: boreas-gpu-engine
+          path: dist
+      - name: Attach the helper to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+              gh release create "$GITHUB_REF_NAME" --verify-tag --title "Boreas ${GITHUB_REF_NAME#v}" --notes "Release notes: CHANGELOG.md"
+          gh release upload "$GITHUB_REF_NAME" dist/boreas-gpu-engine dist/boreas-gpu-engine.sha256 --clobber

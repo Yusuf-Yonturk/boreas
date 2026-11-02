@@ -23,7 +23,9 @@ CPU temperature targets, per-mode CPU boost controls and an optional experimenta
 - `cpufreq/boost` writes verify readback (global or per-policy amd-pstate files); `Disabled` reports when no boost control exists instead of silently applying EPP only
 - `tools/install-reviewed.sh` also protocol-checks a `/etc/boreas/boreas-gpu-engine` override, since that is the helper boreasd runs
 - The helper caches its open-handle scan of `/proc` for 5 seconds between status polls
-- The bundled helper is rebuilt with build paths remapped, so it carries no local directory names
+- The GPU helper is no longer committed to the repository: CI builds it from the Rust source with build paths remapped, fails if the result still contains build-machine paths, and attaches `boreas-gpu-engine` and its sha256 to the GitHub Release of each `v*` tag
+- `install.sh` resolves the helper before writing anything: `BOREAS_GPU_ENGINE=<file>` for offline installs or your own build, else `data/bin/boreas-gpu-engine`, else the Release files for the version being installed, which it checks against their sha256 and refuses on a mismatch
+- `tools/install-reviewed.sh` installs the same staged helper it protocol-checked
 
 Local validation on 2026-11-02: 183 Python tests and 11 Rust tests passed; one
 root/hardware Rust test was excluded. On the tested G713PV with Linux

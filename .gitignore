@@ -9,3 +9,7 @@ gpu-engine/target/
 
 # Local test outputs
 outputs/
+
+# GPU helper: built by CI and attached to the GitHub Release; install.sh downloads it
+data/bin/boreas-gpu-engine
+data/bin/boreas-gpu-engine.sha256

@@ -27,32 +27,63 @@ and status shows the error until you choose a GPU mode again, which starts a
 fresh helper for that request only. Restart boreasd in Standard after changing
 GPUs/drivers. No automatic fallback from eBPF to firmware.
 
-## Reproducible build
+## Helper source and reproducible build
 
-Build on x86_64 Linux with LLVM 23, a C toolchain and bpf-linker available in PATH:
+The checkout does not carry a prebuilt helper. The `gpu-engine` job in
+`.github/workflows/tests.yml` builds `boreas-gpu-engine` from the Rust source on
+every push and pull request, and on a `v*` tag the `release` job attaches that
+build and its checksum to the GitHub Release:
+
+```
+https://github.com/Yusuf-Yonturk/boreas/releases/download/v<version>/boreas-gpu-engine
+https://github.com/Yusuf-Yonturk/boreas/releases/download/v<version>/boreas-gpu-engine.sha256
+```
+
+The release job also checks that the tag matches `__version__` in `boreas/__init__.py`,
+because that is the version `install.sh` asks for. So the helper users run is the
+one CI built from the tagged source, and a Rust change can no longer drift from
+the binary: there is no binary to forget to rebuild.
+
+`sudo ./install.sh` resolves the helper, in this order, before writing anything:
+
+1. `BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine` (offline installs and your own builds,
+   for example `BOREAS_GPU_ENGINE=gpu-engine/target/release/boreas-gpu-engine`);
+2. `data/bin/boreas-gpu-engine` next to `install.sh`, when a tarball or a copied build
+   provides it;
+3. otherwise it downloads the two release files for the version in `boreas/__init__.py`
+   into a temporary directory and compares the sha256.
+
+A failed download or a checksum mismatch aborts the installation with nothing
+installed; the message names the `BOREAS_GPU_ENGINE` option. The in-app updater
+installs from the `main` source archive, so a version on `main` needs its
+`v<version>` Release before installed copies can update to it. Installing the
+helper never selects eBPF.
+
+To reproduce the CI build on x86_64 Linux with LLVM 23, a C toolchain and
+bpf-linker available in PATH:
 
 ```sh
 rustup toolchain install 1.95.0 --profile minimal
 rustup toolchain install nightly-2026-08-12 --profile minimal --component rust-src
 cargo +1.95.0 install bpf-linker --version 0.12.0 --locked
 cargo +1.95.0 test --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
-cargo +1.95.0 build --release --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
+RUSTC_WRAPPER="$PWD/tools/rustc-remap.sh" \
+    cargo +1.95.0 build --release --manifest-path gpu-engine/Cargo.toml --locked -p boreas-gpu-engine
 ```
 
 The upstream build.rs uses nightly-2026-08-12 to compile the embedded BPF object.
 
-The bundled `data/bin/boreas-gpu-engine` is built with a `RUSTC_WRAPPER` that
-appends `--remap-path-prefix` for the checkout and the toolchain directories, so
-neither the helper nor the embedded BPF object (whose debug info aya-build
-compiles with `-Cdebuginfo=2`) carries local directory names. rustc applies the
-last matching prefix, so list the most specific one last. Check with
-`strings data/bin/boreas-gpu-engine | grep /home/` (expect no output).
+`tools/rustc-remap.sh` is the `RUSTC_WRAPPER` CI uses. It appends
+`--remap-path-prefix` for the home, cargo and rustup directories and the checkout,
+so neither the helper nor the embedded BPF object (whose debug info aya-build
+compiles with `-Cdebuginfo=2`) carries build-machine directory names. rustc
+applies the last matching prefix, so the most specific one is listed last. CI
+fails if `strings` on the result still contains `/home/`; check a local build the
+same way: `strings gpu-engine/target/release/boreas-gpu-engine | grep /home/`
+(expect no output). Compare your build with the release with `sha256sum`.
 Do not delete Cargo.lock: newer semver-compatible Aya build dependencies may
 require a newer compiler. No Rust toolchain is required at runtime.
 
-`sudo ./install.sh` installs the locally built release helper when present, otherwise
-the bundled x86_64 helper. Without either, Python-only installation remains usable.
-Installing does NOT select eBPF.
 The runtime needs BPF LSM enabled, kernel BTF and support for the upstream hooks.
 Kernel lockdown can reject optional directory-hiding hooks; upstream logs reduced
 functionality. A successful build does not prove the running kernel accepts it.
@@ -103,8 +134,8 @@ sudo install -o root -g root -m755 /path/to/your/boreas-gpu-engine /etc/boreas/b
 ```
 
 Boreas automatically prefers `/etc/boreas/boreas-gpu-engine`; the installer does
-not overwrite it. To return to the bundled helper, select firmware, remove or
-rename that local helper, then enable eBPF again. Already running children keep
+not overwrite it. To return to the installed release helper, select firmware,
+remove or rename that local helper, then enable eBPF again. Already running children keep
 their current executable until explicitly switched off or the daemon restarts.
 The installer records the checksum of its managed `/usr/lib` helper. If that
 file is subsequently modified, the next upgrade preserves it as the local helper
@@ -170,8 +201,9 @@ Vendored source provenance and license: ../THIRD_PARTY_NOTICES.md.
 
 ## Reviewed live installation
 
-After local tests pass, run `sudo sh tools/install-reviewed.sh`. It stages and
-checks the package, backs up installed runtime files and configuration under
+After local tests pass, run `sudo sh tools/install-reviewed.sh` (with
+`BOREAS_GPU_ENGINE=...` to review your own helper build). It stages and
+checks the package, installs the same staged helper it checked, backs up installed runtime files and configuration under
 `/var/lib/boreas/backups`, selects Standard using the current service, and restarts
 the daemon with the reviewed files. It does not enable eBPF or reboot. The backup
 path is also stored in `/var/lib/boreas/last-reviewed-backup`. Then test

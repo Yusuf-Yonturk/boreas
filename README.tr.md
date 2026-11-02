@@ -61,6 +61,12 @@ cd boreas
 sudo ./install.sh
 ```
 
+İsteğe bağlı eBPF GPU yardımcısı (`boreas-gpu-engine`) depoda tutulmaz: CI onu Rust kaynağından
+derleyip her sürümün GitHub Release'ine ekler; kurulum betiği kurulan sürüm için indirir ve hiçbir
+şey yazmadan önce sha256 sağlama toplamını denetler. Çevrimdışı kurmak ya da kendi derlemenizi kurmak
+için dosyayı gösterin: `sudo BOREAS_GPU_ENGINE=/yol/boreas-gpu-engine ./install.sh`.
+Bkz. [docs/gpu-engine.md](docs/gpu-engine.md).
+
 Kurulum arayüz dilini sorar (Enter = English). Sormadan kurmak için: `sudo BOREAS_LANG=tr ./install.sh`.
 Her kullanıcı dili sonradan penceredeki küre düğmesinden değiştirebilir. Çince ve Japonca için
 `noto-fonts-cjk`, Hintçe ve Arapça için `noto-fonts` gerekir.
@@ -146,9 +152,10 @@ Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol 
 
 ## Deneysel gömülü GPU motoru
 
-Cardwire kodundan uyarlanmış isteğe bağlı eBPF arka ucu (`boreas-gpu-engine`) pakete dahildir.
-`sudo ./install.sh` varsa kullanıcının kendi derlediği `gpu-engine/target/release/boreas-gpu-engine`
-dosyasını, yoksa paketteki hazır x86_64 ikili dosyasını kurar (varsayılan olarak kapalı kalır).
+Cardwire kodundan uyarlanmış isteğe bağlı bir eBPF arka ucu (`boreas-gpu-engine`) vardır.
+`sudo ./install.sh` bu sürüm için CI'ın derlediği x86_64 yardımcısını GitHub Release'ten indirip
+sha256 denetiminden sonra kurar; `BOREAS_GPU_ENGINE` ile verilen dosya öncelik alır (varsayılan
+olarak kapalı kalır).
 Arayüzdeki **GPU modu** kartında bulunan **eBPF motoru (yeniden başlatmadan Eco) · Deneysel** anahtarıyla
 veya komut satırından geçiş yapabilirsiniz:
 
@@ -181,7 +188,8 @@ python3 -m boreas.gui.app               # arayüz (servis çalışıyor olmalı)
 Ayarlar: `/etc/boreas/config.json`. Soket: `/run/boreas.sock` (`wheel` grubu).
 
 Yeni sürüm yayınlamak için `boreas/__init__.py` içindeki `__version__` değerini artırın, [CHANGELOG.md](CHANGELOG.md)
-dosyasına bir bölüm ekleyin ve `main`'e gönderin; kurulu kopyalar bir gün içinde güncelleme notunu gösterir.
+dosyasına bir bölüm ekleyin, `main`'e gönderin ve `v<sürüm>` etiketini gönderin; CI GPU yardımcısını o sürümün
+GitHub Release'ine ekler, kurulum betiği oradan indirir. Kurulu kopyalar bir gün içinde güncelleme notunu gösterir.
 
 ## Katkıda bulunma
 
