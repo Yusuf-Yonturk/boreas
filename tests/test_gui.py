@@ -366,6 +366,27 @@ class TestHeldSelection(unittest.TestCase):
         self.assertFalse(w.live_info.isHidden())
         self.assertEqual(w.live_info.text(), "CPU 70° · 2000 / 2100 rpm")
 
+    def test_gpu_users_are_summarized(self):
+        w = self.w
+        engine = {"policy": "standard", "power_state": "D3cold", "runtime_status": "suspended",
+                  "users": ["systemd(1)", "systemd-logind(900)", "nvidia-powerd(1200)",
+                            "kwin_wayland(1500)", "Xwayland(1600)", "steam(4000)"]}
+        w.status = {**self.STATUS, "gpu": {"mode": "standard", "has_mux": True, "has_eco": True,
+                                           "pending_reboot": False, "backend": "ebpf", "engine": engine}}
+        w.render()
+        self.assertEqual(w.gpu_label.text(), "eBPF · standard · D3cold / suspended · 3 süreç dGPU'yu kullanıyor")
+        self.assertEqual(w.gpu_label.toolTip(), ", ".join(engine["users"]))  # the PIDs stay reachable
+        engine["users"] = ["systemd(1)", "kwin_wayland(1500)"]
+        w.render()
+        self.assertTrue(w.gpu_label.text().endswith(" · 1 süreç dGPU'yu kullanıyor"))
+        engine["users"] = ["systemd(1)"]
+        w.render()
+        self.assertTrue(w.gpu_label.text().endswith(" · dGPU'yu yalnızca sistem servisleri tutuyor"))
+        engine["users"] = []
+        w.render()
+        self.assertEqual(w.gpu_label.text(), "eBPF · standard · D3cold / suspended")
+        self.assertEqual(w.gpu_label.toolTip(), "")
+
     def test_failed_action_shows_real_state(self):
         w = self.w
         w.render()

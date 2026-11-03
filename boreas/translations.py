@@ -69,6 +69,22 @@ _T = {
         "dGPU apagada, máxima autonomía", "بطاقة dGPU مطفأة، أطول عمر للبطارية", "dGPU éteint, autonomie maximale",
         "dGPU desligada, maior autonomia", "dGPU выключен, максимальное время работы", "dGPU aus, längste Akkulaufzeit",
         "dGPU オフ、バッテリー持続時間が最長"),
+    "1 process is using the dGPU": (
+        "1 süreç dGPU'yu kullanıyor", "1 个进程正在使用独显", "1 प्रोसेस dGPU इस्तेमाल कर रहा है",
+        "1 proceso está usando la dGPU", "عملية واحدة تستخدم dGPU", "1 processus utilise le dGPU",
+        "1 processo está usando a dGPU", "1 процесс использует dGPU", "1 Prozess nutzt die dGPU",
+        "1 個のプロセスが dGPU を使用中"),
+    "{n} processes are using the dGPU": (
+        "{n} süreç dGPU'yu kullanıyor", "{n} 个进程正在使用独显", "{n} प्रोसेस dGPU इस्तेमाल कर रहे हैं",
+        "{n} procesos están usando la dGPU", "{n} عمليات تستخدم dGPU", "{n} processus utilisent le dGPU",
+        "{n} processos estão usando a dGPU", "{n} процессов используют dGPU", "{n} Prozesse nutzen die dGPU",
+        "{n} 個のプロセスが dGPU を使用中"),
+    "only system services hold the dGPU": (
+        "dGPU'yu yalnızca sistem servisleri tutuyor", "仅系统服务占用独显", "dGPU केवल सिस्टम सेवाओं के पास है",
+        "solo servicios del sistema retienen la dGPU", "خدمات النظام فقط تحتفظ بـ dGPU",
+        "seuls des services système retiennent le dGPU", "apenas serviços do sistema retêm a dGPU",
+        "dGPU удерживают только системные службы", "nur Systemdienste halten die dGPU",
+        "dGPU を保持しているのはシステムサービスのみ"),
     "Hybrid: the iGPU drives the display, the dGPU when needed": (
         "Hibrit: ekranı iGPU sürer, dGPU gerektiğinde çalışır", "混合：核显驱动屏幕，需要时启用独显",
         "हाइब्रिड: डिस्प्ले iGPU चलाता है, ज़रूरत पर dGPU", "Híbrido: la iGPU maneja la pantalla y la dGPU cuando hace falta",
