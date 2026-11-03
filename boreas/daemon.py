@@ -64,6 +64,9 @@ class Daemon:
         self.gpu_temp_cache: tuple[float, int | None] = (0.0, None)
         self.ticks = 0
         self.cpu = thermal.Controller()
+        bridge_warning = self.cpu.opt_in_warning()
+        if bridge_warning:
+            log(bridge_warning)
         self.hot: dict | None = None  # the ongoing high temperature episode
         self.temp_peak: dict | None = None  # highest since the service started
         if self.cfg.fresh:
@@ -147,7 +150,9 @@ class Daemon:
                     if value is None:
                         continue
                     try:
-                        hw.set_attr(name, int(value))
+                        if not hw.set_attr(name, int(value)):
+                            log(f"{name}: firmware offers no adjustable range right now, skipped")
+                            continue
                         self.custom_power = True
                     except (OSError, ValueError) as e:
                         self.set_notice(f"Could not write {name}: {e}")

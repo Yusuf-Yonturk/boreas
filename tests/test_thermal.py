@@ -231,3 +231,20 @@ class TestSmuBridgeBackend(unittest.TestCase):
             self.assertTrue(ryzen.bridge_available())
             with patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "0"}):
                 self.assertFalse(ryzen.bridge_available())
+
+
+class TestBridgeOptInWarning(unittest.TestCase):
+    def test_requested_but_unusable_bridge_is_reported(self):
+        c = thermal.Controller()
+        with patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "1"}), \
+                patch.object(c.bridge, "available", return_value=False):
+            msg = c.opt_in_warning()
+        self.assertIn("BOREAS_SMU_BRIDGE=1", msg)
+        self.assertIn("power-feedback", msg)
+
+    def test_no_warning_without_opt_in_or_when_usable(self):
+        c = thermal.Controller()
+        with patch.dict(os.environ, {}, clear=True), patch.object(c.bridge, "available", return_value=False):
+            self.assertIsNone(c.opt_in_warning())
+        with patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "1"}), patch.object(c.bridge, "available", return_value=True):
+            self.assertIsNone(c.opt_in_warning())

@@ -118,10 +118,18 @@ def get_attr(name: str) -> Attr | None:
     return a
 
 
-def set_attr(name: str, value: int) -> None:
+def set_attr(name: str, value: int) -> bool:
+    """Returns False when the firmware offers no adjustable range right now.
+
+    nv_dynamic_boost reports min = max = 0 on battery: the feature is off and
+    every write, even of 0, fails with EINVAL. Skip instead of failing; the
+    value is written again when the mode is re-applied on AC.
+    """
     a = get_attr(name)
     if a is None:
         raise ValueError(f"{name} is not available on this device")
+    if a.min is not None and a.max is not None and a.min == a.max and not a.choices:
+        return False
     if a.min is not None and value < a.min:
         value = a.min
     if a.max is not None and value > a.max:
@@ -129,6 +137,7 @@ def set_attr(name: str, value: int) -> None:
     if a.choices and value not in a.choices:
         raise ValueError(f"{name}: invalid value {value}, choices {a.choices}")
     write(attr_path(name), int(value))
+    return True
 
 
 def model() -> str:

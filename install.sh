@@ -148,11 +148,12 @@ if [ -n "$fl" ] && command -v fc-list >/dev/null && [ -z "$(fc-list :lang="$fl" 
     echo "Warning: no font found for '$lang' (sudo pacman -S $pkg)"
 fi
 
-# mask asusd / supergfxd so they do not write to the same hardware (undo: uninstall.sh).
-# asusd is a "static" unit and the asusctl udev rule starts it on every boot;
-# disable does not help, and through Conflicts= in boreasd it would stop us too.
+# mask asusd / supergfxd / power-profiles-daemon so they do not write to the same
+# hardware (undo: uninstall.sh). asusd is a "static" unit and the asusctl udev rule
+# starts it on every boot; power-profiles-daemon is D-Bus activated by the desktop.
+# disable does not help, and through Conflicts= in boreasd they would stop us too.
 systemctl daemon-reload
-for s in asusd.service asus-shutdown.service supergfxd.service; do
+for s in asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service; do
     if [ -n "$(systemctl list-unit-files --no-legend "$s" 2>/dev/null)" ] &&
        [ "$(systemctl is-enabled "$s" 2>/dev/null)" != masked ]; then
         echo "masking: $s"
