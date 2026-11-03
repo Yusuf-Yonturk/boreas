@@ -9,6 +9,7 @@ Neither backend claims verified physical thermal ceiling enforcement.
 """
 from __future__ import annotations
 
+import os
 import time
 
 from . import hw, ryzen
@@ -31,6 +32,13 @@ class Controller:
         self.last_tick = float("-inf")
         self.cool_since: float | None = None
         self.reapply_at: float | None = None
+
+    def opt_in_warning(self) -> str | None:
+        """Startup line when BOREAS_SMU_BRIDGE=1 is set but the bridge cannot be used."""
+        if os.environ.get(ryzen.BRIDGE_OPT_IN_ENV) != "1" or self.bridge.available():
+            return None
+        reason = self.bridge.error or "module not loaded or enable_hw is off"
+        return f"SMU bridge requested ({ryzen.BRIDGE_OPT_IN_ENV}=1) but not usable: {reason}; using power-feedback"
 
     @staticmethod
     def attributes() -> dict:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Uninstalls Boreas and brings asusd / supergfxd back. Service settings stay in /etc/boreas.
+# Uninstalls Boreas and brings asusd / supergfxd / power-profiles-daemon back. Service settings stay in /etc/boreas.
 set -e
 systemctl disable --now boreasd.service 2>/dev/null || true
 rm -rf /usr/lib/boreas /usr/share/doc/boreas
@@ -10,13 +10,14 @@ rm -f /usr/bin/boreas /usr/bin/boreasd /usr/bin/boreasctl \
       /usr/share/icons/hicolor/24x24/apps/boreas.svg
 rm -rf /etc/xdg/boreas
 systemctl daemon-reload
-for s in asusd.service asus-shutdown.service supergfxd.service; do
+for s in asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service; do
     if [ "$(systemctl is-enabled "$s" 2>/dev/null)" = masked ]; then
         systemctl unmask "$s"
     fi
 done
 systemctl daemon-reload
-# supergfxd is a normal enabled unit; asusd / asus-shutdown come from udev (static)
+# supergfxd is a normal enabled unit; asusd / asus-shutdown come from udev (static);
+# power-profiles-daemon is started by the desktop over D-Bus
 systemctl enable supergfxd.service 2>/dev/null || true
-systemctl start asusd.service asus-shutdown.service supergfxd.service 2>/dev/null || true
+systemctl start asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service 2>/dev/null || true
 echo "Removed. Settings are kept in /etc/boreas."

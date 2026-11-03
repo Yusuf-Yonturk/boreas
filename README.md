@@ -69,12 +69,15 @@ The installer asks for the interface language (Enter = English). To skip the que
 `sudo BOREAS_LANG=de ./install.sh`. Each user can change the language later with the globe button in
 the window. Chinese and Japanese need `noto-fonts-cjk`; Hindi and Arabic need `noto-fonts`.
 
-The script masks `asusd`, `asus-shutdown` and `supergfxd` (they write the same sysfs files;
-`disable` is not enough because asusd is started by a udev rule on every boot) and enables
-`boreasd`. On first start the service adopts the current charge limit, keyboard brightness,
+The script masks `asusd`, `asus-shutdown`, `supergfxd` and `power-profiles-daemon` (they write
+the same sysfs files; `disable` is not enough because asusd is started by a udev rule on every
+boot and power-profiles-daemon by the desktop over D-Bus) and enables `boreasd`. The desktop's
+own power-profile menu (KDE battery applet, GNOME quick settings) therefore shows nothing;
+Boreas owns the mode. To hand control back temporarily:
+`sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`. On first start the service adopts the current charge limit, keyboard brightness,
 mode and GPU mode; it writes nothing to the hardware.
 
-Uninstall: `sudo ./uninstall.sh` (removes the masks and brings asusd / supergfxd back).
+Uninstall: `sudo ./uninstall.sh` (removes the masks and brings asusd / supergfxd / power-profiles-daemon back).
 
 If KDE → Settings → Power Management uses different power profiles for AC and battery, it conflicts
 with Boreas's "auto mode on battery / AC"; turn one of them off.

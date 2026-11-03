@@ -165,6 +165,24 @@ class TestHw(Base):
         with self.assertRaises(ValueError):
             hw.set_attr("gpu_mux_mode", 5)
 
+    def test_attr_without_adjustable_range_is_skipped(self):
+        # nv_dynamic_boost on battery: the firmware reports 0..0 and rejects every write.
+        put(f"{ARM}/nv_dynamic_boost/current_value", 0)
+        put(f"{ARM}/nv_dynamic_boost/min_value", 0)
+        put(f"{ARM}/nv_dynamic_boost/max_value", 0)
+        try:
+            self.assertFalse(hw.set_attr("nv_dynamic_boost", 25))
+            self.assertEqual(get(f"{ARM}/nv_dynamic_boost/current_value"), "0")
+            # a real range writes as before
+            put(f"{ARM}/nv_dynamic_boost/min_value", 5)
+            put(f"{ARM}/nv_dynamic_boost/max_value", 25)
+            self.assertTrue(hw.set_attr("nv_dynamic_boost", 25))
+            self.assertEqual(get(f"{ARM}/nv_dynamic_boost/current_value"), "25")
+        finally:
+            put(f"{ARM}/nv_dynamic_boost/min_value", 5)
+            put(f"{ARM}/nv_dynamic_boost/max_value", 25)
+            put(f"{ARM}/nv_dynamic_boost/current_value", 25)
+
     def test_legacy_fallback(self):
         shutil.rmtree(ARM + "/panel_overdrive")
         put(R + hw.NB_WMI + "/panel_od", 0)

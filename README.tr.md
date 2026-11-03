@@ -71,12 +71,16 @@ Kurulum arayüz dilini sorar (Enter = English). Sormadan kurmak için: `sudo BOR
 Her kullanıcı dili sonradan penceredeki küre düğmesinden değiştirebilir. Çince ve Japonca için
 `noto-fonts-cjk`, Hintçe ve Arapça için `noto-fonts` gerekir.
 
-Betik `asusd`, `asus-shutdown` ve `supergfxd`'yi maskeler (aynı sysfs dosyalarına yazıyorlar;
-asusd udev kuralıyla her açılışta başlatıldığı için `disable` yetmez), `boreasd`'yi açar.
+Betik `asusd`, `asus-shutdown`, `supergfxd` ve `power-profiles-daemon`'ı maskeler (aynı sysfs
+dosyalarına yazıyorlar; asusd udev kuralıyla, power-profiles-daemon masaüstü tarafından D-Bus ile
+her açılışta başlatıldığı için `disable` yetmez), `boreasd`'yi açar. Masaüstünün kendi güç profili
+menüsü (KDE pil simgesi, GNOME hızlı ayarlar) bu yüzden boş görünür; modu Boreas yönetir. Kontrolü
+geçici olarak geri vermek için:
+`sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`.
 İlk açılışta servis mevcut şarj limitini, klavye parlaklığını, modu ve GPU modunu benimser;
 donanıma hiçbir şey yazmaz.
 
-Geri almak: `sudo ./uninstall.sh` (maskeler kaldırılır, asusd / supergfxd geri açılır).
+Geri almak: `sudo ./uninstall.sh` (maskeler kaldırılır, asusd / supergfxd / power-profiles-daemon geri açılır).
 
 KDE'de Ayarlar → Güç Yönetimi'nde prize ve pile ayrı güç profili seçiliyse Boreas'ın
 "pil/prize göre otomatik mod"uyla çakışır; ikisinden birini kapatın.
