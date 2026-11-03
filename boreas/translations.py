@@ -11,17 +11,17 @@ _T = {
         "CPU sıcaklık hedefi", "CPU 温度目标", "CPU तापमान लक्ष्य", "Temperatura objetivo de CPU",
         "درجة حرارة المعالج المستهدفة", "Température cible du CPU", "Temperatura alvo da CPU",
         "Целевая температура CPU", "CPU-Zieltemperatur", "CPU目標温度"),
-    "Adjusts CPU power to approach the target; brief overshoots are possible.": (
-        "Hedefe yaklaşmak için CPU gücünü ayarlar; kısa süreli aşımlar olabilir.",
-        "调整 CPU 功率以接近目标；可能短暂超出。",
-        "लक्ष्य के करीब पहुँचने के लिए CPU पावर बदलता है; तापमान थोड़ी देर अधिक हो सकता है।",
-        "Ajusta la potencia de CPU para acercarse al objetivo; puede superarlo brevemente.",
-        "يضبط طاقة المعالج للاقتراب من الهدف؛ قد تحدث تجاوزات قصيرة.",
-        "Ajuste la puissance du CPU vers la cible ; de brefs dépassements sont possibles.",
-        "Ajusta a potência da CPU para se aproximar do alvo; pode ultrapassá-lo brevemente.",
-        "Регулирует мощность CPU для приближения к цели; возможны краткие превышения.",
-        "Passt die CPU-Leistung an den Zielwert an; kurze Überschreitungen sind möglich.",
-        "目標に近づくようCPU電力を調整します。一時的に超える場合があります。"),
+    "Lowers the CPU power limits toward the target; short bursts can still overshoot by a few degrees, since the firmware sets a floor on the limits.": (
+        "Hedefe doğru CPU güç limitlerini düşürür; firmware limitlere bir taban koyduğundan ani yüklerde birkaç derece aşım olabilir.",
+        "朝目标降低 CPU 功率限制；由于固件为限制设定了下限，突发负载仍可能超出几度。",
+        "लक्ष्य की ओर CPU पावर लिमिट घटाता है; फ़र्मवेयर लिमिट की निचली सीमा तय करता है, इसलिए अचानक लोड में कुछ डिग्री अधिक हो सकता है।",
+        "Reduce los límites de potencia de la CPU hacia el objetivo; como el firmware fija un mínimo, las cargas breves aún pueden superarlo unos grados.",
+        "يخفض حدود طاقة المعالج نحو الهدف؛ ولأن البرنامج الثابت يضع حدًا أدنى، قد تتجاوزه الأحمال القصيرة ببضع درجات.",
+        "Abaisse les limites de puissance du CPU vers la cible ; le firmware imposant un plancher, de brèves charges peuvent encore la dépasser de quelques degrés.",
+        "Reduz os limites de potência da CPU rumo ao alvo; como o firmware impõe um piso, cargas breves ainda podem ultrapassá-lo em alguns graus.",
+        "Снижает лимиты мощности CPU к цели; прошивка задаёт нижнюю границу, поэтому короткие нагрузки могут превышать её на несколько градусов.",
+        "Senkt die CPU-Leistungsgrenzen Richtung Zielwert; da die Firmware eine Untergrenze vorgibt, können kurze Lastspitzen ihn um einige Grad überschreiten.",
+        "目標に向けてCPU電力制限を下げます。ファームウェアが下限を定めているため、短時間の負荷では数度超える場合があります。"),
     # ---- ana pencere ----
     "Device settings and performance": (
         "Cihaz ayarları ve performans", "设备设置与性能", "डिवाइस सेटिंग्स और परफ़ॉर्मेंस", "Ajustes del equipo y rendimiento",

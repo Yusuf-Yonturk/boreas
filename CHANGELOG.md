@@ -3,6 +3,11 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## 0.1.5
+
+- With the eBPF GPU backend the dGPU temperature is shown again: the service asks `nvidia-smi` when the helper reports the standard policy with the device awake, never in eco and never to wake it. Before, the app's GPU line only showed the runtime state ("active")
+- The CPU temperature target's hint says why short overshoots happen: the firmware sets a floor on the short-term power limits, so a sudden load can still run a few degrees above the target
+
 ## 0.1.4
 
 Battery-mode fixes and a cleaner hand-over from the desktop's power-profile daemon.

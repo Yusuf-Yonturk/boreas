@@ -319,19 +319,25 @@ class Daemon:
         st = gpu.state()
         return st["has_eco"] and st["mux"] != 0 and st["mode"] != gpu.ECO
 
-    def gpu_temp(self) -> int | None:
+    def gpu_temp(self, state: dict | None = None) -> int | None:
         """nvidia-smi only runs when the dGPU is already awake (so it does not wake it up).
 
         Never queried on battery in hybrid mode: every query delays the dGPU going to sleep.
+        With the eBPF backend the helper's status (``state["engine"]``) decides: only in the
+        standard policy with the device active. In eco the device nodes are hidden and the
+        dGPU must stay asleep, so nothing is probed.
         """
-        if gpu.gpu_engine.selected():
-            return None  # Do not probe hidden GPU nodes or wake the dGPU with nvidia-smi.
         ts, val = self.gpu_temp_cache
         if time.monotonic() - ts < 5:
             return val
         val = None
         ultimate = (hw.get_attr("gpu_mux_mode") or hw.Attr("", None)).current == 0
-        if gpu.dgpu_runtime_status() == "active" and (ultimate or hw.ac_online()):
+        if gpu.gpu_engine.selected() and not ultimate:
+            engine = (state or {}).get("engine") or {}
+            awake = engine.get("policy") == "standard" and engine.get("runtime_status") == "active"
+        else:
+            awake = gpu.dgpu_runtime_status() == "active"
+        if awake and (ultimate or hw.ac_online()):
             try:
                 r = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu",
                                     "--format=csv,noheader,nounits"],
@@ -477,7 +483,8 @@ class Daemon:
                 attrs[name] = a.to_dict()
         kb, kb_max = hw.kbd_brightness()
         t = hw.temps()
-        gt = self.gpu_temp()
+        g = gpu.state() if gpu.supported() else None
+        gt = self.gpu_temp(g)
         if gt is not None:
             t["gpu"] = gt
         return {
@@ -492,7 +499,7 @@ class Daemon:
             "fans": hw.fan_rpms(),
             "fan_curves": fans.available_fans(),
             "temps": t,
-            "gpu": gpu.state() if gpu.supported() else None,
+            "gpu": g,
             "gpu_target": c["gpu_target"],
             "kbd": {"brightness": kb, "max": kb_max},
             "aura": c["aura"],

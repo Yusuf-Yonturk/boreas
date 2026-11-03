@@ -267,7 +267,7 @@ class FansWindow(QWidget):
                                         max_text=_("Default"))
             self.cpu_temp.slider.valueChanged.connect(self._dirty)
             pl.addWidget(self.cpu_temp)
-            hint = QLabel(_("Adjusts CPU power to approach the target; brief overshoots are possible."))
+            hint = QLabel(_("Lowers the CPU power limits toward the target; short bursts can still overshoot by a few degrees, since the firmware sets a floor on the limits."))
             hint.setWordWrap(True)
             hint.setObjectName("hint")
             pl.addWidget(hint)
