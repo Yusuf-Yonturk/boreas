@@ -33,6 +33,8 @@ GPU_HINTS = {
     "optimized": "Eco on battery, Standard on AC",
     "ultimate": "The display runs directly on the dGPU (MUX), needs a reboot",
 }
+# Always hold the dGPU device open; not counted in the status line (the tooltip still lists them)
+GPU_SYSTEM_USERS = ("systemd", "systemd-logind", "nvidia-powerd", "nvidia-persiste")
 AURA_MODES = [("static", "Static"), ("breathe", "Breathe"), ("cycle", "Color cycle"),
               ("rainbow", "Rainbow"), ("strobe", "Strobe")]
 AURA_SPEEDS = [("slow", "Slow"), ("normal", "Normal"), ("fast", "Fast")]
@@ -47,6 +49,23 @@ PAGES = {
     "main": ("Boreas", "Device settings and performance"),
     "fan": ("Fans and power", "Fan curves, power limits and battery"),
 }
+
+
+def gpu_users_summary(users: list[str]) -> tuple[str, str]:
+    """A fixed-length count for the status line and the full "command(PID)" list for its tooltip.
+
+    The list can grow long (compositor, Xwayland, every app with a GPU context), and a
+    growing label would shift the whole window, so the line shows a count only."""
+    if not users:
+        return "", ""
+    apps = [x for x in users if x.rsplit("(", 1)[0] not in GPU_SYSTEM_USERS]
+    if len(apps) == 1:
+        line = _("1 process is using the dGPU")
+    elif apps:
+        line = _("{n} processes are using the dGPU").format(n=len(apps))
+    else:
+        line = _("only system services hold the dGPU")
+    return line, ", ".join(users)
 
 
 def _wind_paths(simple: bool = False) -> list:
@@ -677,6 +696,7 @@ class MainWindow(QWidget):
                 if k in ("eco", "optimized"):
                     b.setEnabled(g["has_eco"])
             text = _(GPU_HINTS.get(target, ""))
+            tip = ""
             if g["pending_reboot"] or (target == "ultimate") != (active == "ultimate"):
                 text += " · " + _("waiting for a reboot")
             elif target == "eco" and active != "eco":
@@ -689,10 +709,11 @@ class MainWindow(QWidget):
                 rtd3 = engine.get("rtd3_status")
                 if rtd3 and any(word in rtd3.lower() for word in ("disabled", "not supported")):
                     text += " · RTD3: " + rtd3
-                users = engine.get("users") or []
-                if users:
-                    text += " · " + ", ".join(users)
+                summary, tip = gpu_users_summary(engine.get("users") or [])
+                if summary:
+                    text += " · " + summary
             self.gpu_label.setText(text)
+            self.gpu_label.setToolTip(tip)
             self.gpu_info.setText(f"GPU {t['gpu']}°" if "gpu" in t else (g.get("dgpu_runtime") or ""))
             ebpf_avail = bool(g.get("ebpf_available") or g.get("backend") == "ebpf")
             self.gpu_ebpf_div.setVisible(ebpf_avail)

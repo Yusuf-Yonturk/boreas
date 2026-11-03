@@ -10,6 +10,7 @@ Battery-mode fixes and a cleaner hand-over from the desktop's power-profile daem
 - `nv_dynamic_boost` is skipped while the firmware offers no adjustable range (on battery it reports 0..0 and rejects every write); the value is written again when the mode is re-applied on AC. No more "Could not write nv_dynamic_boost" notice on every battery switch
 - `install.sh` also masks `power-profiles-daemon` (it wrote the same `platform_profile` and `cpufreq/boost` files behind Boreas's back); `uninstall.sh` brings it back. The desktop's power-profile menu is empty while Boreas is installed
 - `boreasd.service` no longer orders itself after `power-profiles-daemon.service`, which produced a systemd stop-order cycle at shutdown
+- The GPU status line of the app shows a count of the processes using the dGPU (system services excluded) instead of the whole list; the full `command(PID)` list is in its tooltip, so the window no longer grows with it
 - Startup logs a warning when `BOREAS_SMU_BRIDGE=1` is set but the bridge module is not usable, instead of silently falling back to power-feedback
 
 ## 0.1.3
