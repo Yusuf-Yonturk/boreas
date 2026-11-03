@@ -528,6 +528,36 @@ class TestGpu(Base):
             daemon.subprocess.run = orig
         self.assertEqual(len(ran), 1)
 
+    def test_gpu_temp_with_ebpf_follows_the_engine_state(self):
+        # eBPF backend: the helper's own status says whether the dGPU is awake. nvidia-smi runs
+        # only in the standard policy with the device active; never in eco, never to wake it up
+        put(R + "/sys/bus/pci/devices/0000:01:00.0/vendor", "0x10de")
+        put(R + "/sys/bus/pci/devices/0000:01:00.0/class", "0x030000")
+        put(R + "/sys/bus/pci/devices/0000:01:00.0/power/runtime_status", "suspended")
+        put(R + "/sys/class/power_supply/ADP0/online", 1)
+        ran = []
+        orig = daemon.subprocess.run
+        daemon.subprocess.run = lambda *a, **k: (
+            ran.append(a), daemon.subprocess.CompletedProcess(a, 0, stdout="75\n"))[1]
+        self.addCleanup(gpu.gpu_engine.set_config_backend, None)
+        try:
+            d = daemon.Daemon(config.Config())  # start-up applies the configured backend (firmware)
+            gpu.gpu_engine.set_config_backend("ebpf")
+            d.gpu_temp_cache = (0.0, None)
+            awake = {"engine": {"policy": "standard", "power_state": "D0", "runtime_status": "active"}}
+            self.assertEqual(d.gpu_temp(awake), 75)
+            d.gpu_temp_cache = (0.0, None)
+            asleep = {"engine": {"policy": "standard", "power_state": "D3cold", "runtime_status": "suspended"}}
+            self.assertIsNone(d.gpu_temp(asleep))
+            d.gpu_temp_cache = (0.0, None)
+            eco = {"engine": {"policy": "eco", "power_state": "D0", "runtime_status": "active"}}
+            self.assertIsNone(d.gpu_temp(eco))
+            d.gpu_temp_cache = (0.0, None)
+            self.assertIsNone(d.gpu_temp({"engine": None}))  # helper not answering
+        finally:
+            daemon.subprocess.run = orig
+        self.assertEqual(len(ran), 1)
+
     def test_rejects_unknown_gpu_and_mode(self):
         d = daemon.Daemon(config.Config())
         with self.assertRaises(ValueError):
