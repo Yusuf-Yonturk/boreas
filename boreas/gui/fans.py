@@ -228,25 +228,40 @@ class FansWindow(QWidget):
         root.addWidget(fc)
 
         # Power
-        pc, pl, _info = card(_("Power"))
+        pc, pl, self.power_info = card(_("Power"))  # the live state of the CPU temperature target
         # CPU Boost (boost + EPP selector) at the top of the Power card, above SPL
         self.cpu_boost_cb: QComboBox | None = None
         if main.status.get("cpu_boost_supported", True):
             cb = QComboBox()
             cb.setFixedWidth(u(220))
             cb.setCursor(Qt.PointingHandCursor)
-            for b_key, b_label in (
-                ("default", _("Default")),
-                ("disabled", _("Disabled")),
-                ("efficient", _("Efficient")),
-                ("balanced", _("Balanced")),
-                ("aggressive", _("Aggressive")),
-                ("max", _("Max")),
-            ):
-                cb.addItem(b_label, b_key)
-            cb.currentIndexChanged.connect(self._dirty)
             self.cpu_boost_cb = cb
+            self._fill_boost_items(performance=False)
+            cb.currentIndexChanged.connect(self._dirty)
             pl.addWidget(row(_("CPU Boost"), cb, height=56))
+            pl.addWidget(hline())
+        # Power profile (cpufreq governor) under CPU Boost: what the desktop's power menu set
+        self.cpu_governor_cb: QComboBox | None = None
+        governors = main.status.get("cpu_governors") or []
+        if len(governors) > 1:
+            cb = QComboBox()
+            cb.setFixedWidth(u(220))
+            cb.setCursor(Qt.PointingHandCursor)
+            for g_key, g_label in (
+                ("default", _("Default")),
+                ("powersave", _("Power saver")),
+                ("performance", _("Performance")),
+            ):
+                if g_key in governors:
+                    cb.addItem(g_label, g_key)
+            cb.currentIndexChanged.connect(self._dirty)
+            cb.currentIndexChanged.connect(self._sync_boost_items)
+            self.cpu_governor_cb = cb
+            pl.addWidget(row(_("Power profile"), cb, height=56))
+            hint = QLabel(_("The CPU frequency governor, which the desktop's power-profile menu set before Boreas took it over. Performance holds the highest clock and overrides the CPU Boost preference."))
+            hint.setWordWrap(True)
+            hint.setObjectName("hint")
+            pl.addWidget(hint)
             pl.addWidget(hline())
         self.sliders: dict[str, ValueSlider] = {}
         attrs = main.status.get("attrs", {})
@@ -268,6 +283,26 @@ class FansWindow(QWidget):
             self.cpu_temp.slider.valueChanged.connect(self._dirty)
             pl.addWidget(self.cpu_temp)
             hint = QLabel(_("Lowers the CPU power limits toward the target; short bursts can still overshoot by a few degrees, since the firmware sets a floor on the limits."))
+            hint.setWordWrap(True)
+            hint.setObjectName("hint")
+            pl.addWidget(hint)
+            self.cpu_conflict = QLabel(_("With the Performance power profile the EPP cannot be lowered: when the target is exceeded the controller switches boost off and falls back to the default power profile until the CPU cools."))
+            self.cpu_conflict.setWordWrap(True)
+            self.cpu_conflict.setObjectName("hint")
+            self.cpu_conflict.hide()
+            pl.addWidget(self.cpu_conflict)
+            self.cpu_temp.slider.valueChanged.connect(self._sync_conflict_hint)
+            if self.cpu_governor_cb is not None:
+                self.cpu_governor_cb.currentIndexChanged.connect(self._sync_conflict_hint)
+        # Sustained power floor: the target never requests SPL below it, the ladder takes over there
+        self.cpu_floor = None
+        spl = attrs.get("ppt_pl1_spl") or {}
+        if ct and spl.get("min") is not None and spl.get("max") is not None:
+            self.cpu_floor = ValueSlider(_("Sustained power floor"), spl["min"], spl["max"], spl["min"], "W",
+                                         min_text=_("Firmware minimum"))
+            self.cpu_floor.slider.valueChanged.connect(self._dirty)
+            pl.addWidget(self.cpu_floor)
+            hint = QLabel(_("The controller never lowers the sustained limit (SPL) below this value. Once it is reached, the controller lowers the EPP, then switches boost off, then the power profile, and restores them in reverse order when the CPU cools."))
             hint.setWordWrap(True)
             hint.setObjectName("hint")
             pl.addWidget(hint)
@@ -308,6 +343,70 @@ class FansWindow(QWidget):
         self.reload_modes(main.status["mode"])
 
     # ---- status row ----
+
+    def _fill_boost_items(self, performance: bool, keep: str | None = None):
+        """The CPU Boost choices. Under the performance governor the kernel fixes the EPP, so only
+        boost on/off is left: the list shrinks to Performance / Disabled."""
+        cb = self.cpu_boost_cb
+        if cb is None:
+            return
+        if performance:
+            items = (("max", _("Performance")), ("disabled", _("Disabled")))
+        else:
+            items = (("default", _("Default")), ("disabled", _("Disabled")), ("efficient", _("Efficient")),
+                     ("balanced", _("Balanced")), ("aggressive", _("Aggressive")), ("max", _("Max")))
+        keys = [k for k, _l in items]
+        if keep is not None and keep not in keys:
+            keep = "disabled" if keep == "disabled" else keys[0]
+        cb.blockSignals(True)
+        cb.clear()
+        for key, label in items:
+            cb.addItem(label, key)
+        idx = cb.findData(keep) if keep is not None else -1
+        cb.setCurrentIndex(idx if idx >= 0 else 0)
+        cb.blockSignals(False)
+
+    def _sync_conflict_hint(self, *_args):
+        if self.cpu_temp is None or self.cpu_governor_cb is None:
+            return
+        on = self.cpu_temp.slider.value() < self.cpu_temp.slider.maximum()
+        self.cpu_conflict.setVisible(on and self.cpu_governor_cb.currentData() == "performance")
+
+    def render_cpu_temp(self, ct: dict | None, active_mode) -> None:
+        """The Power card's info line: what the target is doing right now in the active mode."""
+        if not ct or ct.get("target") is None or self.mode_id != active_mode:
+            self.power_info.setText("")
+            return
+        if ct.get("state") == "error" and ct.get("error"):
+            self.power_info.setText(tr_msg(ct["error"]))
+            return
+        parts = [_("Target {temp} °C").format(temp=ct["target"])]
+        pl1 = (ct.get("requested_w") or {}).get("ppt_pl1_spl")
+        if pl1 is None:
+            pl1 = (ct.get("ceilings_w") or {}).get("ppt_pl1_spl")
+        if pl1 is not None:
+            text = _("PL1 {watts} W").format(watts=pl1)
+            if ct.get("floor_w") is not None and pl1 <= ct["floor_w"] and ct.get("state") == "limited":
+                text += f" ({_('floor')})"
+            parts.append(text)
+        engaged = (ct.get("ladder") or [])[:ct.get("stage") or 0]
+        kinds = [r.split(":")[0] for r in engaged]
+        if "epp" in kinds:
+            parts.append(_("EPP lowered"))
+        if "boost" in kinds:
+            parts.append(_("boost off"))
+        if "governor" in kinds:
+            parts.append(_("power profile lowered"))
+        self.power_info.setText(" · ".join(parts))
+
+    def _sync_boost_items(self, *_args):
+        if self.cpu_governor_cb is None or self.cpu_boost_cb is None:
+            return
+        performance = self.cpu_governor_cb.currentData() == "performance"
+        current = self.cpu_boost_cb.currentData()
+        if performance != (self.cpu_boost_cb.count() == 2):
+            self._fill_boost_items(performance, keep=current)
+            self._dirty()
 
     def _set_status(self, text: str):
         self.result.setText(tr_msg(text))
@@ -360,12 +459,17 @@ class FansWindow(QWidget):
                 v = stored.get(name)
                 # without a saved value, do not keep the previous mode's value (back to the default)
                 s.slider.setValue(int(v if v is not None else self._fallback(name)))
+            if self.cpu_governor_cb is not None:
+                idx = self.cpu_governor_cb.findData(self.entry.get("cpu_governor") or "default")
+                self.cpu_governor_cb.setCurrentIndex(idx if idx >= 0 else 0)
             if self.cpu_boost_cb is not None:
-                b_val = self.entry.get("cpu_boost") or "default"
-                idx = self.cpu_boost_cb.findData(b_val)
-                self.cpu_boost_cb.setCurrentIndex(idx if idx >= 0 else 0)
+                performance = self.cpu_governor_cb is not None and self.cpu_governor_cb.currentData() == "performance"
+                self._fill_boost_items(performance, keep=self.entry.get("cpu_boost") or "default")
             if self.cpu_temp:
                 self.cpu_temp.slider.setValue(self.entry.get("cpu_temp") or self.cpu_temp.slider.maximum())
+                self._sync_conflict_hint()
+            if self.cpu_floor:
+                self.cpu_floor.slider.setValue(self.entry.get("cpu_temp_floor_w") or self.cpu_floor.slider.minimum())
             for fan, ed in self.editors.items():
                 curve = self.entry.get(f"fan_{fan}")
                 if curve:
@@ -403,10 +507,14 @@ class FansWindow(QWidget):
             a = self.main.status.get("attrs", {}).get(name) or {}
             if a.get("default") is not None:
                 s.slider.setValue(a["default"])
+        if self.cpu_governor_cb is not None:
+            self.cpu_governor_cb.setCurrentIndex(0)
         if self.cpu_boost_cb is not None:
-            self.cpu_boost_cb.setCurrentIndex(0)
+            self._fill_boost_items(performance=False, keep="default")
         if self.cpu_temp:
             self.cpu_temp.slider.setValue(self.cpu_temp.slider.maximum())
+        if self.cpu_floor:
+            self.cpu_floor.slider.setValue(self.cpu_floor.slider.minimum())
         self._set_status("Not saved")
 
     def _add_mode(self):
@@ -438,9 +546,14 @@ class FansWindow(QWidget):
         }
         if self.cpu_boost_cb is not None:
             data["cpu_boost"] = self.cpu_boost_cb.currentData() or "default"
+        if self.cpu_governor_cb is not None:
+            data["cpu_governor"] = self.cpu_governor_cb.currentData() or "default"
         if self.cpu_temp:
             v = self.cpu_temp.slider.value()
             data["cpu_temp"] = v if v < self.cpu_temp.slider.maximum() else None
+        if self.cpu_floor:
+            v = self.cpu_floor.slider.value()
+            data["cpu_temp_floor_w"] = v if v > self.cpu_floor.slider.minimum() else None
         for fan, ed in self.editors.items():
             data[f"fan_{fan}"] = ed.curve
         mode = self.mode_id

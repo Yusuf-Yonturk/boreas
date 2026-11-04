@@ -33,7 +33,27 @@ def _mode_entry(base: int, name: str) -> dict:
         "nv": {},
         "cpu_temp": None,  # °C software target; None = no feedback power control
         "cpu_boost": "default",  # default | disabled | efficient | balanced | aggressive | max
+        "cpu_governor": "default",  # default | powersave | performance (cpufreq governor)
+        "cpu_temp_floor_w": None,  # W; the target never requests ppt_pl1_spl below this (None = firmware minimum)
     }
+
+
+def sanitize_mode(entry: dict) -> dict:
+    """Coerce a stored mode entry so a hand-edited or stale value cannot stop the service."""
+    t = entry.get("cpu_temp")
+    entry["cpu_temp"] = t if type(t) is int and hw.TEMP_MIN <= t < hw.TEMP_OFF else None
+    if entry.get("cpu_boost") not in hw.CPU_BOOST_MODES:
+        entry["cpu_boost"] = "default"
+    if entry.get("cpu_governor") not in hw.CPU_GOVERNORS:
+        entry["cpu_governor"] = "default"
+    f = entry.get("cpu_temp_floor_w")
+    entry["cpu_temp_floor_w"] = f if type(f) is int and f > 0 else None
+    for key in ("ppt", "nv"):
+        if not isinstance(entry.get(key), dict):
+            entry[key] = {}
+    for key in ("fans_apply", "power_apply"):
+        entry[key] = bool(entry.get(key))
+    return entry
 
 
 DEFAULT = {
@@ -62,7 +82,7 @@ class Config:
             for k, v in loaded.get("modes", {}).items():
                 entry = _mode_entry(v.get("base", hw.BALANCED), v.get("name", k))
                 entry.update(v)
-                self.data["modes"][k] = entry
+                self.data["modes"][k] = sanitize_mode(entry)
         except (OSError, ValueError):
             pass
 

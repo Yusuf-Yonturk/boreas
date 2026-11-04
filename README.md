@@ -28,6 +28,7 @@ Deutsch, 日本語.
 | Custom modes (Custom 1, 2…) | ✓ | bound to a built-in mode on the same base |
 | Per-mode fan curves | ✓ (CPU, GPU, mid) | `asus_custom_fan_curve` hwmon |
 | CPU Boost mode (per mode) | ✓ (`Default` / `Disabled` / `Efficient` / `Balanced` / `Aggressive` / `Max`) | `cpufreq/boost`, `energy_performance_preference` |
+| Power profile (per mode) | ✓ (`Default` / `Power saver` / `Performance`): the CPU frequency governor the desktop's power menu set before Boreas masked power-profiles-daemon | `cpufreq/scaling_governor` |
 | Power limits (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / temp target | ✓ | asus-armoury `nv_*` |
 | CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury |
@@ -91,6 +92,7 @@ boreasctl mode turbo   # silent | balanced | turbo | next | prev
 boreasctl gpu eco      # eco | standard | optimized | ultimate
 boreasctl charge 80
 boreasctl cputemp 85   # active mode; default = firmware default
+boreasctl cpufloor 45  # the target never lowers SPL below 45 W; min = firmware minimum
 ```
 
 The UI follows the system light/dark theme; the button in the header switches between auto, light
@@ -126,24 +128,37 @@ module is needed for this path. Support requires a CPU sensor and valid current,
 minimum and maximum values for the exposed CPU power controls, including SPL.
 This is capability detection, not a promise of support for every ASUS laptop.
 
-The controller lowers SPL and available SPPT/FPPT at most once per second near
-the target. After five cool seconds it recovers 1 W, never exceeding the values
-captured after applying the selected profile and optional user power limits.
-On models requiring custom fans, the profile's factory curves are enabled unless
-the user selected custom curves. Choosing Default stops feedback and restores
-power values still owned by the controller. Mode changes and resume reconfigure it.
-An external profile change discards the previous profile's saved power values.
+Above the target the controller lowers SPL and available SPPT/FPPT by 2 to 6 W
+per second; from three degrees below the target it recovers 2 W every 2 s, never
+exceeding the values captured after applying the selected profile and optional
+user power limits. The per-mode **sustained power floor** keeps SPL from being
+lowered below a chosen wattage (a gaming mode can hold 45 W instead of the
+firmware's 30 W minimum). When the caps reach their floor and the CPU is still
+hot, the controller steps below the mode's own CPU policy, rung by rung: EPP one
+notch down, then cpufreq boost off, then (with the Performance power profile) the
+default governor, and restores them in reverse order when the CPU cools. The
+mode's own CPU Boost and power profile are the ceiling; the controller never goes
+above them. On models requiring custom fans, the profile's factory curves are
+enabled unless the user selected custom curves. Choosing Default stops feedback
+and restores the power values and the CPU policy. Mode changes and resume
+reconfigure it. An external profile change discards the previous profile's saved
+power values.
 
-A missing sensor, rejected write, readback mismatch or external power change
-stops feedback and reports an error; there is no automatic retry or SMU fallback.
-Already lowered caps remain until Default or an explicit mode reapply. Do not run
-another power tuning service concurrently. Sysfs readback can be cached by the
-driver: it confirms the requested setting, not actual physical enforcement.
+Small drifts of the power limits (firmware rounding, the delayed policy rerun
+after a profile write) are followed, and a user power limit the firmware undid is
+written again; only a writer that keeps fighting stops the loop. A missing sensor,
+rejected write or readback mismatch stops feedback and reports an error; saving
+the mode again retries. Do not run another power tuning service concurrently.
+Sysfs readback can be cached by the driver: it confirms the requested setting,
+not actual physical enforcement.
 
 `boreasctl cputemp 85` sets the active mode's target; `cputemp default` disables it.
-`cpu_temp` status reports `control: power-feedback`, `target`, `state`, `error`,
-`ceilings_w`, `requested_w`, and `hard_limit: false`. `applied` is null because no
-hardware temperature limit was programmed. The existing saved targets are reused.
+`boreasctl cpufloor 45` sets the active mode's sustained power floor; `cpufloor min`
+returns to the firmware minimum. `cpu_temp` status reports `control:
+power-feedback`, `target`, `state`, `error`, `ceilings_w`, `requested_w`,
+`floor_w`, `stage`, `ladder`, `effective`, `baseline` and `hard_limit: false`.
+`applied` is null because no hardware temperature limit was programmed. The
+existing saved targets are reused.
 A previous SMU setting is not reset by this backend; the normal firmware policy
 or reboot may be needed to clear an old setting.
 

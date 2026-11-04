@@ -290,38 +290,161 @@ def cpu_boost_supported() -> bool:
     return bool(cpu_boost_paths()) or bool(glob.glob(p("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference")))
 
 
+EPP_FALLBACKS = ("balance_power", "balance_performance", "default", "performance", "power")
+EPP_GLOB = "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference"
+# software CPU temperature target range; TEMP_OFF is the UI's Off/Default sentinel
+TEMP_MIN, TEMP_OFF = 75, 96
+
+
+def epp_for_boost_mode(mode: str | None, base: int = BALANCED) -> str:
+    """The EPP a CPU boost mode stands for ('default' follows the mode base)."""
+    mode = (mode or "default").lower()
+    if mode == "disabled":
+        return "power"
+    return EPP_BY_BOOST_MODE.get(mode, DEFAULT_EPP_BY_BASE.get(base, "balance_performance"))
+
+
+def cpu_epp_files() -> list[str]:
+    return sorted(f[len(ROOT):] for f in glob.glob(p(EPP_GLOB)))
+
+
+def cpu_epp() -> str | None:
+    files = cpu_epp_files()
+    return read(files[0]) if files else None
+
+
+def cpu_boost_enabled() -> bool | None:
+    paths = cpu_boost_paths()
+    if not paths:
+        return None
+    v = read_int(paths[0])
+    return None if v is None else bool(v)
+
+
+def set_boost_enabled(on: bool) -> None:
+    """Write cpufreq/boost (global or per policy) with readback; OSError without a boost file."""
+    paths = cpu_boost_paths()
+    if not paths:
+        raise OSError("cpufreq/boost is not available on this system")
+    value = 1 if on else 0
+    errors = []
+    for rel in paths:
+        try:
+            write(rel, value)
+            if read_int(rel) != value:
+                raise OSError("boost readback mismatch")
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+    if errors:
+        raise OSError("; ".join(errors))
+
+
+def set_epp(epp: str) -> None:
+    """Write the energy performance preference to every policy, with readback.
+
+    Policies under the performance governor are skipped: the kernel fixes their EPP and
+    rejects writes. A preference the policy does not offer falls back to the nearest one."""
+    errors = []
+    for rel in cpu_epp_files():
+        if read(os.path.dirname(rel) + "/scaling_governor") == "performance":
+            continue
+        avail = (read(os.path.dirname(rel) + "/energy_performance_available_preferences") or "").split()
+        target_epp = epp
+        if avail and target_epp not in avail:
+            target_epp = next((f for f in EPP_FALLBACKS if f in avail), epp)
+        try:
+            write(rel, target_epp)
+            if read(rel) != target_epp:
+                raise OSError("EPP readback mismatch")
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+    if errors:
+        raise OSError("; ".join(errors))
+
+
 def set_cpu_boost(mode: str | None, base: int = BALANCED) -> None:
     """Apply CPU boost and EPP policy ('default', 'disabled', 'efficient', 'balanced', 'aggressive', 'max')."""
     mode = (mode or "default").lower()
     if mode not in CPU_BOOST_MODES:
         raise ValueError(f"Invalid CPU boost mode: {mode}")
-    boost_on = 0 if mode == "disabled" else 1
     errors = []
-    for rel in cpu_boost_paths():
+    if cpu_boost_paths():
         try:
-            write(rel, boost_on)
-            if read_int(rel) != boost_on:
-                raise OSError("boost readback mismatch")
+            set_boost_enabled(mode != "disabled")
         except OSError as exc:
-            errors.append(f"{rel}: {exc}")
-    if mode == "disabled" and not cpu_boost_paths():
+            errors.append(str(exc))
+    elif mode == "disabled":
         # EPP alone cannot switch boost off; say so instead of pretending.
         errors.append("cpufreq/boost is not available on this system, only EPP was applied")
-    epp = "power" if mode == "disabled" else EPP_BY_BOOST_MODE.get(mode, DEFAULT_EPP_BY_BASE.get(base, "balance_performance"))
-    for epp_file in sorted(glob.glob(p("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference"))):
-        rel = epp_file[len(ROOT):]
-        avail_path = os.path.dirname(rel) + "/energy_performance_available_preferences"
-        avail = (read(avail_path) or "").split()
-        target_epp = epp
-        if avail and target_epp not in avail:
-            for fallback in ("balance_power", "balance_performance", "default", "performance", "power"):
-                if fallback in avail:
-                    target_epp = fallback
-                    break
+    try:
+        set_epp(epp_for_boost_mode(mode, base))
+    except OSError as exc:
+        errors.append(str(exc))
+    if errors:
+        raise OSError("; ".join(errors))
+
+
+# ---- CPU frequency governor ("power profile") ----------------------------------
+# What the desktop's power-profile menu (power-profiles-daemon) switched at the cpufreq level.
+
+CPU_GOVERNORS = ("default", "powersave", "performance")
+# the kernel's own default for the driver: schedutil (acpi-cpufreq), else powersave (amd/intel pstate)
+DEFAULT_GOVERNOR_ORDER = ("schedutil", "powersave")
+GOVERNOR_GLOB = "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor"
+
+
+def _governor_files() -> list[str]:
+    return sorted(f[len(ROOT):] for f in glob.glob(p(GOVERNOR_GLOB)))
+
+
+def cpu_governor_available() -> set[str]:
+    """Governors that every cpufreq policy advertises (empty when there is no cpufreq)."""
+    avail = None
+    for rel in _governor_files():
+        names = set((read(os.path.dirname(rel) + "/scaling_available_governors") or "").split())
+        avail = names if avail is None else avail & names
+    return avail or set()
+
+
+def cpu_governor_choices() -> list[str]:
+    """CPU_GOVERNORS selectable on this system; 'default' only when a governor can be restored."""
+    avail = cpu_governor_available()
+    choices = [g for g in CPU_GOVERNORS if g != "default" and g in avail]
+    if not choices or default_cpu_governor(avail) is None:
+        return []
+    return ["default"] + choices
+
+
+def default_cpu_governor(avail: set[str] | None = None) -> str | None:
+    avail = cpu_governor_available() if avail is None else avail
+    return next((g for g in DEFAULT_GOVERNOR_ORDER if g in avail), None)
+
+
+def cpu_governor() -> str | None:
+    files = _governor_files()
+    return read(files[0]) if files else None
+
+
+def set_cpu_governor(mode: str | None) -> None:
+    """Write the cpufreq governor to every policy ('default' = the driver's own governor)."""
+    mode = mode or "default"
+    if mode not in CPU_GOVERNORS:
+        raise ValueError(f"Invalid CPU governor: {mode}")
+    files = _governor_files()
+    if not files:
+        if mode != "default":
+            raise OSError("cpufreq/scaling_governor is not available on this system")
+        return
+    target = default_cpu_governor() if mode == "default" else mode
+    if target is None:
+        return  # nothing known to restore
+    errors = []
+    for rel in files:
         try:
-            write(rel, target_epp)
-            if read(rel) != target_epp:
-                raise OSError("EPP readback mismatch")
+            if read(rel) != target:
+                write(rel, target)
+            if read(rel) != target:
+                raise OSError("governor readback mismatch")
         except OSError as exc:
             errors.append(f"{rel}: {exc}")
     if errors:

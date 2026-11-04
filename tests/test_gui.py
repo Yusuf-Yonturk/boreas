@@ -134,6 +134,108 @@ class TestPanels(unittest.TestCase):
             self.assertEqual(f.cpu_temp.slider.value(), 96)
         self.assertEqual([d["cpu_temp"] for d in sent], [85, None])
 
+    def test_power_profile_combo(self):
+        self.assertIsNone(A.FansWindow(self.w).cpu_governor_cb)  # no cpufreq governor: hidden
+        self.w.status["cpu_governors"] = ["default", "performance"]
+        f = A.FansWindow(self.w)
+        self.assertEqual([f.cpu_governor_cb.itemData(i) for i in range(f.cpu_governor_cb.count())],
+                         ["default", "performance"])  # only the advertised governors are offered
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_governor": "performance"}
+        f._show_entry({"mode": entry})
+        self.assertEqual(f.cpu_governor_cb.currentData(), "performance")
+        sent = []
+        self.w.call = lambda cmd, **kw: sent.append(kw["data"]) or {}
+        with patch("boreas.gui.fans.run_async", lambda fn, done: done(fn())), \
+                patch.object(self.w, "refresh", lambda *a: None):
+            f._apply()
+            f._show_entry({"mode": {**entry, "cpu_governor": "powersave"}})  # not offered: falls back
+            self.assertEqual(f.cpu_governor_cb.currentData(), "default")
+            f._show_entry({"mode": entry})
+            f._factory()
+            self.assertEqual(f.cpu_governor_cb.currentData(), "default")
+            f._apply()
+        self.assertEqual([d["cpu_governor"] for d in sent], ["performance", "default"])
+
+    def test_boost_list_shrinks_under_the_performance_governor(self):
+        self.w.status["cpu_governors"] = ["default", "powersave", "performance"]
+        f = A.FansWindow(self.w)
+        boost, gov = f.cpu_boost_cb, f.cpu_governor_cb
+        keys = lambda: [boost.itemData(i) for i in range(boost.count())]
+        full = ["default", "disabled", "efficient", "balanced", "aggressive", "max"]
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {},
+                 "cpu_boost": "efficient", "cpu_governor": "default"}
+        f._show_entry({"mode": entry})
+        self.assertEqual(keys(), full)
+        self.assertEqual(boost.currentData(), "efficient")
+        gov.setCurrentIndex(gov.findData("performance"))  # the user picks Performance
+        self.assertEqual(keys(), ["max", "disabled"])  # only boost on/off is left
+        self.assertEqual(boost.currentText(), "Performans")
+        self.assertEqual(f.result.text(), "Kaydedilmedi")
+        gov.setCurrentIndex(gov.findData("default"))
+        self.assertEqual(keys(), full)
+        self.assertEqual(boost.currentData(), "max")  # carried over as the strongest EPP
+        f._show_entry({"mode": {**entry, "cpu_boost": "disabled", "cpu_governor": "performance"}})
+        self.assertEqual((keys(), boost.currentData()), (["max", "disabled"], "disabled"))
+        f._factory()
+        self.assertEqual((keys(), boost.currentData(), gov.currentData()), (full, "default", "default"))
+
+    def test_cpu_floor_slider(self):
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        self.w.status["attrs"] = {}
+        self.assertIsNone(A.FansWindow(self.w).cpu_floor)  # no SPL range: hidden
+        self.w.status["attrs"] = {"ppt_pl1_spl": SPL}
+        f = A.FansWindow(self.w)
+        self.assertEqual(f.cpu_floor.value.text(), "Firmware minimumu")
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 85, "cpu_temp_floor_w": 45}
+        f._show_entry({"mode": entry})
+        self.assertEqual(f.cpu_floor.value.text(), "45W")
+        sent = []
+        self.w.call = lambda cmd, **kw: sent.append(kw["data"]) or {}
+        with patch("boreas.gui.fans.run_async", lambda fn, done: done(fn())), \
+                patch.object(self.w, "refresh", lambda *a: None):
+            f._apply()
+            f._show_entry({"mode": {**entry, "cpu_temp_floor_w": None}})
+            self.assertEqual(f.cpu_floor.slider.value(), 30)
+            f._apply()
+            f._show_entry({"mode": entry})
+            f._factory()
+            self.assertEqual(f.cpu_floor.slider.value(), 30)
+        self.assertEqual([d["cpu_temp_floor_w"] for d in sent], [45, None])
+
+    def test_power_card_status_line(self):
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        f = A.FansWindow(self.w)
+        f.mode_id = 0
+        ct = {"target": 82, "state": "limited", "error": "", "requested_w": {"ppt_pl1_spl": 30}, "ceilings_w": {"ppt_pl1_spl": 65},
+              "floor_w": 30, "stage": 2, "stage_max": 4,
+              "ladder": ["epp:balance_performance", "epp:balance_power", "epp:power", "boost:False"]}
+        f.render_cpu_temp(ct, 0)
+        self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 30 W (taban) · EPP düşürüldü")
+        f.render_cpu_temp({**ct, "stage": 4, "state": "active", "requested_w": {"ppt_pl1_spl": 40}}, 0)
+        self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 40 W · EPP düşürüldü · boost kapalı")
+        f.render_cpu_temp({**ct, "state": "error", "error": "Power limits changed externally; controller stopped"}, 0)
+        self.assertEqual(f.power_info.text(), "Güç limitleri dışarıdan değiştirildi; denetleyici durdu")
+        f.render_cpu_temp(ct, 1)  # another mode is being edited: nothing about the active one
+        self.assertEqual(f.power_info.text(), "")
+        f.render_cpu_temp({**ct, "target": None}, 0)
+        self.assertEqual(f.power_info.text(), "")
+
+    def test_conflict_hint_follows_governor_and_target(self):
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        self.w.status["cpu_governors"] = ["default", "powersave", "performance"]
+        f = A.FansWindow(self.w)
+        f.show()
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 82, "cpu_governor": "performance"}
+        f._show_entry({"mode": entry})
+        self.assertFalse(f.cpu_conflict.isHidden())
+        f.cpu_governor_cb.setCurrentIndex(f.cpu_governor_cb.findData("default"))
+        self.assertTrue(f.cpu_conflict.isHidden())
+        f.cpu_governor_cb.setCurrentIndex(f.cpu_governor_cb.findData("performance"))
+        self.assertFalse(f.cpu_conflict.isHidden())
+        f.cpu_temp.slider.setValue(96)  # target off: no conflict
+        self.assertTrue(f.cpu_conflict.isHidden())
+        f.close()
+
     def test_fans_button_switches_page(self):
         w = self.w
         w.status.update(ac=True)
@@ -365,6 +467,15 @@ class TestHeldSelection(unittest.TestCase):
         w.render()
         self.assertFalse(w.live_info.isHidden())
         self.assertEqual(w.live_info.text(), "CPU 70° · 2000 / 2100 rpm")
+
+    def test_main_card_shows_limited(self):
+        w = self.w
+        w.status = {**self.STATUS, "cpu_temp": {"target": 82, "state": "limited"}}
+        w.render()
+        self.assertIn("sınırlı", w.mode_label.text())
+        w.status = {**self.STATUS, "cpu_temp": {"target": 82, "state": "active"}}
+        w.render()
+        self.assertNotIn("sınırlı", w.mode_label.text())
 
     def test_gpu_users_are_summarized(self):
         w = self.w

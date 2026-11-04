@@ -277,9 +277,9 @@ def footer_bar(inner: QHBoxLayout) -> QWidget:
 
 
 class ValueSlider(QWidget):
-    def __init__(self, label: str, lo: int, hi: int, value: int, unit: str, max_text: str = ""):
+    def __init__(self, label: str, lo: int, hi: int, value: int, unit: str, max_text: str = "", min_text: str = ""):
         super().__init__()
-        self.unit, self.max_text = unit, max_text
+        self.unit, self.max_text, self.min_text = unit, max_text, min_text
         self.setFixedHeight(uv(46))
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -301,8 +301,12 @@ class ValueSlider(QWidget):
         self._show(value)
 
     def _show(self, v):
-        at_max = self.max_text and v >= self.slider.maximum()
-        self.value.setText(self.max_text if at_max else f"{v}{self.unit}")
+        if self.max_text and v >= self.slider.maximum():
+            self.value.setText(self.max_text)
+        elif self.min_text and v <= self.slider.minimum():
+            self.value.setText(self.min_text)
+        else:
+            self.value.setText(f"{v}{self.unit}")
 
 
 _FAN_SVG = (
