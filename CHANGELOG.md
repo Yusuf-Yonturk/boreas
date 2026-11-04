@@ -3,6 +3,14 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## Unreleased
+
+- The CPU temperature target gained an **escalation ladder**: when the power limits sit at their floor and the CPU is still above the target, the controller steps below the mode's own CPU policy one rung at a time (EPP one notch down, then `cpufreq/boost` off, then the default governor when the mode uses the Performance power profile) and releases the rungs in reverse order as the CPU cools. The mode's CPU Boost and power profile stay the ceiling; `Default`, mode changes and service exit restore them exactly. The Fans & Power page shows the live state on the Power card ("Target 82 °C · PL1 30 W (floor) · EPP lowered") and the main card says "limited" while the target cannot be met
+- Per-mode **sustained power floor** under the temperature target (slider, `boreasctl cpufloor <W>|min`): the controller never requests SPL below it and moves on to the ladder instead, so a gaming mode can hold 45 W instead of the firmware's 30 W minimum
+- Controller fixes: the cut is 2 to 6 W per second (was up to 10) and starts one degree above the target, where `limited` is also judged; recovery is 2 W every 2 s (was 1 W per 5 s); limits that drifted inside the controller's band are followed instead of latching "changed externally", a user limit the firmware undid is written again, and a raised limit that is not a user setting becomes the new ceiling; saving the mode again retries after a fault; a limit another writer changed is logged instead of silently dropped; a dismissed thermal notice is not raised again for the same fault; stored mode values are sanitised at load so a bad `cpu_temp` cannot stop the service; the controller's fault texts are translated
+
+- Per-mode **Power profile** selector in Fans & Power, under CPU Boost (`Default` / `Power saver` / `Performance`): the `cpufreq/scaling_governor` that the desktop's power-profile menu switched before Boreas masked `power-profiles-daemon`. `Default` restores the driver's own governor (`schedutil`, else `powersave`); the selector is hidden when the kernel offers no governor to come back to. Under the `performance` governor the kernel fixes the EPP, so the CPU Boost list shrinks to `Performance` / `Disabled` while that profile is selected, and the EPP write is skipped instead of reported as a failure
+
 ## 0.1.5
 
 - With the eBPF GPU backend the dGPU temperature is shown again: the service asks `nvidia-smi` when the helper reports the standard policy with the device awake, never in eco and never to wake it. Before, the app's GPU line only showed the runtime state ("active")

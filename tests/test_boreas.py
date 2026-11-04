@@ -930,6 +930,105 @@ class TestThermalDaemon(Base):
         self.assertIsNone(d.cpu.target)
         self.assertIn("fan curve", d.cpu.error)
 
+    def _cpufreq(self, governor="powersave", epp="performance", boost=1):
+        """cpufreq files the ladder writes; the G713PV tree has none by default."""
+        put(R + hw.CPU_BOOST_PATH, boost)
+        for i in range(2):
+            cpu = R + f"/sys/devices/system/cpu/cpu{i}/cpufreq"
+            put(cpu + "/scaling_governor", governor)
+            put(cpu + "/scaling_available_governors", "performance powersave")
+            put(cpu + "/energy_performance_preference", epp)
+            put(cpu + "/energy_performance_available_preferences",
+                "default performance balance_performance balance_power power")
+
+    def _policy(self):
+        cpu = R + "/sys/devices/system/cpu/cpu0/cpufreq"
+        return (get(cpu + "/scaling_governor"), get(cpu + "/energy_performance_preference"), get(R + hw.CPU_BOOST_PATH))
+
+    def test_floor_edit_is_light_and_validated(self):
+        d, _, clock = self._daemon(85)
+        d.apply_mode(hw.BALANCED)
+        for bad in (20, 200, "40", 40.0):
+            with self.assertRaisesRegex(ValueError, "30..130 W"):
+                d.handle({"cmd": "update_mode", "mode": hw.BALANCED, "data": {"cpu_temp_floor_w": bad}})
+        with patch.object(hw, "set_profile") as profile:
+            d.handle({"cmd": "update_mode", "mode": hw.BALANCED, "data": {"cpu_temp_floor_w": 40}})
+            profile.assert_not_called()
+        self.assertEqual(d.cpu.floor_w, 40)
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        for _ in range(10):
+            clock[0] += 1
+            d.tick()
+        self.assertEqual(hw.get_attr("ppt_pl1_spl").current, 40)
+        self.assertEqual(d.status()["cpu_temp"]["floor_w"], 40)
+        d.handle({"cmd": "update_mode", "mode": hw.BALANCED, "data": {"cpu_temp_floor_w": None}})
+        self.assertIsNone(d.cpu.floor_w)
+
+    def test_policy_written_before_controller_starts(self):
+        d, _, _ = self._daemon(85)
+        order = []
+        with patch.object(d, "apply_cpu_policy", side_effect=lambda m: order.append("policy")), \
+                patch.object(d, "apply_cpu_temp", side_effect=lambda t, m=None: order.append("target")):
+            d.apply_mode(hw.BALANCED)
+        self.assertEqual(order, ["policy", "target"])
+
+    def test_ladder_runs_through_daemon_and_mode_change_restores(self):
+        self._cpufreq()
+        d, _, clock = self._daemon(85)
+        d.cfg.mode(hw.BALANCED).update(cpu_boost="max")
+        d.cfg.mode(hw.TURBO).update(cpu_boost="aggressive")
+        d.apply_mode(hw.BALANCED)
+        self.assertEqual(d.cpu.baseline.boost_mode, "max")
+        self.assertEqual(d.cpu.ladder[0], ("epp", "balance_performance"))
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        lines = []
+        with patch.object(daemon, "log", side_effect=lines.append):
+            for _ in range(40):
+                clock[0] += 1
+                d.tick()
+        self.assertEqual(d.status()["cpu_temp"]["state"], "limited")
+        self.assertGreaterEqual(d.cpu.stage, 1)
+        self.assertEqual(self._policy()[1], d.cpu.effective["epp"])
+        self.assertNotEqual(self._policy()[1], "performance")
+        self.assertTrue(any("stage 1/4" in l for l in lines), lines)
+        d.apply_mode(hw.TURBO)
+        self.assertEqual(d.cpu.stage, 0)
+        self.assertEqual(self._policy(), ("powersave", "balance_performance", "1"))  # Turbo's baseline
+
+    def test_firmware_reset_after_profile_does_not_latch(self):
+        d, _, clock = self._daemon(85)
+        d.cfg.mode(hw.BALANCED).update(power_apply=True, ppt={"ppt_pl1_spl": 45})
+        d.apply_mode(hw.BALANCED)
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        clock[0] += 1
+        d.tick()
+        hw.set_attr("ppt_pl1_spl", 120)  # the delayed throttle-policy rerun undid the user's cap
+        lines = []
+        with patch.object(daemon, "log", side_effect=lines.append):
+            clock[0] += 1
+            d.tick()
+        self.assertEqual(d.cpu.error, "")
+        self.assertLess(hw.get_attr("ppt_pl1_spl").current, 45)
+        self.assertTrue(any("re-asserted" in l for l in lines), lines)
+
+    def test_clear_notice_is_not_undone_by_the_same_error(self):
+        d, _, clock = self._daemon(85)
+        d.apply_mode(hw.BALANCED)
+        os.remove(R + "/sys/class/hwmon/hwmon5/temp1_input")
+        clock[0] += 1
+        d.tick()
+        self.assertIn("sensor", d.status()["notice"])
+        d.handle({"cmd": "clear_notice"})
+        clock[0] += 1
+        d.tick()
+        self.assertEqual(d.status()["notice"], "")
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 90000)
+        d.apply_mode(hw.BALANCED)  # a clean restart clears the record: a new fault is shown again
+        os.remove(R + "/sys/class/hwmon/hwmon5/temp1_input")
+        clock[0] += 1
+        d.tick()
+        self.assertIn("sensor", d.status()["notice"])
+
     def _hot_run(self, d, clock, temps):
         lines = []
         with patch.object(daemon, "log", side_effect=lines.append):
@@ -1008,6 +1107,22 @@ class TestConfig(Base):
         c2 = config.Config()
         self.assertEqual(c2["charge_limit"], 60)
         self.assertTrue(c2.mode(1)["fans_apply"])
+
+    def test_bad_values_are_sanitized_at_load(self):
+        c = config.Config()
+        c.mode(0).update(cpu_temp=96, cpu_boost="turbo", cpu_governor="ondemand", cpu_temp_floor_w="x", ppt=None)
+        c.mode(1).update(cpu_temp="85", power_apply=1)
+        c.mode(2).update(cpu_temp=50)
+        c.save()
+        c2 = config.Config()
+        self.assertEqual([c2.mode(i)["cpu_temp"] for i in (0, 1, 2)], [None, None, None])
+        self.assertEqual((c2.mode(0)["cpu_boost"], c2.mode(0)["cpu_governor"]), ("default", "default"))
+        self.assertEqual((c2.mode(0)["cpu_temp_floor_w"], c2.mode(0)["ppt"]), (None, {}))
+        self.assertIs(c2.mode(1)["power_apply"], True)
+        # an older config without the floor key loads with the default
+        del c2.mode(0)["cpu_temp_floor_w"]
+        c2.save()
+        self.assertIsNone(config.Config().mode(0)["cpu_temp_floor_w"])
 
 
 class TestDaemon(Base):
@@ -1168,6 +1283,9 @@ class TestDaemon(Base):
         self.assertEqual(s["gpu"]["mode"], gpu.STANDARD)
         self.assertIn("ppt_pl1_spl", s["attrs"])
         self.assertTrue(s["aura_device"])
+        self.assertEqual(set(s["cpu_policy"]), {"governor", "epp", "boost"})
+        for key in ("stage", "stage_max", "ladder", "floor_w", "effective", "baseline"):
+            self.assertIn(key, s["cpu_temp"])
         json.dumps(s)
 
 
@@ -1236,6 +1354,10 @@ class TestSocket(Base):
                 client.call("nope")
             self.assertEqual(client.main(["mode", "turbo"]), 0)
             self.assertEqual(get(R + hw.PLATFORM_PROFILE), "performance")
+            self.assertEqual(client.main(["cpufloor", "45"]), 0)
+            self.assertEqual(d.cfg.mode(hw.TURBO)["cpu_temp_floor_w"], 45)
+            self.assertEqual(client.main(["cpufloor", "min"]), 0)
+            self.assertIsNone(d.cfg.mode(hw.TURBO)["cpu_temp_floor_w"])
         finally:
             srv.shutdown()
             srv.server_close()

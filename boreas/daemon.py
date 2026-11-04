@@ -61,6 +61,7 @@ class Daemon:
         self.custom_power = False
         self.eco_stuck = False  # the driver did not let go: retry only on request or at boot
         self.notice = ""
+        self.thermal_notice_for = ""  # the controller error the current notice reports
         self.gpu_temp_cache: tuple[float, int | None] = (0.0, None)
         self.ticks = 0
         self.cpu = thermal.Controller()
@@ -160,38 +161,66 @@ class Daemon:
                             self.cpu.fail(str(e))
                             thermal_ready = False
 
+            # The mode's CPU policy is the ladder's baseline, so it lands before the target starts.
+            boost_mode = m.get("cpu_boost") or "default"
+            governor = m.get("cpu_governor") or "default"
+            self.apply_cpu_policy(m)
+
             if thermal_ready:
-                self.apply_cpu_temp(target)
+                self.apply_cpu_temp(target, m)
             elif thermal_on:
                 self.report_thermal_error()
-
-            boost_mode = m.get("cpu_boost") or "default"
-            if hw.cpu_boost_supported():
-                try:
-                    hw.set_cpu_boost(boost_mode, m["base"])
-                except (OSError, ValueError) as e:
-                    self.set_notice(f"Could not write CPU boost: {e}")
+            floor = m.get("cpu_temp_floor_w")
 
             log(f"mode: {m['name']} ({profile})"
                 f"{' +fan' if m['fans_apply'] else ''}{' +power' if self.custom_power else ''}"
+                f"{f' +governor {governor}' if governor != 'default' else ''}"
                 f"{f' +boost {boost_mode}' if boost_mode != 'default' else ''}"
-                f"{f' +cpu target {self.cpu.target}°C' if self.cpu.target is not None else ''}")
+                f"{f' +cpu target {self.cpu.target}°C' if self.cpu.target is not None else ''}"
+                f"{f' +floor {floor}W' if self.cpu.target is not None and floor else ''}")
+
+    def apply_cpu_policy(self, m: dict) -> None:
+        """CPU governor ("power profile") first, then boost/EPP: under the performance governor
+        the EPP is fixed by the kernel, so a governor change must land before the EPP write."""
+        if hw.cpu_governor_choices():
+            try:
+                hw.set_cpu_governor(m.get("cpu_governor") or "default")
+            except (OSError, ValueError) as e:
+                self.set_notice(f"Could not write CPU governor: {e}")
+        if hw.cpu_boost_supported():
+            try:
+                hw.set_cpu_boost(m.get("cpu_boost") or "default", m["base"])
+            except (OSError, ValueError) as e:
+                self.set_notice(f"Could not write CPU boost: {e}")
+        self.cpu.set_baseline(thermal.Baseline(m.get("cpu_boost") or "default",
+                                               m.get("cpu_governor") or "default", m["base"]))
 
     def report_thermal_error(self) -> None:
-        if self.cpu.error:
-            msg = f"Could not apply the CPU temperature limit: {self.cpu.error}"
-            if self.notice != msg:
-                self.set_notice(msg)
+        # One notice per distinct controller error: a dismissed one is not raised again.
+        if self.cpu.error and self.cpu.error != self.thermal_notice_for:
+            self.thermal_notice_for = self.cpu.error
+            self.set_notice(f"Could not apply the CPU temperature limit: {self.cpu.error}")
 
-    def apply_cpu_temp(self, temp: int | None) -> bool:
-        self.cpu.start(temp)
+    def log_thermal_events(self) -> None:
+        for line in self.cpu.drain_events():
+            log(line)
+
+    def apply_cpu_temp(self, temp: int | None, m: dict | None = None) -> bool:
+        m = m or {}
+        user_caps = {n: int(v) for n, v in (m.get("ppt") or {}).items()
+                     if v is not None and n in thermal.POWER_ATTRS} if m.get("power_apply") else {}
+        self.cpu.start(temp, floor_w=m.get("cpu_temp_floor_w"), user_caps=user_caps)
+        self.log_thermal_events()
         self.report_thermal_error()
-        if not self.cpu.error and self.notice.startswith("Could not apply the CPU temperature limit:"):
-            self.notice = ""
+        if not self.cpu.error:
+            if self.notice.startswith("Could not apply the CPU temperature limit:"):
+                self.notice = ""
+            self.thermal_notice_for = ""
         return not self.cpu.error
 
     def maintain_cpu_temp(self) -> None:
         self.cpu.tick()
+        self.log_thermal_events()
         self.report_thermal_error()
 
     def _later(self, delay: float, fn) -> None:
@@ -507,6 +536,8 @@ class Daemon:
             "attrs": attrs,
             "custom_power": self.custom_power,
             "cpu_boost_supported": hw.cpu_boost_supported(),
+            "cpu_governors": hw.cpu_governor_choices(),
+            "cpu_policy": {"governor": hw.cpu_governor(), "epp": hw.cpu_epp(), "boost": hw.cpu_boost_enabled()},
             "cpu_temp": (self.cpu.status() if self.cpu.supported() or self.cpu.error else None),
             "temp_peak": self.temp_peak,
             "notice": self.notice,
@@ -539,6 +570,15 @@ class Daemon:
                 b = req["data"].get("cpu_boost")
                 if b is not None and b not in hw.CPU_BOOST_MODES:
                     raise ValueError(f"Invalid CPU boost mode: {b}")
+                g = req["data"].get("cpu_governor")
+                if g is not None and g not in hw.CPU_GOVERNORS:
+                    raise ValueError(f"Invalid CPU governor: {g}")
+                f = req["data"].get("cpu_temp_floor_w")
+                if f is not None:
+                    a = hw.get_attr(thermal.POWER_ATTRS[0])
+                    lo, hi = (a.min, a.max) if a and a.min is not None and a.max is not None else (1, 300)
+                    if type(f) is not int or not lo <= f <= hi:
+                        raise ValueError(f"CPU power floor must be {lo}..{hi} W")
                 changed = set()
                 for k, v in req["data"].items():
                     if k in entry and k != "base":
@@ -548,24 +588,21 @@ class Daemon:
                         entry[k] = value
                 c.save()
                 if mode_id == c["mode"]:
-                    # The UI also sends the unchanged fields. When only temperature or boost
-                    # was edited, do not reset the profile and disturb the fan/power settings.
-                    if changed - {"cpu_temp", "cpu_boost", "name"}:
+                    # The UI also sends the unchanged fields. When only temperature, floor, boost or
+                    # governor was edited, do not reset the profile and disturb the fan/power settings.
+                    if changed - {"cpu_temp", "cpu_temp_floor_w", "cpu_boost", "cpu_governor", "name"}:
                         self.apply_mode(mode_id)
                     else:
-                        if "cpu_boost" in changed and hw.cpu_boost_supported():
-                            try:
-                                hw.set_cpu_boost(entry.get("cpu_boost"), entry["base"])
-                            except (OSError, ValueError) as e:
-                                self.set_notice(f"Could not write CPU boost: {e}")
-                        if "cpu_temp" in changed or not changed:
+                        if changed & {"cpu_boost", "cpu_governor"}:
+                            self.apply_cpu_policy(entry)
+                        if changed & {"cpu_temp", "cpu_temp_floor_w"} or not changed:
                             target = entry.get("cpu_temp")
                             enabled = target is not None and target < thermal.DEFAULT_TEMP
                             if enabled != (self.cpu.target is not None):
                                 # Enabling/disabling may require or release a factory fan curve.
                                 self.apply_mode(mode_id)
                             else:
-                                self.apply_cpu_temp(target)
+                                self.apply_cpu_temp(target, entry)
                 return {"mode": entry}
             if cmd == "default_curve":
                 fan = req["fan"]
@@ -675,6 +712,7 @@ def main() -> None:
     finally:
         with d.lock:
             d.cpu.stop()
+            d.log_thermal_events()
             d.report_thermal_error()
         if gpu.gpu_engine._instance is not None:
             gpu.gpu_engine._instance.close()

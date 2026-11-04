@@ -681,6 +681,10 @@ class MainWindow(QWidget):
         extra = []
         if s.get("custom_power"):
             extra.append(_("custom power"))
+        if (s.get("cpu_temp") or {}).get("state") == "limited":
+            extra.append(_("limited"))
+        if self.fans_window is not None:
+            self.fans_window.render_cpu_temp(s.get("cpu_temp"), s["mode"])
         self.mode_label.setText(f"{mode_name(cur)} ({saved})" + (" · " + ", ".join(extra) if extra else ""))
 
         g = s.get("gpu")
