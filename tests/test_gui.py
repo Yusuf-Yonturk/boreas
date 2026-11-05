@@ -12,7 +12,7 @@ os.environ["BOREAS_NO_UPDATE_CHECK"] = "1"  # the tests stay offline
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
 
 from boreas import i18n  # noqa: E402
 from boreas.gui import app as A  # noqa: E402
@@ -121,6 +121,8 @@ class TestPanels(unittest.TestCase):
         entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 85}
         f._show_entry({"mode": entry})
         self.assertEqual(f.cpu_temp.value.text(), "85°C")
+        self.assertIn("Hedefe doğru", f.cpu_temp.info.toolTip())  # no power profile selector: the plain explanation
+        self.assertNotIn("EPP düşürülemez", f.cpu_temp.info.toolTip())
         sent = []
         self.w.call = lambda cmd, **kw: sent.append(kw["data"]) or {}
         with patch("boreas.gui.fans.run_async", lambda fn, done: done(fn())), \
@@ -140,6 +142,7 @@ class TestPanels(unittest.TestCase):
         f = A.FansWindow(self.w)
         self.assertEqual([f.cpu_governor_cb.itemData(i) for i in range(f.cpu_governor_cb.count())],
                          ["default", "performance"])  # only the advertised governors are offered
+        self.assertIn("Varsayılan governor'ı sürücüye bırakır", f.cpu_governor_info.toolTip().replace("&#x27;", "'"))
         entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_governor": "performance"}
         f._show_entry({"mode": entry})
         self.assertEqual(f.cpu_governor_cb.currentData(), "performance")
@@ -179,13 +182,51 @@ class TestPanels(unittest.TestCase):
         f._factory()
         self.assertEqual((keys(), boost.currentData(), gov.currentData()), (full, "default", "default"))
 
+    def test_info_icon_shows_its_tooltip_at_once(self):
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QEnterEvent
+        from boreas.gui import widgets as W
+        icon = W.info_icon("first\n\nsecond <b>")
+        self.assertEqual(icon.toolTip(), "<p>first</p><p>second &lt;b&gt;</p>")
+        with patch.object(W.QToolTip, "showText") as show:
+            QApplication.sendEvent(icon, QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1)))  # no hover delay
+            self.assertEqual(show.call_args.args[1], icon.toolTip())
+            icon.setToolTip("")
+            show.reset_mock()
+            QApplication.sendEvent(icon, QEvent(QEvent.Enter))
+            show.assert_not_called()
+
+    def test_slider_columns_do_not_follow_the_caption(self):
+        from boreas.gui import widgets as W
+        long_caption = "Predeterminado y algo más largo"
+        s = W.ValueSlider("Target", 75, 96, 96, "°C", max_text=long_caption, info="why")
+        plain = W.ValueSlider("CPU sustained (SPL)", 30, 130, 40, "W")
+        self.assertGreaterEqual(s.value.width(), s.value.fontMetrics().horizontalAdvance(long_caption))  # not cut
+        box = QWidget()
+        box.resize(500, 120)
+        lay = QVBoxLayout(box)
+        lay.addWidget(s)
+        lay.addWidget(plain)
+        W.align_sliders([s, plain, None])
+        box.show()
+        qa.processEvents()
+        at_max = s.slider.width()
+        s.slider.setValue(95)  # the caption becomes "95°C"
+        qa.processEvents()
+        self.assertEqual(s.slider.width(), at_max)  # a drag away from the caption does not resize the slider
+        self.assertEqual(s.slider.geometry().x(), plain.slider.geometry().x())  # the grooves line up
+        self.assertEqual(s.slider.width(), plain.slider.width())
+        self.assertGreaterEqual(s.name.maximumWidth(), s.name.fontMetrics().horizontalAdvance("Target"))
+        box.close()
+
     def test_cpu_floor_slider(self):
         self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
         self.w.status["attrs"] = {}
         self.assertIsNone(A.FansWindow(self.w).cpu_floor)  # no SPL range: hidden
         self.w.status["attrs"] = {"ppt_pl1_spl": SPL}
         f = A.FansWindow(self.w)
-        self.assertEqual(f.cpu_floor.value.text(), "Firmware minimumu")
+        self.assertEqual(f.cpu_floor.value.text(), "Kapalı")
+        self.assertIn("altına hiç çekmez", f.cpu_floor.info.toolTip())  # the explanation is on the info icon
         entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 85, "cpu_temp_floor_w": 45}
         f._show_entry({"mode": entry})
         self.assertEqual(f.cpu_floor.value.text(), "45W")
@@ -227,13 +268,15 @@ class TestPanels(unittest.TestCase):
         f.show()
         entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 82, "cpu_governor": "performance"}
         f._show_entry({"mode": entry})
-        self.assertFalse(f.cpu_conflict.isHidden())
+        tip = lambda: f.cpu_temp.info.toolTip()  # noqa: E731
+        self.assertIn("Hedefe doğru", tip())  # the target's own explanation stays
+        self.assertIn("EPP düşürülemez", tip())
         f.cpu_governor_cb.setCurrentIndex(f.cpu_governor_cb.findData("default"))
-        self.assertTrue(f.cpu_conflict.isHidden())
+        self.assertNotIn("EPP düşürülemez", tip())
         f.cpu_governor_cb.setCurrentIndex(f.cpu_governor_cb.findData("performance"))
-        self.assertFalse(f.cpu_conflict.isHidden())
+        self.assertIn("EPP düşürülemez", tip())
         f.cpu_temp.slider.setValue(96)  # target off: no conflict
-        self.assertTrue(f.cpu_conflict.isHidden())
+        self.assertNotIn("EPP düşürülemez", tip())
         f.close()
 
     def test_fans_button_switches_page(self):

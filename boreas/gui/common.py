@@ -97,6 +97,7 @@ QLabel#subtitle {{ font-size:{fs(15)}px; color:{p['dim']}; }}
 QLabel#h2 {{ font-size:{fs(17, 13)}px; font-weight:700; }}
 QLabel#dim {{ font-size:{fs(15)}px; color:{p['dim']}; }}
 QLabel#hint {{ font-size:{fs(15)}px; color:{p['dim']}; }}
+QLabel#info {{ font-size:{fs(11, 9)}px; font-weight:700; color:{p['dim']}; border:1px solid {p['dim']}; border-radius:{u(16) // 2}px; }}
 
 QFrame#card {{ background:{p['card']}; border:1px solid {p['border']}; border-radius:{u(12)}px; }}
 {both('QFrame#hline')} {{ background:{p['border']}; border:none; }}
