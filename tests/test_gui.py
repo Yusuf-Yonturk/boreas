@@ -12,7 +12,7 @@ os.environ["BOREAS_NO_UPDATE_CHECK"] = "1"  # the tests stay offline
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
 
 from boreas import i18n  # noqa: E402
 from boreas.gui import app as A  # noqa: E402
@@ -121,6 +121,8 @@ class TestPanels(unittest.TestCase):
         entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 85}
         f._show_entry({"mode": entry})
         self.assertEqual(f.cpu_temp.value.text(), "85°C")
+        self.assertIn("Hedefe doğru", f.cpu_temp.info.toolTip())  # no power profile selector: the plain explanation
+        self.assertNotIn("EPP düşürülemez", f.cpu_temp.info.toolTip())
         sent = []
         self.w.call = lambda cmd, **kw: sent.append(kw["data"]) or {}
         with patch("boreas.gui.fans.run_async", lambda fn, done: done(fn())), \
@@ -133,6 +135,212 @@ class TestPanels(unittest.TestCase):
             f._factory()
             self.assertEqual(f.cpu_temp.slider.value(), 96)
         self.assertEqual([d["cpu_temp"] for d in sent], [85, None])
+
+    def test_power_profile_combo(self):
+        self.assertIsNone(A.FansWindow(self.w).cpu_governor_cb)  # no cpufreq governor: hidden
+        self.w.status["cpu_governors"] = ["default", "performance"]
+        f = A.FansWindow(self.w)
+        self.assertEqual([f.cpu_governor_cb.itemData(i) for i in range(f.cpu_governor_cb.count())],
+                         ["default", "performance"])  # only the advertised governors are offered
+        self.assertIn("Varsayılan governor'ı sürücüye bırakır", f.cpu_governor_info.toolTip().replace("&#x27;", "'"))
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_governor": "performance"}
+        f._show_entry({"mode": entry})
+        self.assertEqual(f.cpu_governor_cb.currentData(), "performance")
+        sent = []
+        self.w.call = lambda cmd, **kw: sent.append(kw["data"]) or {}
+        with patch("boreas.gui.fans.run_async", lambda fn, done: done(fn())), \
+                patch.object(self.w, "refresh", lambda *a: None):
+            f._apply()
+            f._show_entry({"mode": {**entry, "cpu_governor": "powersave"}})  # not offered: falls back
+            self.assertEqual(f.cpu_governor_cb.currentData(), "default")
+            f._show_entry({"mode": entry})
+            f._factory()
+            self.assertEqual(f.cpu_governor_cb.currentData(), "default")
+            f._apply()
+        self.assertEqual([d["cpu_governor"] for d in sent], ["performance", "default"])
+
+    def test_boost_list_shrinks_under_the_performance_governor(self):
+        self.w.status["cpu_governors"] = ["default", "powersave", "performance"]
+        f = A.FansWindow(self.w)
+        boost, gov = f.cpu_boost_cb, f.cpu_governor_cb
+        keys = lambda: [boost.itemData(i) for i in range(boost.count())]
+        full = ["default", "disabled", "efficient", "balanced", "aggressive", "max"]
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {},
+                 "cpu_boost": "efficient", "cpu_governor": "default"}
+        f._show_entry({"mode": entry})
+        self.assertEqual(keys(), full)
+        self.assertEqual(boost.currentData(), "efficient")
+        gov.setCurrentIndex(gov.findData("performance"))  # the user picks Performance
+        self.assertEqual(keys(), ["max", "disabled"])  # only boost on/off is left
+        self.assertEqual(boost.currentText(), "Performans")
+        self.assertEqual(f.result.text(), "Kaydedilmedi")
+        gov.setCurrentIndex(gov.findData("default"))
+        self.assertEqual(keys(), full)
+        self.assertEqual(boost.currentData(), "max")  # carried over as the strongest EPP
+        f._show_entry({"mode": {**entry, "cpu_boost": "disabled", "cpu_governor": "performance"}})
+        self.assertEqual((keys(), boost.currentData()), (["max", "disabled"], "disabled"))
+        f._factory()
+        self.assertEqual((keys(), boost.currentData(), gov.currentData()), (full, "default", "default"))
+
+    def test_info_icon_shows_its_tooltip_at_once(self):
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QEnterEvent
+        from boreas.gui import widgets as W
+        icon = W.info_icon("first\n\nsecond <b>")
+        self.assertEqual(icon.toolTip(), "<p>first</p><p>second &lt;b&gt;</p>")
+        with patch.object(W.QToolTip, "showText") as show:
+            QApplication.sendEvent(icon, QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1)))  # no hover delay
+            self.assertEqual(show.call_args.args[1], icon.toolTip())
+            icon.setToolTip("")
+            show.reset_mock()
+            QApplication.sendEvent(icon, QEvent(QEvent.Enter))
+            show.assert_not_called()
+
+    def test_slider_columns_do_not_follow_the_caption(self):
+        from boreas.gui import widgets as W
+        long_caption = "Predeterminado y algo más largo"
+        s = W.ValueSlider("Target", 75, 96, 96, "°C", max_text=long_caption, info="why")
+        plain = W.ValueSlider("CPU sustained (SPL)", 30, 130, 40, "W")
+        self.assertGreaterEqual(s.value.width(), s.value.fontMetrics().horizontalAdvance(long_caption))  # not cut
+        box = QWidget()
+        box.resize(500, 120)
+        lay = QVBoxLayout(box)
+        lay.addWidget(s)
+        lay.addWidget(plain)
+        W.align_sliders([s, plain, None])
+        box.show()
+        qa.processEvents()
+        at_max = s.slider.width()
+        s.slider.setValue(95)  # the caption becomes "95°C"
+        qa.processEvents()
+        self.assertEqual(s.slider.width(), at_max)  # a drag away from the caption does not resize the slider
+        self.assertEqual(s.slider.geometry().x(), plain.slider.geometry().x())  # the grooves line up
+        self.assertEqual(s.slider.width(), plain.slider.width())
+        self.assertGreaterEqual(s.name.maximumWidth(), s.name.fontMetrics().horizontalAdvance("Target"))
+        box.close()
+
+    def test_cpu_floor_slider(self):
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        self.w.status["attrs"] = {}
+        self.assertIsNone(A.FansWindow(self.w).cpu_floor)  # no SPL range: hidden
+        self.w.status["attrs"] = {"ppt_pl1_spl": SPL}
+        f = A.FansWindow(self.w)
+        self.assertEqual(f.cpu_floor.value.text(), "Kapalı")
+        self.assertIn("altına hiç çekmez", f.cpu_floor.info.toolTip())  # the explanation is on the info icon
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 85, "cpu_temp_floor_w": 45}
+        f._show_entry({"mode": entry})
+        self.assertEqual(f.cpu_floor.value.text(), "45W")
+        sent = []
+        self.w.call = lambda cmd, **kw: sent.append(kw["data"]) or {}
+        with patch("boreas.gui.fans.run_async", lambda fn, done: done(fn())), \
+                patch.object(self.w, "refresh", lambda *a: None):
+            f._apply()
+            f._show_entry({"mode": {**entry, "cpu_temp_floor_w": None}})
+            self.assertEqual(f.cpu_floor.slider.value(), 30)
+            f._apply()
+            f._show_entry({"mode": entry})
+            f._factory()
+            self.assertEqual(f.cpu_floor.slider.value(), 30)
+        self.assertEqual([d["cpu_temp_floor_w"] for d in sent], [45, None])
+
+    def test_power_card_status_line(self):
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        f = A.FansWindow(self.w)
+        f.mode_id = 0
+        ct = {"target": 82, "state": "limited", "error": "", "requested_w": {"ppt_pl1_spl": 30}, "ceilings_w": {"ppt_pl1_spl": 65},
+              "floor_w": 30, "stage": 2, "stage_max": 4,
+              "ladder": ["epp:balance_performance", "epp:balance_power", "epp:power", "boost:False"]}
+        from boreas.gui.common import Hold
+        with patch.object(Hold, "clock", staticmethod(lambda: 100.0)):
+            f.render_cpu_temp(ct, 0)
+        self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 30 W (taban) · EPP düşürüldü")
+        with patch.object(Hold, "clock", staticmethod(lambda: 200.0)):
+            f.render_cpu_temp({**ct, "stage": 4, "state": "active", "requested_w": {"ppt_pl1_spl": 40}}, 0)
+        self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 40 W · EPP düşürüldü · boost kapalı")
+        f.render_cpu_temp({**ct, "state": "error", "error": "Power limits changed externally; controller stopped"}, 0)
+        self.assertEqual(f.power_info.text(), "Güç limitleri dışarıdan değiştirildi; denetleyici durdu")
+        f.render_cpu_temp(ct, 1)  # another mode is being edited: nothing about the active one
+        self.assertEqual(f.power_info.text(), "")
+        f.render_cpu_temp({**ct, "target": None}, 0)
+        self.assertEqual(f.power_info.text(), "")
+
+    def test_power_card_status_line_does_not_blink(self):
+        """Around the target the controller's state flips every second and a 2 W recovery step is taken
+        back at once; the line must not change with each of those samples."""
+        from boreas.gui.common import Hold
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        f = A.FansWindow(self.w)
+        f.mode_id = 0
+        ct = {"target": 82, "error": "", "ceilings_w": {"ppt_pl1_spl": 40}, "floor_w": 30, "stage": 0, "stage_max": 4,
+              "ladder": ["boost:False"]}
+        samples = [("limited", 30), ("active", 30), ("active", 32), ("limited", 30), ("active", 30), ("active", 32)]
+        seen = set()
+        for i, (state, pl1) in enumerate(samples):
+            with patch.object(Hold, "clock", staticmethod(lambda i=i: 100.0 + 2 * i)):
+                f.render_cpu_temp({**ct, "state": state, "requested_w": {"ppt_pl1_spl": pl1}}, 0)
+            seen.add(f.power_info.text())
+        self.assertEqual(seen, {"Hedef 82 °C · PL1 30 W (taban)"})
+        with patch.object(Hold, "clock", staticmethod(lambda: 130.0)):  # away from the floor for a while: the real value
+            f.render_cpu_temp({**ct, "state": "active", "requested_w": {"ppt_pl1_spl": 36}}, 0)
+        self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 36 W")
+        with patch.object(Hold, "clock", staticmethod(lambda: 131.0)):
+            f.render_cpu_temp({**ct, "state": "limited", "requested_w": {"ppt_pl1_spl": 30}}, 0)
+            f.render_cpu_temp({**ct, "target": None}, 0)  # target switched off: nothing is held over
+            f.render_cpu_temp({**ct, "state": "active", "requested_w": {"ppt_pl1_spl": 40}}, 0)
+        self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 40 W")
+
+    def test_power_card_floor_is_not_held_over_a_change(self):
+        """The held "(floor)" bridges the controller's own 2 W recovery step and nothing else."""
+        from boreas import thermal
+        from boreas.gui import fans as F
+        from boreas.gui.common import Hold
+        self.assertEqual(F.FLOOR_SLACK_W, thermal.RECOVER_STEP_W)
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        ct = {"target": 82, "error": "", "ceilings_w": {"ppt_pl1_spl": 65}, "floor_w": 30, "stage": 0, "stage_max": 4,
+              "ladder": ["boost:False"], "state": "active", "requested_w": {"ppt_pl1_spl": 30}}
+
+        def line(*samples):
+            """A fresh window, at the floor at t=100, then the given (sample, mode) pairs at t=102."""
+            f = A.FansWindow(self.w)
+            f.mode_id = 0
+            with patch.object(Hold, "clock", staticmethod(lambda: 100.0)):
+                f.render_cpu_temp(ct, 0)
+            self.assertEqual(f.power_info.text(), "Hedef 82 °C · PL1 30 W (taban)")  # at the floor, state "active"
+            with patch.object(Hold, "clock", staticmethod(lambda: 102.0)):
+                for sample, mode, edited in samples:
+                    f.mode_id = edited
+                    f.render_cpu_temp(sample, mode)
+            return f.power_info.text()
+
+        up = {**ct, "requested_w": {"ppt_pl1_spl": 32}}
+        self.assertEqual(line((up, 0, 0)), "Hedef 82 °C · PL1 30 W (taban)")  # the recovery step: bridged
+        self.assertEqual(line(({**ct, "requested_w": {"ppt_pl1_spl": 34}}, 0, 0)), "Hedef 82 °C · PL1 34 W")  # a real recovery
+        self.assertEqual(line(({**ct, "requested_w": {}}, 0, 0)), "Hedef 82 °C · PL1 65 W")  # the mode was applied again
+        self.assertEqual(line(({**up, "floor_w": 45}, 0, 0)), "Hedef 82 °C · PL1 32 W (taban)")  # floor raised: the real value
+        self.assertEqual(line(({**ct, "requested_w": {"ppt_pl1_spl": 40}, "floor_w": 38}, 0, 0)), "Hedef 82 °C · PL1 40 W")
+        self.assertEqual(line(({**up, "target": 88}, 0, 0)), "Hedef 88 °C · PL1 32 W")  # another target
+        self.assertEqual(line(({**up, "target": 88}, 1, 1)), "Hedef 88 °C · PL1 32 W")  # another mode, chosen on this page
+        self.assertEqual(line((up, 0, 1), (up, 0, 0)), "Hedef 82 °C · PL1 32 W")  # another mode was looked at in between
+        err = {**ct, "state": "error", "error": "Power limits changed externally; controller stopped"}
+        self.assertEqual(line((err, 0, 0), (up, 0, 0)), "Hedef 82 °C · PL1 32 W")  # the controller stopped in between
+
+    def test_conflict_hint_follows_governor_and_target(self):
+        self.w.status["cpu_temp"] = {"min": 75, "max": 96, "target": None, "state": "off"}
+        self.w.status["cpu_governors"] = ["default", "powersave", "performance"]
+        f = A.FansWindow(self.w)
+        f.show()
+        entry = {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}, "cpu_temp": 82, "cpu_governor": "performance"}
+        f._show_entry({"mode": entry})
+        tip = lambda: f.cpu_temp.info.toolTip()  # noqa: E731
+        self.assertIn("Hedefe doğru", tip())  # the target's own explanation stays
+        self.assertIn("EPP düşürülemez", tip())
+        f.cpu_governor_cb.setCurrentIndex(f.cpu_governor_cb.findData("default"))
+        self.assertNotIn("EPP düşürülemez", tip())
+        f.cpu_governor_cb.setCurrentIndex(f.cpu_governor_cb.findData("performance"))
+        self.assertIn("EPP düşürülemez", tip())
+        f.cpu_temp.slider.setValue(96)  # target off: no conflict
+        self.assertNotIn("EPP düşürülemez", tip())
+        f.close()
 
     def test_fans_button_switches_page(self):
         w = self.w
@@ -365,6 +573,62 @@ class TestHeldSelection(unittest.TestCase):
         w.render()
         self.assertFalse(w.live_info.isHidden())
         self.assertEqual(w.live_info.text(), "CPU 70° · 2000 / 2100 rpm")
+
+    def test_main_card_shows_limited(self):
+        w = self.w
+        from boreas.gui.common import Hold
+        with patch.object(Hold, "clock", staticmethod(lambda: 100.0)):
+            w.status = {**self.STATUS, "cpu_temp": {"target": 82, "state": "limited"}}
+            w.render()
+        self.assertIn("sınırlı", w.mode_label.text())
+        with patch.object(Hold, "clock", staticmethod(lambda: 102.0)):  # the state flips every second around the target: no blinking
+            w.status = {**self.STATUS, "cpu_temp": {"target": 82, "state": "active"}}
+            w.render()
+        self.assertIn("sınırlı", w.mode_label.text())
+        with patch.object(Hold, "clock", staticmethod(lambda: 200.0)):
+            w.render()
+        self.assertNotIn("sınırlı", w.mode_label.text())
+        with patch.object(Hold, "clock", staticmethod(lambda: 201.0)):
+            w.status = {**self.STATUS, "cpu_temp": {"target": 82, "state": "limited"}}
+            w.render()
+            w.status = {**self.STATUS, "cpu_temp": {"target": None, "state": "off"}}  # target off: gone at once
+            w.render()
+        self.assertNotIn("sınırlı", w.mode_label.text())
+
+    def test_limited_is_not_held_over_a_change(self):
+        from boreas.gui.common import Hold
+        w = self.w
+        lim = {"target": 82, "state": "limited", "floor_w": 30, "ceilings_w": {"ppt_pl1_spl": 40},
+               "requested_w": {"ppt_pl1_spl": 30}}
+        act = {**lim, "state": "active"}
+
+        def word(status, at=102.0):
+            with patch.object(Hold, "clock", staticmethod(lambda: 100.0)):
+                w.status = {**self.STATUS, "cpu_temp": lim}
+                w.render()
+            self.assertIn("sınırlı", w.mode_label.text())
+            with patch.object(Hold, "clock", staticmethod(lambda: at)):
+                w.status = {**self.STATUS, **status}
+                w.render()
+            return "sınırlı" in w.mode_label.text()
+
+        self.assertTrue(word({"cpu_temp": act}))
+        self.assertTrue(word({"cpu_temp": act}, at=115.0))  # a spiky load leaves gaps of more than 10 s
+        self.assertTrue(word({"cpu_temp": {**act, "requested_w": {"ppt_pl1_spl": 32}}}))
+        self.assertFalse(word({"cpu_temp": act}, at=131.0))
+        self.assertFalse(word({"mode": 1, "cpu_temp": {**act, "target": 88}}))  # another mode was never limited
+        self.assertFalse(word({"cpu_temp": {**act, "target": 92}}))  # the target was raised
+        self.assertFalse(word({"cpu_temp": {**act, "requested_w": {}}}))  # the mode was applied again: at the ceiling
+        self.assertFalse(word({"cpu_temp": {**act, "requested_w": {"ppt_pl1_spl": 40}}}))
+        self.assertFalse(word({"cpu_temp": {**lim, "state": "error", "error": "x"}}))  # the controller stopped
+        same = {**lim, "ceilings_w": {"ppt_pl1_spl": 30}, "requested_w": {}}  # the user's own limit is the floor
+        with patch.object(Hold, "clock", staticmethod(lambda: 100.0)):
+            w.status = {**self.STATUS, "cpu_temp": same}
+            w.render()
+        with patch.object(Hold, "clock", staticmethod(lambda: 102.0)):
+            w.status = {**self.STATUS, "cpu_temp": {**same, "state": "active"}}
+            w.render()
+        self.assertIn("sınırlı", w.mode_label.text())  # no blinking there either
 
     def test_gpu_users_are_summarized(self):
         w = self.w

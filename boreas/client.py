@@ -41,6 +41,7 @@ USAGE = """usage: boreasctl COMMAND
   charge 40..100          charge limit
   kbd 0..3                keyboard backlight
   cputemp 75..95|default  CPU temperature target of the active mode
+  cpufloor <W>|min        sustained power floor (SPL) of the active mode's target
   reapply [--boot]        re-apply all settings
 """
 
@@ -78,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
             mode = call("status")["mode"]
             temp = None if a[1] == "default" else int(a[1])
             call("update_mode", mode=mode, data={"cpu_temp": temp})
+        elif a[0] == "cpufloor" and len(a) > 1:
+            mode = call("status")["mode"]
+            floor = None if a[1] == "min" else int(a[1])
+            call("update_mode", mode=mode, data={"cpu_temp_floor_w": floor})
         elif a[0] == "reapply":
             call("reapply", boot="--boot" in a)
         else:

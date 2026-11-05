@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import QByteArray, QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLayout,
-                               QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QSizePolicy, QSlider, QToolTip, QVBoxLayout, QWidget)
 
 from .common import T, u, uv
 
@@ -225,8 +227,8 @@ def card(title: str) -> tuple[QFrame, QVBoxLayout, QLabel]:
     return frame, lay, info
 
 
-def row(label, control=None, height: int = 58) -> QWidget:
-    """Label on the left, control on the right. label can be a str or a QWidget."""
+def row(label, control=None, height: int = 58, info: str = "") -> QWidget:
+    """Label on the left, control on the right. label can be a str or a QWidget; info adds an info icon."""
     w = QWidget()
     w.setFixedHeight(uv(height))
     h = QHBoxLayout(w)
@@ -235,6 +237,9 @@ def row(label, control=None, height: int = 58) -> QWidget:
     if isinstance(label, str):
         label = QLabel(label)
         label.setWordWrap(True)  # a long translation wraps to two lines instead of pushing the control out of the window
+    if info:
+        label = with_info(label, info)
+        w.info = label.info
     h.addWidget(label, 1)
     if control is not None:
         if isinstance(control, QWidget):
@@ -242,6 +247,80 @@ def row(label, control=None, height: int = 58) -> QWidget:
         else:
             h.addLayout(control)
     return w
+
+
+def set_info(icon: QLabel, text: str) -> None:
+    """Tooltip text for an info icon; paragraphs are separated by a blank line. Rich text, so it wraps."""
+    icon.setToolTip("".join(f"<p>{html.escape(t)}</p>" for t in text.split("\n\n")))
+
+
+class InfoIcon(QLabel):
+    """Shows its tooltip as soon as the pointer enters it, and on a click: no hover delay."""
+
+    def _show_tip(self):
+        if self.toolTip():
+            # below the icon; stays while the pointer is on the icon
+            QToolTip.showText(self.mapToGlobal(QPoint(0, self.height() + 2)), self.toolTip(), self, self.rect(), 60000)
+
+    def enterEvent(self, e):
+        self._show_tip()
+        super().enterEvent(e)
+
+    def mousePressEvent(self, e):
+        self._show_tip()
+        super().mousePressEvent(e)
+
+
+def info_icon(text: str) -> QLabel:
+    """A circled "i" that shows the explanation on hover, so the text stays out of the layout."""
+    lb = InfoIcon("i")
+    lb.setObjectName("info")
+    lb.setFixedSize(u(16), u(16))
+    lb.setAlignment(Qt.AlignCenter)
+    lb.setCursor(Qt.WhatsThisCursor)
+    set_info(lb, text)
+    return lb
+
+
+def with_info(label: QWidget, text: str) -> QWidget:
+    """label followed by an info icon; the icon is reachable as the returned widget's info."""
+    w = _labelled(label, info_icon(text))
+    w.info = w.icon
+    return w
+
+
+def _labelled(label: QWidget, icon: QLabel | None = None) -> QWidget:
+    """label, then an optional icon right after its text, then the free space.
+
+    A word-wrapped label would otherwise be laid out at its size hint, which wraps it earlier than the
+    room allows and cuts the last letter of a right-to-left line. It may use the whole width, capped at
+    the width of its text on one line, so the icon stays next to the text."""
+    w = QWidget()
+    h = QHBoxLayout(w)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(u(6))
+    if isinstance(label, QLabel):
+        label.ensurePolished()
+        fm = label.fontMetrics()
+        label.setMaximumWidth(fm.horizontalAdvance(label.text()) + fm.horizontalAdvance(" ") + 2)
+    h.addWidget(label, 100)
+    w.icon = icon
+    if icon is not None:
+        h.addWidget(icon, 0, Qt.AlignVCenter)
+    h.addStretch(1)
+    return w
+
+
+def align_sliders(sliders) -> None:
+    """Give the sliders of a page one label column and one value column, so their grooves line up."""
+    sliders = [s for s in sliders if s is not None]
+    if not sliders:
+        return
+    head = max(s.head_width() for s in sliders)
+    value = max(s.value_width() for s in sliders)
+    for s in sliders:
+        s.head.setFixedWidth(head)
+        s.value.setFixedWidth(value)
 
 
 def hint(text: str = "") -> QLabel:
@@ -277,32 +356,52 @@ def footer_bar(inner: QHBoxLayout) -> QWidget:
 
 
 class ValueSlider(QWidget):
-    def __init__(self, label: str, lo: int, hi: int, value: int, unit: str, max_text: str = ""):
+    def __init__(self, label: str, lo: int, hi: int, value: int, unit: str, max_text: str = "", min_text: str = "",
+                 info: str = ""):
         super().__init__()
-        self.unit, self.max_text = unit, max_text
+        self.unit, self.max_text, self.min_text = unit, max_text, min_text
         self.setFixedHeight(uv(46))
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(u(20))
         self.name = QLabel(label)
-        self.name.setFixedWidth(u(176))
         self.name.setWordWrap(True)  # long translations wrap to two lines
+        self.info: QLabel | None = info_icon(info) if info else None
+        self.head = _labelled(self.name, self.info)
+        self.head.setFixedWidth(self.head_width())
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setFixedHeight(max(u(28), 22))  # do not clip the handle (negative margin)
         self.slider.setRange(lo, hi)
         self.slider.setValue(value)
         self.value = QLabel()
-        self.value.setFixedWidth(u(60))
+        # wide enough for the longest caption and fixed: a width that followed the text would resize the
+        # slider under the pointer in the middle of a drag
+        self.value.setFixedWidth(self.value_width())
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.slider.valueChanged.connect(self._show)
-        lay.addWidget(self.name)
+        lay.addWidget(self.head)
         lay.addWidget(self.slider, 1)
         lay.addWidget(self.value)
         self._show(value)
 
+    def head_width(self) -> int:
+        """The label column, plus the icon's footprint so the icon takes nothing from the label."""
+        return u(176) + (u(6) + self.info.width() if self.info is not None else 0)
+
+    def value_width(self) -> int:
+        self.value.ensurePolished()
+        fm = self.value.fontMetrics()
+        texts = [t for t in (self.max_text, self.min_text) if t]
+        texts += [f"{self.slider.minimum()}{self.unit}", f"{self.slider.maximum()}{self.unit}"]
+        return max(u(60), max(fm.horizontalAdvance(t) for t in texts) + 2)
+
     def _show(self, v):
-        at_max = self.max_text and v >= self.slider.maximum()
-        self.value.setText(self.max_text if at_max else f"{v}{self.unit}")
+        if self.max_text and v >= self.slider.maximum():
+            self.value.setText(self.max_text)
+        elif self.min_text and v <= self.slider.minimum():
+            self.value.setText(self.min_text)
+        else:
+            self.value.setText(f"{v}{self.unit}")
 
 
 _FAN_SVG = (

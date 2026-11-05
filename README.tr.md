@@ -29,6 +29,7 @@ Deutsch, 日本語.
 | Özel modlar (Özel 1, 2…) | ✓ | aynı tabanda yerleşik moda bağlı |
 | Mod başına fan eğrisi | ✓ (CPU, GPU, orta) | `asus_custom_fan_curve` hwmon |
 | CPU Boost modu (mod başına) | ✓ (`Varsayılan` / `Kapalı` / `Verimli` / `Dengeli` / `Agresif` / `Maks`) | `cpufreq/boost`, `energy_performance_preference` |
+| Güç profili (mod başına) | ✓ (`Varsayılan` / `Güç tasarrufu` / `Performans`): Boreas power-profiles-daemon'ı maskelemeden önce masaüstünün güç menüsünün ayarladığı CPU frekans governor'ı | `cpufreq/scaling_governor` |
 | Güç limitleri (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / sıcaklık hedefi | ✓ | asus-armoury `nv_*` |
 | CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol |
@@ -94,6 +95,7 @@ boreasctl mode turbo   # sessiz | dengeli | turbo | next | prev
 boreasctl gpu eco      # eco | standard | optimized | ultimate
 boreasctl charge 80
 boreasctl cputemp 85   # etkin mod; default = firmware varsayılanı
+boreasctl cpufloor 45  # hedef SPL'yi 45 W altına çekmez; min = firmware minimumu
 ```
 
 Arayüz sistemin açık/koyu temasını izler; başlıktaki düğme otomatik, açık ve koyu arasında geçer.
@@ -102,21 +104,33 @@ Zorlamak için `BOREAS_THEME=light boreas` ya da `dark`. `BOREAS_SCALE=1` arayü
 güç limitleri ve pil sayfasını açar; tekrar basınca ana sayfaya döner.
 
 CPU sıcaklık hedefi artık ASUS'un `asus-armoury` güç arayüzü üzerinden yönetilir.
-Boreas hedefe yaklaşınca CPU'nun SPL ve mevcut SPPT/FPPT watt sınırlarını azaltır.
-Beş saniye yeterince soğuk kalınca 1 W artırır; seçili profil ve kullanıcı güç
-ayarlarından alınan başlangıç tavanlarını aşmaz. SMU/PCI erişimine geri dönmez.
+Hedefin üstünde Boreas CPU'nun SPL ve mevcut SPPT/FPPT watt sınırlarını saniyede
+2-6 W azaltır; hedefin üç derece altından itibaren 2 saniyede 2 W artırır ve seçili
+profil ile kullanıcı güç ayarlarından alınan başlangıç tavanlarını aşmaz. Mod başına
+**sürekli güç tabanı** SPL'nin seçilen wattın altına çekilmesini önler (oyun modunda
+firmware'in 30 W minimumu yerine 45 W tutulabilir). Limitler tabana inip CPU hâlâ
+sıcaksa denetleyici modun kendi CPU politikasının altına kademe kademe iner: önce
+EPP bir kademe, sonra cpufreq boost kapalı, sonra (Performans güç profilinde)
+varsayılan governor; CPU soğuyunca ters sırayla geri alır. Modun CPU Boost ve güç
+profili ayarı tavandır, denetleyici bunların üstüne hiç çıkmaz. SMU/PCI erişimine
+geri dönmez.
 BIOS sürüm listesi veya özel kernel modülü gerektirmez; geçerli güç aralıkları,
 SPL kontrolü ve CPU sıcaklık sensörü gerekir. Her ASUS destekleniyor demek değildir.
 
 Güç kontrolü için özel fan eğrisi gerektiren modellerde, kullanıcı eğrisi yoksa
 profilin fabrika eğrileri etkinleştirilir. Varsayılan seçimi kontrolü kapatır ve
-hâlâ Boreas'ın yönettiği watt değerlerini geri yükler. Profil ve uyku dönüşünde
-kontrol yeniden hazırlanır. Sensör kaybı, yazma hatası veya dışarıdan güç değişimi
-kontrolü durdurur ve hata gösterir; otomatik SMU geçişi yapılmaz.
+hâlâ Boreas'ın yönettiği watt değerlerini ve CPU politikasını geri yükler. Profil ve
+uyku dönüşünde kontrol yeniden hazırlanır. Güç limitlerindeki küçük kaymalar
+(firmware yuvarlaması, profil yazımından sonraki gecikmeli politika) izlenir,
+firmware'in bozduğu kullanıcı limiti yeniden yazılır; yalnız inatla karşı yazan bir
+servis döngüyü durdurur. Sensör kaybı, yazma hatası veya geri okuma uyuşmazlığı
+kontrolü durdurur ve hata gösterir; modu yeniden kaydetmek tekrar dener.
 
 `boreasctl cputemp 85` etkin modun hedefini ayarlar; `cputemp default` kapatır.
-Durumda `control: power-feedback`, `target`, `state`, `error`, `ceilings_w` ve
-`requested_w` bulunur. `applied` null'dır; donanıma sıcaklık limiti yazılmaz.
+`boreasctl cpufloor 45` etkin modun sürekli güç tabanını ayarlar; `cpufloor min`
+firmware minimumuna döner. Durumda `control: power-feedback`, `target`, `state`,
+`error`, `ceilings_w`, `requested_w`, `floor_w`, `stage`, `ladder`, `effective` ve
+`baseline` bulunur. `applied` null'dır; donanıma sıcaklık limiti yazılmaz.
 Eski kayıtlı hedefler kullanılır, önceki SMU ayarı bu yöntemle sıfırlanmaz.
 
 **Bu kesin sıcaklık tavanı değildir.** Kısa süreli aşım olabilir; en düşük güçte
