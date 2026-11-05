@@ -18,7 +18,7 @@ from .. import __version__, i18n, update
 from ..i18n import _, mode_name, tr_msg
 from ..client import DaemonError, call  # noqa: F401  (the tests use DaemonError as A.DaemonError)
 from . import screen
-from .common import ACCENT, MODE_COLORS, T, apply_theme, bus, run_async, u, uv, watch_system_theme
+from .common import ACCENT, MODE_COLORS, Hold, T, apply_theme, bus, run_async, u, uv, watch_system_theme
 from .fans import FansWindow
 from .widgets import (Segmented, Switch, ValueSlider, card, fan_icon, footer_bar, hint, hline, row,
                       scroll_page, theme_icon)
@@ -140,6 +140,8 @@ class MainWindow(QWidget):
         self.page = "main"
         self.last_ac = None
         self.busy = False
+        self._limited_hold = Hold(30)  # "limited" on the mode line; a spiky load leaves gaps of 10 s and more
+        self._limited_key = None       # the mode and target the hold belongs to
         self.stale = False      # a new request came in while a query was running: ask again when it finishes
         self.pending = []       # callbacks to run when a new status arrives
         # a clicked choice stays on screen until the service has applied it and a new status arrives
@@ -681,7 +683,20 @@ class MainWindow(QWidget):
         extra = []
         if s.get("custom_power"):
             extra.append(_("custom power"))
-        if (s.get("cpu_temp") or {}).get("state") == "limited":
+        ct = s.get("cpu_temp") or {}
+        # The state flips every second around the target, so the word is held for a while; it is not carried
+        # into another mode or target, past a stopped controller, or past limits that are back at their ceiling
+        # (the mode was applied again).
+        key = (s["mode"], ct.get("target"))
+        req = (ct.get("requested_w") or {}).get("ppt_pl1_spl")
+        ceil, floor = (ct.get("ceilings_w") or {}).get("ppt_pl1_spl"), ct.get("floor_w")
+        restored = ceil is not None and (req is None or req >= ceil) and (floor is None or ceil > floor)
+        limited = ct.get("state") == "limited"
+        if (key != self._limited_key or ct.get("target") is None or ct.get("state") in ("error", "off")
+                or (restored and not limited)):
+            self._limited_key = key
+            self._limited_hold.clear()
+        if self._limited_hold(limited):
             extra.append(_("limited"))
         if self.fans_window is not None:
             self.fans_window.render_cpu_temp(s.get("cpu_temp"), s["mode"])
