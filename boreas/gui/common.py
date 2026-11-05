@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
@@ -31,6 +32,27 @@ try:
     SCALE = min(1.6, max(0.5, float(os.environ.get("BOREAS_SCALE", "0.78"))))
 except ValueError:
     SCALE = 0.78
+
+
+class Hold:
+    """True for a while after its condition was last seen.
+
+    The temperature controller judges its state every second, so around the target a status word would
+    appear and vanish with every refresh. A word shown through a Hold stays until the condition has been
+    away for `seconds`."""
+    clock = staticmethod(time.monotonic)
+
+    def __init__(self, seconds: float = 10.0):
+        self.seconds, self.until = seconds, 0.0
+
+    def __call__(self, on: bool) -> bool:
+        now = self.clock()
+        if on:
+            self.until = now + self.seconds
+        return now < self.until
+
+    def clear(self) -> None:
+        self.until = 0.0
 
 
 def u(n: float) -> int:

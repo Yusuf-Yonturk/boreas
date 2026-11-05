@@ -9,9 +9,11 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QInputDialog, QLa
 
 from ..fans import POINTS, fix_curve, safety_floor
 from ..i18n import _, mode_name, tr_msg
-from .common import T, fs, run_async, u, uv
+from .common import Hold, T, fs, run_async, u, uv
 from .widgets import (CheckDot, Segmented, Switch, ValueSlider, card, footer_bar, hline, row,  # noqa: F401
                       align_sliders, scroll_page, set_info)
+
+FLOOR_SLACK_W = 2  # the controller's recovery step (thermal.RECOVER_STEP_W): how far above the floor "(floor)" is held
 
 T_MIN, T_MAX = 20, 110
 
@@ -158,6 +160,8 @@ class FansWindow(QWidget):
         self.mode_names: dict = {}
         self.entry = None
         self._loading = False
+        self._floor_hold = Hold()  # keeps "(floor)" on the Power card's status line from blinking
+        self._floor_key = None     # the mode, target and floor the hold belongs to
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -365,19 +369,34 @@ class FansWindow(QWidget):
     def render_cpu_temp(self, ct: dict | None, active_mode) -> None:
         """The Power card's info line: what the target is doing right now in the active mode."""
         if not ct or ct.get("target") is None or self.mode_id != active_mode:
+            self._floor_hold.clear()
             self.power_info.setText("")
             return
         if ct.get("state") == "error" and ct.get("error"):
+            self._floor_hold.clear()
             self.power_info.setText(tr_msg(ct["error"]))
             return
+        floor = ct.get("floor_w")
+        key = (active_mode, ct["target"], floor)
+        if key != self._floor_key:  # another mode, target or floor: nothing seen before applies to it
+            self._floor_key = key
+            self._floor_hold.clear()
         parts = [_("Target {temp} °C").format(temp=ct["target"])]
         pl1 = (ct.get("requested_w") or {}).get("ppt_pl1_spl")
         if pl1 is None:
             pl1 = (ct.get("ceilings_w") or {}).get("ppt_pl1_spl")
         if pl1 is not None:
-            text = _("PL1 {watts} W").format(watts=pl1)
-            if ct.get("floor_w") is not None and pl1 <= ct["floor_w"] and ct.get("state") == "limited":
-                text += f" ({_('floor')})"
+            # At the floor is a fact about the limit, whatever the temperature is this second. Around the
+            # target the controller also takes one recovery step and cuts it back at once; only that step
+            # is bridged, by showing the floor a little longer. Any other value is shown as it is.
+            if floor is not None and pl1 <= floor:
+                self._floor_hold(True)
+                text = _("PL1 {watts} W").format(watts=pl1) + f" ({_('floor')})"
+            elif floor is not None and pl1 <= floor + FLOOR_SLACK_W and self._floor_hold(False):
+                text = _("PL1 {watts} W").format(watts=floor) + f" ({_('floor')})"
+            else:
+                self._floor_hold.clear()
+                text = _("PL1 {watts} W").format(watts=pl1)
             parts.append(text)
         engaged = (ct.get("ladder") or [])[:ct.get("stage") or 0]
         kinds = [r.split(":")[0] for r in engaged]
