@@ -8,10 +8,18 @@ on:
 
 jobs:
   test:
+    name: test (${{ matrix.python }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ["3.11", "3.13"]
+        include:
+          # PySide6/shiboken6 6.12.0 drops a reference to None on every void Qt call under Python 3.11
+          # (3.12+ has immortal None/True/False, so it is harmless there); the test run then aborts
+          # in bool_dealloc/none_dealloc. 3.11 stays on the last good release; 3.13 follows the latest.
+          - python: "3.11"
+            pyside: "PySide6-Essentials==6.11.3"
+          - python: "3.13"
+            pyside: "PySide6-Essentials"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
       - name: Install PySide6
-        run: pip install PySide6-Essentials
+        run: pip install "${{ matrix.pyside }}"
       - name: Shell scripts
         run: sh -n install.sh && sh -n uninstall.sh && sh -n data/boreas.sleep && sh -n tools/install-reviewed.sh && sh -n tools/rustc-remap.sh
       - name: Unit tests
