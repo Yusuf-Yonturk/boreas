@@ -3,7 +3,7 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
-## Unreleased
+## 0.1.6
 
 - The CPU temperature target gained an **escalation ladder**: when the power limits sit at their floor and the CPU is still above the target, the controller steps below the mode's own CPU policy one rung at a time (EPP one notch down, then `cpufreq/boost` off, then the default governor when the mode uses the Performance power profile) and releases the rungs in reverse order as the CPU cools. The mode's CPU Boost and power profile stay the ceiling; `Default`, mode changes and service exit restore them exactly. The Fans & Power page shows the state on the Power card ("Target 82 °C · PL1 30 W (floor) · EPP lowered") and the main card says "limited" when the target cannot be met
 - Per-mode **sustained power floor** under the temperature target (slider, `boreasctl cpufloor <W>|min`): the controller never requests SPL below it and moves on to the ladder instead, so a gaming mode can hold 45 W instead of the firmware's 30 W minimum
