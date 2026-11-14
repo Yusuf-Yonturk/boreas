@@ -285,16 +285,16 @@ class TestController(unittest.TestCase):
     def test_ladder_engages_after_grace_and_dwell(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(95, 14)  # at the floor since t=8, hot since t=1, but 15 s from set_baseline
+        self.step(88, 14)  # at the floor since t=8, hot since t=1, but 15 s from set_baseline
         self.assertEqual((self.c.stage, self.c.state), (0, "limited"))
-        self.step(95)
+        self.step(88)
         self.assertEqual(self.c.stage, 1)
         self.assertEqual(self.policy, {"governor": "default", "boost": True, "epp": "balance_performance"})
-        self.step(95, 14)
+        self.step(88, 14)
         self.assertEqual(self.c.stage, 1)  # dwell
-        self.step(95)
+        self.step(88)
         self.assertEqual((self.c.stage, self.policy["epp"]), (2, "balance_power"))
-        self.step(95, 30)
+        self.step(88, 30)
         self.assertEqual((self.c.stage, self.policy["epp"], self.policy["boost"]), (4, "power", False))
         self.assertEqual(self.c.status()["stage_max"], 4)
         self.assertTrue(any("stage 4/4 (boost off)" in e for e in self.c.drain_events()))
@@ -310,7 +310,7 @@ class TestController(unittest.TestCase):
     def test_ladder_releases_in_reverse_before_caps_recover(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(95, 30)
+        self.step(88, 30)
         self.assertEqual(self.c.stage, 2)
         self.step(70, 20)  # cool since t=31: 20 s of dwell before the first release
         self.assertEqual(self.c.stage, 2)
@@ -353,7 +353,7 @@ class TestController(unittest.TestCase):
     def test_set_baseline_resets_stage_without_touching_caps(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(95, 30)
+        self.step(88, 30)
         self.assertEqual(self.c.stage, 2)
         n = len(self.writes)
         self.c.set_baseline(thermal.Baseline("balanced", "default"))
@@ -371,6 +371,173 @@ class TestController(unittest.TestCase):
         self.assertEqual(self.c.ladder, [("boost", False)])  # the EPP rungs were dropped one by one
         self.assertEqual((self.c.stage, self.policy["boost"]), (1, False))
         self.assertTrue(any("rung skipped" in e for e in self.c.drain_events()))
+
+    # ---- fast path and relapse hold (G713PV: 30 W requested, 50-60 W drawn, 93 °C) ----
+
+    def pin_caps_at_floor(self):
+        for a in self.attrs.values():
+            a.min = a.current
+
+    def test_fast_path_switches_boost_off_when_the_floor_does_not_help(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91  # e = 6
+        self.c.start(85)
+        self.step(91, 2)
+        self.assertEqual((self.c.stage, self.policy["boost"]), (0, True))  # 2 s over: not yet
+        self.step(91)
+        self.assertEqual((self.c.stage, self.policy), (2, {"governor": "default", "boost": False, "epp": "power"}))
+        events = self.c.drain_events()
+        self.assertTrue(any("stage 2/2 (boost off, fast)" in e for e in events), events)
+
+    def test_fast_path_waits_for_the_floor(self):
+        self.enable_ladder("balanced", "default")
+        self.temp = 91
+        self.c.start(85)  # 50 W, floor 10 W: 6 W/s reaches it at t=6
+        self.step(91, 9)  # the last rail reaches its floor at t=9
+        self.assertEqual((self.caps(), self.c.state, self.c.stage), ([10, 10, 10], "limited", 0))
+        self.step(91, 2)
+        self.assertEqual(self.c.stage, 0)  # the grace counts at the floor, not during the descent
+        self.step(91)
+        self.assertEqual((self.c.stage, self.policy["boost"]), (2, False))
+
+    def test_fast_path_ignores_short_bursts_and_small_overshoot(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 80
+        self.c.start(85)
+        for _ in range(4):  # 2 s bursts, each followed by a second below the threshold
+            self.step(93, 2)
+            self.step(89)
+        self.assertEqual(self.c.stage, 0)
+        self.step(80)
+        self.step(89, 9)  # e = 4: under the fast threshold, the grace still applies
+        self.assertEqual(self.c.stage, 0)
+
+    def test_fast_path_without_a_boost_rung_keeps_the_gradual_ladder(self):
+        self.enable_ladder("max", "default")
+        self.cpufreq["boost"] = []
+        self.c.set_baseline(thermal.Baseline("max", "default"))
+        self.pin_caps_at_floor()
+        self.temp = 95
+        self.c.start(85)
+        self.step(95, 14)
+        self.assertEqual(self.c.stage, 0)
+        self.step(95)
+        self.assertEqual(self.c.stage, 1)
+
+    def test_fast_path_boost_write_failure_drops_the_rung(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        with patch("boreas.thermal.hw.set_boost_enabled", side_effect=OSError("boost rejected")):
+            self.step(91, 3)
+        self.assertEqual((self.c.error, self.c.ladder, self.c.stage), ("", [("epp", "power")], 1))
+        self.assertTrue(self.policy["boost"])
+
+    def test_relapse_after_release_doubles_the_hold_and_calm_resets_it(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        self.step(91, 3)
+        self.assertEqual(self.c.stage, 2)
+        self.step(70, 20)
+        self.assertEqual(self.c.stage, 2)
+        self.step(70)  # 20 s cool: the boost rung is released
+        self.assertEqual((self.c.stage, self.policy["boost"]), (1, True))
+        self.step(91, 4)  # hot again at once (seen at the first tick, 3 s later): released too early
+        self.assertEqual((self.c.stage, self.c.status()["release_dwell_s"]), (2, 40))
+        self.step(70, 39)
+        self.assertEqual(self.c.stage, 2)
+        self.step(70)  # 40 s after the escalation
+        self.assertEqual(self.c.stage, 1)
+        self.step(70, 100)  # fully released and calm for longer than the relapse window
+        self.assertEqual(self.c.stage, 0)
+        self.step(91, 4)
+        self.assertEqual((self.c.stage, self.c.status()["release_dwell_s"]), (2, 20))
+
+    def test_release_hold_is_capped_and_reset_by_a_new_baseline(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        for _ in range(8):
+            self.step(91, 4)
+            self.step(70, self.c.status()["release_dwell_s"] + 1)
+        self.assertEqual(self.c.status()["release_dwell_s"], thermal.RELEASE_DWELL_MAX)
+        self.c.set_baseline(thermal.Baseline("balanced", "default"))
+        self.assertEqual(self.c.status()["release_dwell_s"], thermal.RELEASE_DWELL)
+
+    def relapse_until(self, dwell):
+        self.step(91, 4)
+        while self.c.status()["release_dwell_s"] < dwell:
+            self.step(70, self.c.status()["release_dwell_s"] + 1)
+            self.step(91, 4)
+        self.assertEqual((self.c.stage, self.c.status()["release_dwell_s"]), (2, dwell))
+
+    def test_long_hold_is_not_restarted_by_jitter_at_the_band_edge(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        self.relapse_until(320)
+        for _ in range(6):  # 82 °C with one 83 °C sample a minute: never 320 s of unbroken cool
+            self.step(82, 60)
+            self.step(83)
+        self.assertLess(self.c.stage, 2)
+
+    def test_relapse_through_two_rungs_counts_once(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        self.step(91, 3)
+        self.step(70, 21 + 15)  # both rungs released, the second a rung dwell after the first
+        self.assertEqual(self.c.stage, 0)
+        self.step(91, 4)  # two rungs in one tick are one relapse
+        self.assertEqual((self.c.stage, self.c.status()["release_dwell_s"]), (2, 40))
+
+    def test_new_target_or_floor_forgets_the_relapse_hold(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        self.relapse_until(80)
+        self.c.start(85)  # the same values again: the mode was only saved
+        self.assertEqual(self.c.status()["release_dwell_s"], 80)
+        self.c.start(86)
+        self.assertEqual(self.c.status()["release_dwell_s"], 20)
+
+    def test_new_baseline_needs_fresh_evidence_for_the_fast_path(self):
+        self.enable_ladder("balanced", "default")
+        self.pin_caps_at_floor()
+        self.temp = 91
+        self.c.start(85)
+        self.step(91, 3)
+        self.assertEqual(self.c.stage, 2)
+        self.c.set_baseline(thermal.Baseline("balanced", "default"))
+        self.policy = self.c.baseline.policy()
+        self.step(91, 3)
+        self.assertEqual(self.c.stage, 0)
+        self.step(91)
+        self.assertEqual(self.c.stage, 2)
+
+    def test_plant_where_only_boost_off_cools(self):
+        # The measured G713PV shape: the power rails and the EPP do not move the temperature,
+        # boost does. Synthetic, like the plants below: it checks the control flow, not a laptop.
+        self.attrs[self.PL1].min = 30
+        self.enable_ladder("balanced", "default")
+        self.temp = 60
+        self.c.start(82)
+        actual, over = 60.0, 0
+        for _ in range(900):
+            actual += 0.6 * ((93 if self.policy["boost"] else 65) - actual)
+            self.step(round(actual))
+            over += self.temp >= 87
+        self.assertLess(over, 90, f"{over} of 900 s at 87 °C or more")  # was about half the time
+        self.assertFalse(self.c.error)
 
     # ---- plants ----
 

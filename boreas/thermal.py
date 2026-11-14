@@ -28,6 +28,17 @@ RECOVER_STEP_W, RECOVER_PERIOD = 2, 2.0  # +2 W every 2 s while cool at stage 0
 ESCALATE_GRACE = 10.0         # seconds hot at the floor before the next rung
 RUNG_DWELL = 15.0             # minimum seconds between two rung changes
 RELEASE_DWELL = 20.0          # continuous cool seconds before a rung is released
+# Fast path: where the firmware does not let the power rails bind (measured on a G713PV: 30 W
+# requested, 50-60 W drawn, 93 °C), boost is the only rung that cools. This far over the target
+# for this long at the floor, the ladder goes straight to it instead of one rung per dwell.
+FAST_OVER = 5                 # °C over the target, the margin of daemon.HOT_OVER_LIMIT
+FAST_GRACE = 3.0              # continuous seconds that far over at the floor: the floor gets its chance first
+# A rung that is needed again right after its release was released too early: the next release
+# waits longer after the escalation. The continuous-cool requirement itself stays RELEASE_DWELL,
+# so sensor jitter at the band edge cannot hold a rung for longer than before.
+RELAPSE_WINDOW = 60.0         # seconds after a release in which a new escalation counts as a relapse
+RELEASE_DWELL_MAX = 320.0     # the hold after an escalation doubles per relapse up to this
+BOOST_RUNG = ("boost", False)
 RESYNC_MAX, RESYNC_WINDOW = 3, 60.0  # re-assertions of a user cap before giving up
 
 EPP_LADDER = ("performance", "balance_performance", "balance_power", "power")
@@ -96,8 +107,12 @@ class Controller:
         self.last_tick = float("-inf")
         self.cool_since: float | None = None
         self.hot_since: float | None = None
+        self.over_since: float | None = None
         self.last_recover = float("-inf")
         self.reapply_at: float | None = None
+        self.release_dwell = RELEASE_DWELL
+        self.released_at = float("-inf")
+        self.escalated_at = float("-inf")
         # per-mode inputs
         self.floor_w: int | None = None
         self.floor_min: int | None = None
@@ -158,6 +173,8 @@ class Controller:
         self.stage = 0
         self.effective = baseline.policy()
         self.stage_changed_at = time.monotonic()
+        self.over_since = None
+        self._reset_relapse()
 
     def policy_for_stage(self, k: int) -> dict:
         policy = self.baseline.policy()
@@ -180,7 +197,7 @@ class Controller:
                 write(target[key])
                 self.effective[key] = target[key]
 
-    def _escalate(self, now: float, temp: int) -> None:
+    def _escalate(self, now: float, temp: int, fast: bool = False) -> None:
         rung = self.ladder[self.stage]
         try:
             self._apply_stage(self.stage + 1)
@@ -191,9 +208,29 @@ class Controller:
             return
         self.stage += 1
         self.stage_changed_at = now
+        self.escalated_at = now
+        if now - self.released_at < RELAPSE_WINDOW:
+            self.release_dwell = min(RELEASE_DWELL_MAX, self.release_dwell * 2)
+        elif self.released_at != float("-inf"):
+            self.release_dwell = RELEASE_DWELL
+        self.released_at = float("-inf")  # one relapse per release, however many rungs follow
         pl1 = self.written.get(POWER_ATTRS[0], self.ceilings.get(POWER_ATTRS[0]))
-        self.event(f"cpu target: stage {self.stage}/{len(self.ladder)} ({rung_text(rung)}), "
+        self.event(f"cpu target: stage {self.stage}/{len(self.ladder)} ({rung_text(rung)}{', fast' if fast else ''}), "
                    f"PL1 {pl1} W (floor), {temp}°C")
+
+    def _reset_relapse(self) -> None:
+        self.release_dwell = RELEASE_DWELL
+        self.released_at = float("-inf")
+        self.escalated_at = float("-inf")
+
+    def _boost_rung_ahead(self) -> bool:
+        return BOOST_RUNG in self.ladder[self.stage:]
+
+    def _escalate_to_boost(self, now: float, temp: int) -> None:
+        """Every rung up to and including boost off, in one tick. A rung that fails is dropped
+        by _escalate, so each pass either advances the stage or shortens the ladder."""
+        while self._boost_rung_ahead():
+            self._escalate(now, temp, fast=True)
 
     def _release(self, now: float, temp: int) -> None:
         rung = self.ladder[self.stage - 1]
@@ -205,6 +242,7 @@ class Controller:
             return
         self.stage -= 1
         self.stage_changed_at = now
+        self.released_at = now
         self.event(f"cpu target: stage {self.stage}/{len(self.ladder)} (released {rung_text(rung)}), {temp}°C")
 
     # ---- lifecycle ---------------------------------------------------------------
@@ -248,6 +286,8 @@ class Controller:
             self.applied = None
         self.cool_since = None
         self.hot_since = None
+        self.over_since = None
+        self._reset_relapse()
         self.reapply_at = None
         self.resync_log = []
         self.last_tick = float("-inf")
@@ -269,6 +309,8 @@ class Controller:
             return  # a bridge fault needs an explicit mode reapply/Default
         backend = self.active_backend or self._backend()
         self.active_backend = backend
+        if target != self.target or floor_w != self.floor_w:
+            self._reset_relapse()  # what was learned belongs to the old target and floor
         self.floor_w = floor_w
         self.user_caps = {n: int(v) for n, v in (user_caps or {}).items() if n in POWER_ATTRS}
         if backend == "smu-bridge":
@@ -305,6 +347,7 @@ class Controller:
         if target != self.target:
             self.cool_since = None
             self.hot_since = None
+            self.over_since = None
         self.target = target
         self.state = "active"
         self.tick()
@@ -314,6 +357,7 @@ class Controller:
         self.state = "error"
         self.cool_since = None
         self.hot_since = None
+        self.over_since = None
         self.reapply_at = None
 
     # ---- feedback ----------------------------------------------------------------
@@ -414,24 +458,34 @@ class Controller:
                     self.hot_since = now
                 self._move(attrs, -min(CUT_MAX_W, max(CUT_MIN_W, 2 * e)))
                 at_floor = all(hw.get_attr(n).current <= self.floor(n, a) for n, a in attrs.items())
+                if e < FAST_OVER or not at_floor:
+                    self.over_since = None
+                elif self.over_since is None:
+                    self.over_since = now
                 self.state = "limited" if at_floor else "active"
-                if (at_floor and self.stage < len(self.ladder)
-                        and now - self.hot_since >= ESCALATE_GRACE
-                        and now - self.stage_changed_at >= RUNG_DWELL):
-                    self._escalate(now, temp)
+                if at_floor and self.stage < len(self.ladder):
+                    if (self.over_since is not None and now - self.over_since >= FAST_GRACE
+                            and self._boost_rung_ahead()):
+                        self._escalate_to_boost(now, temp)
+                    elif (now - self.hot_since >= ESCALATE_GRACE
+                            and now - self.stage_changed_at >= RUNG_DWELL):
+                        self._escalate(now, temp)
             elif e <= -COOL_BAND:
                 self.hot_since = None
+                self.over_since = None
                 if self.cool_since is None:
                     self.cool_since = now
                 self.state = "active"
                 if self.stage > 0:
-                    if now - self.cool_since >= RELEASE_DWELL and now - self.stage_changed_at >= RUNG_DWELL:
+                    if (now - self.cool_since >= RELEASE_DWELL and now - self.stage_changed_at >= RUNG_DWELL
+                            and now - self.escalated_at >= self.release_dwell):
                         self._release(now, temp)
                 elif now - self.last_recover >= RECOVER_PERIOD:
                     self.last_recover = now
                     self._move(attrs, RECOVER_STEP_W)
             else:
                 self.hot_since = None
+                self.over_since = None
                 self.cool_since = None
                 self.state = "active"
         except (OSError, ValueError, AttributeError) as e:
@@ -445,6 +499,7 @@ class Controller:
                 "requested_w": dict(self.written), "hard_limit": False,
                 "floor_w": self.effective_floor_w(),
                 "stage": self.stage, "stage_max": len(self.ladder),
+                "release_dwell_s": int(self.release_dwell),
                 "ladder": [f"{k}:{v}" for k, v in self.ladder],
                 "effective": dict(self.effective),
                 "baseline": {"governor": self.baseline.governor, "boost_mode": self.baseline.boost_mode,

@@ -75,7 +75,21 @@ and only steps below it, rung by rung, when the caps are at their floor:
 
 Timing: the first rung needs 10 s hot at the floor (`ESCALATE_GRACE`) and 15 s
 since the last rung change (`RUNG_DWELL`); a rung is released after 20 s of
-continuous cool (`RELEASE_DWELL`) plus the same dwell, in reverse order. The stage
+continuous cool (`RELEASE_DWELL`) plus the same dwell, in reverse order.
+
+Fast path: where the firmware does not let the caps bind, the floor does not cool
+and only boost off does (measured on a G713PV: 30 W requested, 50 to 60 W drawn,
+93 °C until the boost rung arrived 25 s later). With the caps at their floor and
+the CPU 5 °C or more over the target (`FAST_OVER`) for 3 s without a break
+(`FAST_GRACE`, counted at the floor), the controller skips both waits and applies
+every rung up to and including boost off in one step; the log line says `fast`.
+Ladders without a boost rung keep the gradual timing.
+
+Relapse hold: an escalation within 60 s of a release (`RELAPSE_WINDOW`) means the
+rung was released too early. The next release then also waits for a hold counted
+from the escalation, doubled per relapse from 20 s up to 320 s
+(`RELEASE_DWELL_MAX`). An escalation later than that window, a new target or floor
+and every mode apply put it back to 20 s. The stage
 is not persisted: every mode apply, AC change and resume starts at stage 0 with the
 new baseline written by the daemon. A failed rung write is logged and that rung is
 skipped; it is not a controller fault. `Default`, mode changes and daemon exit
@@ -103,7 +117,8 @@ profile. Resume uses the mode reapply path.
 
 `cpu_temp` status includes `available`, `target`, `state` (`off`, `active`,
 `limited`, `error`), `error`, `ceilings_w`, `requested_w`, `floor_w` (the
-effective SPL floor), `stage`, `stage_max`, `ladder`, `effective` (the policy the
+effective SPL floor), `stage`, `stage_max`, `release_dwell_s` (the current relapse
+hold), `ladder`, `effective` (the policy the
 controller last wrote), `baseline`, `control` and `hard_limit: false`. The top
 level `cpu_policy` reports what sysfs says right now (governor, EPP, boost). With
 `power-feedback`, `applied` stays null: no CPU temperature limit has been written.
