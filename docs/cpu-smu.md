@@ -2,8 +2,8 @@
 
 The active daemon uses `thermal.Controller`: ASUS power sysfs feedback by default,
 with an explicit opt-in kernel SMU bridge restricted to G713PV / G713PV.336.
-The raw userspace SMU module remains for reference and isolated tests; it is not
-selected or used as a fallback. See [active controller, gating and validation
+The raw userspace SMU module was removed from the code (it stays in the git history
+up to 0.1.6); this page records why it could not be made safe. See [active controller, gating and validation
 limits](cpu-temperature.md).
 
 ## Historical raw PCI transport

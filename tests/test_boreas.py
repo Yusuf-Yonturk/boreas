@@ -88,7 +88,6 @@ def build_tree():
     put(R + "/dev/hidraw1", "")
     put(R + ryzen.CPUINFO, "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\n"
         "model\t\t: 97\nmodel name\t: AMD Ryzen 9 7845HX with Radeon Graphics\n\nprocessor\t: 1\n")
-    put(R + ryzen.ROOT_COMPLEX, "")
 
 
 class Base(unittest.TestCase):
@@ -568,297 +567,21 @@ class TestGpu(Base):
         self.assertNotEqual(d.cfg["mode_ac"], 42)
 
 
-class FakeSmn:
-    """SMU mailbox: fills the response register when a command is written."""
-
-    def __init__(self, fam, statuses=None, idle=ryzen.OK, read_limit=None, follow_writes=True):
-        self.fam, self.statuses = fam, statuses or {}
-        self.regs = {fam.rsp: idle}
-        self.sent = []
-        self.limit = read_limit
-        self.follow_writes = follow_writes
-        self.limit_queries = 0
-
-    def read(self, fd, addr):
-        return self.regs.get(addr, 0)
-
-    def write(self, fd, addr, value):
-        self.regs[addr] = value
-        if addr != self.fam.msg:
-            return
-        if value == self.fam.get_limit:
-            self.limit_queries += 1
-            self.regs[self.fam.rsp] = self.statuses.get(
-                value, ryzen.OK if self.limit is not None else ryzen.UNKNOWN_CMD)
-            self.regs[self.fam.arg] = (55 << 16) | (self.limit or 0)
-            return
-        self.sent.append((value, self.regs.get(self.fam.arg, 0)))
-        status = self.statuses.get(value, ryzen.OK)
-        if value == ryzen.GET_SMU_VERSION and status == ryzen.OK:
-            self.regs[self.fam.arg] = 0x4C4D00
-        if value == self.fam.tctl and status == ryzen.OK and self.follow_writes and self.limit is not None:
-            self.limit = self.regs[self.fam.arg]
-        self.regs[self.fam.rsp] = status
-
-
-def fake_smu(cpu, **kw):
-    smn = FakeSmn(cpu.family, **kw)
-    cpu.smu._read, cpu.smu._write = smn.read, smn.write
-    return smn
-
-
-class TestSmuTransport(unittest.TestCase):
-    def setUp(self):
-        self.smu = ryzen.Smu(ryzen.FAMILIES[(0x19, 0x61)], path="/fake-pci-config")
-        self.addr = self.smu.f.rsp
-
-    @staticmethod
-    def packed(value):
-        return value.to_bytes(4, "little")
-
-    def assert_disabled_without_reopening(self):
-        with patch.object(ryzen.os, "open") as opened:
-            with self.assertRaises(ryzen.SmuError):
-                self.smu.send(0x3F, 83)
-        opened.assert_not_called()
-
-    def test_changed_selector_prevents_data_write_and_future_commands(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4) as writes, \
-                patch.object(ryzen.os, "pread", return_value=self.packed(0x11141294)):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._write(91, self.addr, 0)
-        self.assertEqual([c.args[2] for c in writes.call_args_list], [ryzen.SMN_ADDR])
-        self.assert_disabled_without_reopening()
-
-    def test_changed_selector_prevents_data_read(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", return_value=self.packed(0x11140294)) as reads:
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._read(91, self.addr)
-        self.assertEqual([c.args[2] for c in reads.call_args_list], [ryzen.SMN_ADDR])
-
-    def test_selector_change_during_read_discards_apparent_success(self):
-        values = [self.packed(self.addr), self.packed(ryzen.OK), self.packed(0x11140294)]
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=values):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._read(91, self.addr)
-        self.assert_disabled_without_reopening()
-
-    def test_selector_change_during_write_stops_subsequent_access(self):
-        values = [self.packed(self.addr), self.packed(0x11140294)]
-        with patch.object(ryzen.os, "pwrite", return_value=4) as writes, \
-                patch.object(ryzen.os, "pread", side_effect=values):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._write(91, self.addr, 0)
-        # The already completed write cannot be undone; no retry is allowed.
-        self.assertEqual([c.args[2] for c in writes.call_args_list], [ryzen.SMN_ADDR, ryzen.SMN_DATA])
-        self.assert_disabled_without_reopening()
-
-    def test_short_selector_write_never_reaches_data_port(self):
-        with patch.object(ryzen.os, "pwrite", return_value=2) as writes, \
-                patch.object(ryzen.os, "pread") as reads:
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._write(91, self.addr, 0)
-        self.assertEqual(writes.call_count, 1)
-        reads.assert_not_called()
-        self.assert_disabled_without_reopening()
-
-    def test_short_data_read_is_not_a_valid_response(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=[self.packed(self.addr), b"\x01"]):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._read(91, self.addr)
-        self.assert_disabled_without_reopening()
-
-    def test_consistent_access_still_reads_and_writes(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=[self.packed(self.addr), self.packed(1), self.packed(self.addr)]):
-            self.assertEqual(self.smu._read(91, self.addr), 1)
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", return_value=self.packed(self.addr)):
-            self.smu._write(91, self.addr, 0)
-        self.assertEqual(self.smu.error, "")
-
-    def test_io_error_latches_before_any_followup_command(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=OSError("PCI unavailable")):
-            with self.assertRaisesRegex(ryzen.SmuAccessError, "PCI unavailable"):
-                self.smu._read(91, self.addr)
-        self.assert_disabled_without_reopening()
-
-    def test_short_data_write_latches_the_transport(self):
-        with patch.object(ryzen.os, "pwrite", side_effect=[4, 2]), \
-                patch.object(ryzen.os, "pread", return_value=self.packed(self.addr)):
-            with self.assertRaises(ryzen.SmuAccessError):
-                self.smu._write(91, self.addr, 0)
-        self.assert_disabled_without_reopening()
-
-    def test_failed_argument_write_never_publishes_the_command(self):
-        attempted = []
-        def write(fd, addr, value):
-            attempted.append(addr)
-            if addr == self.smu.f.arg + 4:
-                raise self.smu._fault("SMN selector changed during arguments")
-        with patch.object(ryzen.os, "open", return_value=91), \
-                patch.object(ryzen.os, "close") as closed, \
-                patch.object(self.smu, "_wait", return_value=ryzen.OK), \
-                patch.object(self.smu, "_write", side_effect=write):
-            with self.assertRaises(ryzen.SmuAccessError):
-                self.smu.send(0x3F, 83)
-        self.assertNotIn(self.smu.f.msg, attempted)
-        closed.assert_called_once_with(91)
-        self.assert_disabled_without_reopening()
-
-
-class TestCpuTemp(Base):
+class TestCpuDetect(Base):
     def test_detect_dragon_range(self):
         self.assertEqual(ryzen.detect().name, "Dragon Range")
         put(R + ryzen.CPUINFO, "vendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\n")
         self.assertIsNone(ryzen.detect())
         put(R + ryzen.CPUINFO, "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 116\n")
-        self.assertIsNone(ryzen.detect())  # Phoenix: a different mailbox, not supported
+        self.assertIsNone(ryzen.detect())  # Phoenix: another command set, not supported
 
-    def test_set_probes_version_then_sends_mp1_tctl(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu)
-        cpu.set(85)
-        cpu.set(80)
-        # Raphael family: MP1 0x3F, one version query on first use
-        self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 85), (0x3F, 80)])
-        self.assertEqual(cpu.version_str(), "76.77.0")
-        self.assertEqual(cpu.applied, 80)
-
-    def test_readback_can_be_disabled_without_disabling_temperature_writes(self):
-        with patch.dict(os.environ, BOREAS_SMU_READBACK="0"):
-            cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, read_limit=100)
-        cpu.set(83)
-        cpu.set(82)
-        self.assertEqual(smn.limit_queries, 0)
-        self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 83), (0x3F, 82)])
-        self.assertEqual(cpu.applied, 82)
-        self.assertFalse(cpu.readback_verified)
-        self.assertIsNone(cpu.reported_limit)
-
-    def test_transaction_diagnostics_are_bounded_and_do_not_read_hardware(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen.os, "pread") as read, contextlib.redirect_stderr(output):
-            for _ in range(70):
-                cpu.smu._trace_transaction(0x3F, 83, ryzen.OK, 0, True)
-        read.assert_not_called()
-        lines = output.getvalue().splitlines()
-        self.assertEqual(len(lines), 64)
-        self.assertTrue(json.loads(lines[0].removeprefix("SMU_DIAGNOSTIC "))["sent"])
-
-    def test_probe_failure_never_sends_tctl(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x02: ryzen.UNKNOWN_CMD})
-        with self.assertRaises(ryzen.SmuError):
-            cpu.set(85)
-        self.assertEqual(smn.sent, [(0x02, 0)])
-        self.assertFalse(cpu.supported())
-
-    def test_busy_mailbox_is_not_written(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, idle=0)
-        with self.assertRaises(ryzen.SmuError):
-            cpu.set(85)
-        self.assertEqual(smn.sent, [])
-
-    def test_invalid_idle_response_does_not_send_a_command(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, idle=0x20212210)
-        with self.assertRaisesRegex(ryzen.SmuError, "Invalid SMU mailbox response.*before command"):
-            cpu.set(85)
-        self.assertEqual(smn.sent, [])
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-
-    def test_diagnostics_disabled_does_not_add_pci_reads(self):
-        cpu = ryzen.CpuTemp()
-        cpu.smu.diagnostics = False
-        with patch.object(ryzen.os, "pread") as read:
-            cpu.smu._trace_invalid_reply(-1, 0x20212210, 0x3F, 83, "before_command")
-        read.assert_not_called()
-
-    def test_diagnostics_record_index_and_reread_without_resending(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, idle=0x20212210)
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen.os, "pread", return_value=(0x59800).to_bytes(4, "little")), \
-                contextlib.redirect_stderr(output):
-            with self.assertRaises(ryzen.SmuError):
-                cpu.set(83)
-        line = output.getvalue().strip()
-        record = json.loads(line.removeprefix("SMU_DIAGNOSTIC "))
-        self.assertEqual(record["selected_index_after_read"], "0x59800")
-        self.assertEqual(record["response"], "0x20212210")
-        self.assertEqual(record["stage"], "before_command")
-        self.assertEqual(smn.sent, [])
-
-    def test_diagnostic_read_failure_preserves_original_error(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        fake_smu(cpu, idle=0x20212210)
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen.os, "pread", side_effect=OSError("read failed")), \
-                contextlib.redirect_stderr(output):
-            with self.assertRaisesRegex(ryzen.SmuError, "0x20212210"):
-                cpu.set(83)
-        self.assertIn('"diagnostic_error": "read failed"', output.getvalue())
-
-    def test_invalid_command_reply_does_not_claim_applied(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x3F: 0x20212210})
-        with self.assertRaisesRegex(ryzen.SmuError, "Invalid SMU mailbox response.*after command"):
-            cpu.set(85)
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-        self.assertEqual(smn.sent[-1], (0x3F, 85))
-
-    def test_command_timeout_is_not_reported_as_a_firmware_rejection(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x3F: 0})
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen, "TIMEOUT", 0), contextlib.redirect_stderr(output):
-            with self.assertRaisesRegex(ryzen.SmuError, "Timed out waiting for the SMU command response"):
-                cpu.set(83)
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-        self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 83)])
-        records = [json.loads(line.removeprefix("SMU_DIAGNOSTIC "))
-                   for line in output.getvalue().splitlines()]
-        self.assertEqual(records[-1]["status"], "0x0")
-        self.assertTrue(records[-1]["sent"])
-
-    def test_explicit_firmware_failure_stays_a_rejection(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x3F: ryzen.FAILED})
-        with self.assertRaisesRegex(ryzen.SmuError, r"The SMU rejected the command \(failed\)"):
-            cpu.set(83)
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-        self.assertEqual(smn.sent[-1], (0x3F, 83))
-
-    def test_invalid_readback_response_disables_further_commands(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, read_limit=96)
-        cpu.set(85)
-        smn.regs[cpu.family.rsp] = 0x20212210
-        self.assertIsNone(cpu.read_limit())
-        self.assertIn("Invalid SMU mailbox response", cpu.readback_error)
-        self.assertFalse(cpu.supported())
-        smn.regs[cpu.family.rsp] = ryzen.OK
-        n = len(smn.sent)
-        with self.assertRaises(ryzen.SmuAccessError):
-            cpu.set(80)
-        self.assertEqual(len(smn.sent), n)
-        self.assertEqual(cpu.applied, 85)
+    def test_no_userspace_smu_transport(self):
+        """The service reaches the SMU through the kernel bridge only; nothing opens PCI config space."""
+        import inspect
+        self.assertFalse({"Smu", "CpuTemp"} & set(dir(ryzen)))
+        src = inspect.getsource(ryzen)
+        for needle in ("/sys/bus/pci", "pwrite", "pread"):
+            self.assertNotIn(needle, src)
 
 
 class TestThermalDaemon(Base):
@@ -872,7 +595,8 @@ class TestThermalDaemon(Base):
         return d, None, clock
 
     def test_no_smu_access_and_target_edit(self):
-        with patch.object(ryzen, "CpuTemp", side_effect=AssertionError("SMU forbidden")):
+        # without the opt-in the bridge is never called either: the power limits do the work
+        with patch.object(ryzen.BridgeSmu, "send", side_effect=AssertionError("SMU forbidden")):
             d, _, clock = self._daemon(85)
             d.apply_mode(hw.BALANCED)
             self.assertTrue(fans.is_enabled("cpu"))
