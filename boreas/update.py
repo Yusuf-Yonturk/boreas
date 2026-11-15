@@ -100,9 +100,9 @@ def run_update(expected: str | None = None) -> str:
     pkexec = shutil.which("pkexec")
     if not pkexec:
         raise RuntimeError("pkexec not found. Update manually: git pull && sudo ./install.sh")
+    # mkdtemp's 0700 stays: root reads it anyway, and no other user may touch what root installs
     tmp = tempfile.mkdtemp(prefix="boreas-update-")
     try:
-        os.chmod(tmp, 0o755)  # root must be able to read it too
         root = download_source(tmp)
         got = source_version(root)
         if not got or (expected and is_newer(expected, got)):
