@@ -19,7 +19,7 @@ import time
 import traceback
 
 from . import aura, fans, gpu, hw, thermal
-from .config import BUILTIN, Config
+from .config import BUILTIN, Config, check_mode_fields
 
 SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
@@ -70,6 +70,9 @@ class Daemon:
             log(bridge_warning)
         self.hot: dict | None = None  # the ongoing high temperature episode
         self.temp_peak: dict | None = None  # highest since the service started
+        if self.cfg.load_error:
+            # the unreadable file is kept next to the new one as config.json.corrupt
+            self.set_notice(f"Settings file unreadable, started from the current hardware state: {self.cfg.load_error}")
         if self.cfg.fresh:
             self.import_current()
 
@@ -327,9 +330,10 @@ class Daemon:
                                 + ("It will be applied after a reboot." if e.hard else
                                    "It will be applied automatically when the dGPU is free (usually after a reboot)."))
                 return {"busy": e.users, "deferred": True}
-            except OSError as e:
-                # the firmware rejected the request; do not let it crash the service at boot (and keep
-                # the display manager waiting). If the user chose the mode, pass the error on to them.
+            except (OSError, ValueError, subprocess.SubprocessError) as e:
+                # the firmware rejected the request, Eco is not offered or systemctl hung; do not let
+                # it crash the service at boot (and keep the display manager waiting). If the user
+                # chose the mode, pass the error on to them.
                 self.set_notice(f"Could not change the GPU mode: {e}")
                 if explicit:
                     raise
@@ -463,6 +467,10 @@ class Daemon:
                     self.set_notice("The postponed Eco mode has been applied.")
                 except gpu.GpuBusy:
                     pass
+                except (OSError, ValueError, subprocess.SubprocessError) as e:
+                    # not a busy dGPU: retrying every 15 s would only repeat the error
+                    self.eco_stuck = True
+                    self.set_notice(f"Could not apply the postponed Eco mode: {e}")
 
             profile = hw.get_profile()
             if profile and profile != self.last_profile:
@@ -559,11 +567,14 @@ class Daemon:
             if cmd == "cycle_mode":
                 self.set_mode(c.next_mode(c["mode"], bool(req.get("back"))))
                 return {"mode": c["mode"]}
+            if cmd in ("get_mode", "update_mode") and not c.has_mode(int(req["mode"])):
+                raise ValueError(f"No such mode: {req['mode']}")
             if cmd == "get_mode":
                 return {"mode": c.mode(int(req["mode"]))}
             if cmd == "update_mode":
                 mode_id = int(req["mode"])
                 entry = c.mode(mode_id)
+                check_mode_fields(req["data"])
                 t = req["data"].get("cpu_temp")
                 if t is not None and (type(t) is not int or not thermal.MIN_TEMP <= t <= thermal.DEFAULT_TEMP):
                     raise ValueError(f"CPU temperature limit must be {thermal.MIN_TEMP}..{thermal.DEFAULT_TEMP}")
@@ -579,10 +590,12 @@ class Daemon:
                     lo, hi = (a.min, a.max) if a and a.min is not None and a.max is not None else (1, 300)
                     if type(f) is not int or not lo <= f <= hi:
                         raise ValueError(f"CPU power floor must be {lo}..{hi} W")
+                # every curve is checked before the first field is stored
+                curves = {k: fans.fix_curve(v) for k, v in req["data"].items() if k.startswith("fan_") and v}
                 changed = set()
                 for k, v in req["data"].items():
                     if k in entry and k != "base":
-                        value = fans.fix_curve(v) if k.startswith("fan_") and v else v
+                        value = curves.get(k, v)
                         if entry[k] != value:
                             changed.add(k)
                         entry[k] = value
@@ -635,13 +648,11 @@ class Daemon:
             if cmd == "set_gpu_backend":
                 return self.set_gpu_backend(req.get("backend"))
             if cmd == "set_charge_limit":
-                hw.set_charge_limit(int(req["value"]))
-                c["charge_limit"] = int(req["value"])
+                c["charge_limit"] = hw.set_charge_limit(int(req["value"]))
                 c.save()
                 return {}
             if cmd == "set_kbd":
-                hw.set_kbd_brightness(int(req["brightness"]))
-                c["kbd_brightness"] = int(req["brightness"])
+                c["kbd_brightness"] = hw.set_kbd_brightness(int(req["brightness"]))
                 c.save()
                 return {}
             if cmd == "set_aura":
@@ -664,7 +675,7 @@ class Daemon:
             if cmd == "clear_notice":
                 self.notice = ""
                 return {}
-        raise ValueError(f"bilinmeyen komut: {cmd}")
+        raise ValueError(f"Unknown command: {cmd}")
 
 
 class Handler(socketserver.StreamRequestHandler):

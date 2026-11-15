@@ -466,10 +466,11 @@ class MainWindow(QWidget):
             if self.stale:
                 self.refresh()
                 return
+            if isinstance(r, Exception):
+                return  # the callbacks (held choices among them) wait for the next status that arrives
             callbacks, self.pending = self.pending, []
-            if not isinstance(r, Exception):
-                for cb in callbacks:
-                    cb()
+            for cb in callbacks:
+                cb()
         run_async(lambda: call("status"), done)
         self.timer.setInterval(2000 if self.isVisible() else 5000)
 
@@ -780,6 +781,11 @@ class MainWindow(QWidget):
         self.last_ac = s["ac"]
         self._render_screen()
 
+    def _tray_pick(self, setter, value):
+        # A click toggles the check mark by itself; the next status draws the real state again.
+        self._menu_sig = None
+        setter(value)
+
     def _build_tray_menu(self):
         s = self.status
         sig = (tuple((x["id"], x["name"]) for x in s.get("modes", [])), s.get("mode"),
@@ -791,14 +797,14 @@ class MainWindow(QWidget):
         m.clear()
         for mode in s.get("modes", []):
             act = QAction(mode_name(mode), m, checkable=True, checked=mode["id"] == s["mode"])
-            act.triggered.connect(lambda _=False, i=mode["id"]: self.set_mode(i))
+            act.triggered.connect(lambda _=False, i=mode["id"]: self._tray_pick(self.set_mode, i))
             m.addAction(act)
         if s.get("gpu"):
             m.addSeparator()
             target = s.get("gpu_target") or s["gpu"]["mode"]
             for k, label in GPU_LABELS:
                 act = QAction(f"GPU: {_(label)}", m, checkable=True, checked=k == target)
-                act.triggered.connect(lambda _=False, key=k: self.set_gpu(key))
+                act.triggered.connect(lambda _=False, key=k: self._tray_pick(self.set_gpu, key))
                 m.addAction(act)
         m.addSeparator()
         upd = QAction(_("Check for updates"), m, checkable=True, checked=self._updates_enabled())
@@ -884,7 +890,8 @@ class MainWindow(QWidget):
                 self, _("GPU mode"),
                 _("Switching to or from Ultimate changes the MUX switch and needs a reboot. Continue?"))
             if r != QMessageBox.Yes:
-                self.render()
+                if self.status:
+                    self.render()
                 return
 
         def after(r):

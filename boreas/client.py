@@ -91,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     except DaemonError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    except ValueError:
+        print(f"error: '{a[1]}' is not a number\n\n{USAGE}", file=sys.stderr)
+        return 2
     return 0
 
 

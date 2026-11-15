@@ -439,6 +439,7 @@ class FansWindow(QWidget):
         if mode_id is None:
             return
         self.mode_id = mode_id
+        self.loaded_mode = None  # Apply waits until this mode's own values are on screen
         self.mode_seg.set_checked(mode_id)
         builtin = mode_id in (0, 1, 2)
         self.rename.setEnabled(not builtin)
@@ -448,6 +449,8 @@ class FansWindow(QWidget):
                 self.main.call("set_mode", mode=mode_id)
             return self.main.call("get_mode", mode=mode_id)
         def after(r):
+            if mode_id != self.mode_id:
+                return  # the reply of a mode the user has already left
             self._show_entry(r)
             if activate:
                 self.main.refresh()
@@ -458,6 +461,7 @@ class FansWindow(QWidget):
             self.result_icon.hide()
             self.result.setText(tr_msg(str(r)))
             return
+        self.loaded_mode = self.mode_id
         self._loading = True
         try:
             self.entry = r["mode"]
@@ -539,14 +543,22 @@ class FansWindow(QWidget):
         if ok and name.strip():
             mode = self.mode_id
             run_async(lambda: self.main.call("update_mode", mode=mode, data={"name": name.strip()}),
-                      lambda _: self.main.refresh(lambda: self.reload_modes(mode)))
+                      lambda r: self._after_mode_change(r, lambda: mode))
 
     def _remove_mode(self):
         mode = self.mode_id
         run_async(lambda: self.main.call("remove_mode", mode=mode),
-                  lambda _: self.main.refresh(lambda: self.reload_modes(self.main.status["mode"])))
+                  lambda r: self._after_mode_change(r, lambda: self.main.status["mode"]))
+
+    def _after_mode_change(self, r, select):
+        if isinstance(r, Exception):
+            self._set_status(str(r))
+            return
+        self.main.refresh(lambda: self.reload_modes(select()))
 
     def _apply(self):
+        if getattr(self, "loaded_mode", self.mode_id) != self.mode_id:
+            return  # the sliders still show another mode: saving now would copy it over this one
         data = {
             "fans_apply": self.fans_apply.isChecked(),
             "power_apply": self.power_apply.isChecked(),

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
 import tempfile
 
-from . import hw
+from . import aura, hw
 
 PATH = os.environ.get("BOREAS_CONFIG", "/etc/boreas/config.json")
 MAX_MODES = 20
@@ -38,8 +39,42 @@ def _mode_entry(base: int, name: str) -> dict:
     }
 
 
+def _int(v) -> bool:
+    return type(v) is int  # bool is not a number here
+
+
+def _curve(v) -> list | None:
+    """A stored fan curve: 16 numbers, anything else counts as not saved."""
+    return v if isinstance(v, list) and len(v) == 16 and all(_int(x) for x in v) else None
+
+
+def check_mode_fields(data) -> None:
+    """Type checks for mode fields arriving over the socket; ValueError names the field.
+
+    What is stored is applied again at every boot, so a wrong type must be refused here."""
+    if not isinstance(data, dict):
+        raise ValueError("Mode data must be an object")
+    for key, value in data.items():
+        if key == "name":
+            ok = isinstance(value, str)
+        elif key in ("fans_apply", "power_apply"):
+            ok = isinstance(value, bool)
+        elif key in ("ppt", "nv"):
+            ok = isinstance(value, dict) and all(v is None or _int(v) for v in value.values())
+        elif key.startswith("fan_"):
+            ok = value is None or isinstance(value, list)
+        else:
+            ok = True  # the CPU fields have their own range checks in the service
+        if not ok:
+            raise ValueError(f"Invalid value for {key}")
+
+
 def sanitize_mode(entry: dict) -> dict:
     """Coerce a stored mode entry so a hand-edited or stale value cannot stop the service."""
+    if entry.get("base") not in hw.PROFILE_BY_BASE or not _int(entry["base"]):
+        entry["base"] = hw.BALANCED
+    if not isinstance(entry.get("name"), str):
+        entry["name"] = BUILTIN[entry["base"]]
     t = entry.get("cpu_temp")
     entry["cpu_temp"] = t if type(t) is int and hw.TEMP_MIN <= t < hw.TEMP_OFF else None
     if entry.get("cpu_boost") not in hw.CPU_BOOST_MODES:
@@ -49,11 +84,38 @@ def sanitize_mode(entry: dict) -> dict:
     f = entry.get("cpu_temp_floor_w")
     entry["cpu_temp_floor_w"] = f if type(f) is int and f > 0 else None
     for key in ("ppt", "nv"):
-        if not isinstance(entry.get(key), dict):
-            entry[key] = {}
+        values = entry.get(key) if isinstance(entry.get(key), dict) else {}
+        entry[key] = {k: v for k, v in values.items() if v is None or _int(v)}
+    for key in ("fan_cpu", "fan_gpu", "fan_mid"):
+        entry[key] = _curve(entry.get(key))
     for key in ("fans_apply", "power_apply"):
         entry[key] = bool(entry.get(key))
     return entry
+
+
+def _color(v) -> bool:
+    return isinstance(v, list) and len(v) == 3 and all(_int(x) and 0 <= x <= 255 for x in v)
+
+
+def sanitize_settings(data: dict) -> None:
+    """The settings outside the modes: a value of the wrong shape falls back to its default."""
+    for key, value in DEFAULT.items():
+        data.setdefault(key, value)
+    for key in ("mode", "mode_ac", "mode_battery"):
+        if not _int(data[key]) or str(data[key]) not in data["modes"]:
+            data[key] = DEFAULT[key]
+    if data["gpu_target"] not in ("eco", "standard", "optimized", "ultimate"):
+        data["gpu_target"] = None
+    if data["gpu_backend"] not in ("firmware", "ebpf"):
+        data["gpu_backend"] = "firmware"
+    for key in ("charge_limit", "kbd_brightness", "overdrive"):
+        if not _int(data[key]):
+            data[key] = None
+    a = data["aura"]
+    if not (isinstance(a, dict) and a.get("mode") in aura.MODES and _color(a.get("color"))
+            and (a.get("color2") is None or _color(a["color2"]))
+            and a.get("speed", "normal") in aura.SPEEDS):
+        data["aura"] = None
 
 
 DEFAULT = {
@@ -74,25 +136,57 @@ class Config:
     def __init__(self, path: str = PATH):
         self.path = path
         self.data = copy.deepcopy(DEFAULT)
-        self.fresh = not os.path.exists(path)
+        self.load_error = ""  # why an existing file was not used; the service reports it
+        loaded = None
         try:
             with open(path) as f:
                 loaded = json.load(f)
-            self.data.update({k: v for k, v in loaded.items() if k != "modes"})
-            for k, v in loaded.get("modes", {}).items():
-                entry = _mode_entry(v.get("base", hw.BALANCED), v.get("name", k))
-                entry.update(v)
-                self.data["modes"][k] = sanitize_mode(entry)
-        except (OSError, ValueError):
+            if not isinstance(loaded, dict):
+                raise ValueError("the top level is not an object")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            loaded = None
+            self.load_error = str(e)
+            self._keep_unreadable()
+        # An unreadable file starts over like a first run: the service then adopts what the
+        # hardware currently holds instead of resetting it.
+        self.fresh = loaded is None
+        if loaded is None:
+            return
+        self.data.update({k: v for k, v in loaded.items() if k != "modes"})
+        modes = loaded.get("modes")
+        for k, v in (modes.items() if isinstance(modes, dict) else ()):
+            if not (k.isascii() and k.isdigit() and int(k) < MAX_MODES and str(int(k)) == k and isinstance(v, dict)):
+                continue
+            entry = _mode_entry(v.get("base", hw.BALANCED), v.get("name", k))
+            entry.update(v)
+            if int(k) in BUILTIN:
+                entry["base"] = int(k)
+            self.data["modes"][k] = sanitize_mode(entry)
+        sanitize_settings(self.data)
+
+    def _keep_unreadable(self) -> None:
+        """The next save replaces the file; keep what was there for the user to recover."""
+        try:
+            os.replace(self.path, self.path + ".corrupt")
+        except OSError:
             pass
 
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path))
-        with os.fdopen(fd, "w") as f:
-            json.dump(self.data, f, indent=2)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, self.path)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self.data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # a power cut right after the rename must not leave an empty file
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     def __getitem__(self, key):
         return self.data[key]

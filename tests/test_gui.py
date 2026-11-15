@@ -91,6 +91,23 @@ class TestPanels(unittest.TestCase):
         self.w.quitting = True
         self.w.tray.hide()
 
+    def test_late_reply_of_another_mode_is_dropped_and_apply_waits(self):
+        f = A.FansWindow(self.w)
+        jobs, sent = [], []
+        with patch.object(A.fans_mod if hasattr(A, "fans_mod") else sys.modules[A.FansWindow.__module__],
+                          "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
+            f._select_mode(0)
+            f._select_mode(1)
+            self.w.call = lambda cmd, **kw: sent.append(cmd) or {}
+            f._apply()                               # mode 1 is not on screen yet
+            self.assertEqual((sent, len(jobs)), ([], 2))
+            entry = {"fans_apply": False, "power_apply": True, "ppt": {"ppt_pl1_spl": 90}, "nv": {}}
+            jobs[1][1]({"mode": {**entry, "ppt": {"ppt_pl1_spl": 40}}})
+            jobs[0][1]({"mode": entry})              # mode 0 answers last and must not replace mode 1
+            self.assertEqual(f.sliders["ppt_pl1_spl"].slider.value(), 40)
+            f._apply()
+            self.assertEqual(len(jobs), 3)
+
     def test_power_sliders_do_not_leak_between_modes(self):
         f = A.FansWindow(self.w)
         spl = f.sliders["ppt_pl1_spl"].slider
@@ -554,6 +571,37 @@ class TestHeldSelection(unittest.TestCase):
         self.jobs.pop(0)({**self.STATUS, "mode": 1})
         self.assertEqual(self.checked(), 1)
         self.assertEqual(w.hold, {})
+
+    def test_failed_action_releases_the_choice_once_the_service_answers(self):
+        w = self.w
+        w.render()
+        w.set_mode(1)
+        self.jobs.pop(0)(A.DaemonError("down"))      # the action failed, a status is requested
+        self.jobs.pop(0)(A.DaemonError("down"))      # and that status failed too
+        w.render()
+        self.assertEqual(self.checked(), 1)
+        w.refresh()
+        self.jobs.pop(0)(dict(self.STATUS))          # the service is back and still reports Balanced
+        self.assertEqual(self.checked(), 0)
+        self.assertEqual(w.hold, {})
+
+    def test_tray_check_marks_follow_the_status_after_a_click(self):
+        w = self.w
+        w.render()
+        act = next(a for a in w.tray_menu.actions() if a.isChecked())
+        name = act.text()
+        act.trigger()                                # the active mode again: Qt unchecks the item itself
+        self.jobs.pop(0)({})
+        self.jobs.pop(0)(dict(self.STATUS))
+        self.assertEqual([a.text() for a in w.tray_menu.actions() if a.isCheckable() and a.isChecked()][:1],
+                         [name])
+
+    def test_cancelled_ultimate_before_the_first_status(self):
+        w = self.w
+        w.status = {}
+        with patch.object(A.QMessageBox, "question", return_value=A.QMessageBox.No):
+            w.set_gpu("ultimate")                    # used to raise KeyError('mode') in render()
+        self.assertEqual(self.jobs, [])
 
     def test_click_leaves_only_one_selected(self):
         w = self.w

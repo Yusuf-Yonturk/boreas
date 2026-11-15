@@ -1464,3 +1464,124 @@ class TestSelfUpdate(unittest.TestCase):
         finally:
             os.umask(old)
         self.assertEqual(modes, [0o700])
+
+
+class TestRobustness(Base):
+    """A stored or received value must never keep the service from starting."""
+
+    def _write_config(self, text):
+        path = os.environ["BOREAS_CONFIG"]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_mux_only_device_boots_and_reaches_ultimate(self):
+        # gpu_mux_mode without dgpu_disable: Standard is the only non-Ultimate state
+        shutil.rmtree(ARM + "/dgpu_disable")
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+        d.reapply(at_boot=True)
+        self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.ULTIMATE}), {"reboot": True})
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
+        with self.assertRaises(ValueError):
+            gpu.set_eco(True)
+
+    def test_gpu_failure_at_boot_does_not_stop_the_service(self):
+        d = daemon.Daemon(config.Config())
+        d.cfg["gpu_target"] = gpu.ECO
+        for exc in (ValueError("no eco"), daemon.subprocess.TimeoutExpired("systemctl", 5)):
+            with patch.object(gpu, "set_eco", side_effect=exc):
+                d.reapply(at_boot=True)
+            self.assertIn("Could not change the GPU mode", d.notice)
+            with patch.object(gpu, "set_eco", side_effect=exc), self.assertRaises(type(exc)):
+                d.apply_gpu_target(gpu.ECO, explicit=True)
+
+    def test_postponed_eco_failure_does_not_skip_the_tick(self):
+        d = daemon.Daemon(config.Config())
+        d.ticks = daemon.ECO_RETRY_TICKS - 1
+        put(R + hw.PLATFORM_PROFILE, "performance")   # an external change the same tick must still see
+        with patch.object(d, "eco_pending", return_value=True), \
+                patch.object(gpu, "set_eco", side_effect=OSError(errno.EIO, "firmware")):
+            d.tick()
+        self.assertEqual(d.cfg["mode"], hw.TURBO)
+        self.assertTrue(d.eco_stuck)
+        self.assertIn("postponed Eco", d.notice)
+
+    def test_malformed_config_shapes_load(self):
+        shapes = (
+            "[]",
+            '{"modes": []}',
+            '{"modes": {"3": 5}}',
+            '{"modes": {"x": {"base": 0}}}',
+            '{"modes": {"3": {"base": 7}}, "mode_ac": 3}',
+            '{"modes": {"99": {"base": 1}}}',
+            '{"mode_ac": "abc", "mode": null, "mode_battery": 42}',
+            '{"aura": 5, "gpu_target": "warp", "gpu_backend": 3, "charge_limit": "x"}',
+            '{"aura": {"mode": "static", "color": [1, 2]}}',
+            '{"modes": {"0": {"base": 0, "name": 4, "fans_apply": true, "fan_cpu": "zz", "fan_gpu": [1, 2]}}}',
+            '{"modes": {"0": {"base": 2, "power_apply": true, "ppt": {"ppt_pl1_spl": [1]}, "nv": {"nv_temp_target": "8"}}}}',
+        )
+        for text in shapes:
+            with self.subTest(text=text):
+                build_tree()
+                self._write_config(text)
+                d = daemon.Daemon(config.Config())
+                d.reapply(at_boot=True)
+                st = d.status()
+                self.assertTrue(all(d.cfg.has_mode(d.cfg[k]) for k in ("mode", "mode_ac", "mode_battery")))
+                self.assertEqual([m["id"] for m in st["modes"]][:3], config.MODE_ORDER)
+                self.assertEqual(d.cfg.mode(0)["base"], hw.BALANCED)
+                self.assertIsInstance(d.cfg.mode(0)["name"], str)
+                json.dumps(st)
+
+    def test_valid_stored_values_survive_the_load_checks(self):
+        c = config.Config()
+        new = c.add_mode(hw.TURBO)
+        c.mode(new).update(name="Oyun", fans_apply=True, fan_cpu=fans.DEFAULTS[hw.TURBO]["cpu"],
+                           power_apply=True, ppt={"ppt_pl1_spl": 90, "ppt_pl2_sppt": None},
+                           nv={"nv_temp_target": 80}, cpu_temp=85, cpu_temp_floor_w=45)
+        c["mode_ac"] = new
+        c["aura"] = {"mode": "breathe", "color": [255, 0, 10], "color2": None, "speed": "fast"}
+        c["gpu_target"], c["gpu_backend"], c["charge_limit"] = gpu.OPTIMIZED, "ebpf", 60
+        c.save()
+        c2 = config.Config()
+        self.assertEqual(c2.data, c.data)
+        self.assertEqual(c2.load_error, "")
+
+    def test_unreadable_config_is_kept_and_reported(self):
+        path = self._write_config('{"charge_limit": 60, "mo')
+        d = daemon.Daemon(config.Config())
+        self.assertIn("Settings file unreadable", d.notice)
+        self.assertEqual(get(path + ".corrupt"), '{"charge_limit": 60, "mo')
+        # like a first start: the values the hardware holds are adopted, not reset
+        self.assertEqual(d.cfg["charge_limit"], 80)
+        self.assertEqual(config.Config().load_error, "")
+
+    def test_update_mode_rejects_unknown_mode_and_bad_types(self):
+        d = daemon.Daemon(config.Config())
+        for cmd in ("update_mode", "get_mode"):
+            with self.assertRaises(ValueError):
+                d.handle({"cmd": cmd, "mode": 9, "data": {"name": "ghost"}})
+        self.assertEqual(d.cfg.mode(hw.BALANCED)["name"], "Balanced")
+        bad = ({"ppt": [1]}, {"ppt": {"ppt_pl1_spl": "9"}}, {"nv": {"nv_temp_target": [1]}}, {"name": 5},
+               {"fans_apply": "yes"}, {"fan_cpu": "zz"}, {"power_apply": 1}, [1])
+        for data in bad:
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                d.handle({"cmd": "update_mode", "mode": 0, "data": data})
+        self.assertEqual(d.cfg.mode(0), config.Config().mode(0))
+        d.reapply(at_boot=True)
+        ok = {"name": "Dengeli", "power_apply": True, "ppt": {"ppt_pl1_spl": 60, "ppt_pl2_sppt": None}, "fan_cpu": None}
+        self.assertEqual(d.handle({"cmd": "update_mode", "mode": 0, "data": ok})["mode"]["ppt"]["ppt_pl1_spl"], 60)
+
+    def test_clamped_values_are_stored_as_written(self):
+        d = daemon.Daemon(config.Config())
+        d.handle({"cmd": "set_charge_limit", "value": 20})
+        d.handle({"cmd": "set_kbd", "brightness": 9})
+        self.assertEqual((d.cfg["charge_limit"], d.cfg["kbd_brightness"]), (40, 3))
+
+    def test_cli_rejects_non_numeric_arguments(self):
+        with patch.object(client, "call", return_value={"mode": 0}), contextlib.redirect_stderr(open(os.devnull, "w")):
+            for argv in (["charge", "abc"], ["kbd", "x"], ["cputemp", "hot"], ["cpufloor", "low"]):
+                with self.subTest(argv=argv):
+                    self.assertEqual(client.main(argv), 2)
