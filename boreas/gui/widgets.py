@@ -6,8 +6,9 @@ import html
 
 from PySide6.QtCore import QByteArray, QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLayout,
-                               QPushButton, QScrollArea, QSizePolicy, QSlider, QToolTip, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel,
+                               QLayout, QPushButton, QScrollArea, QSizePolicy, QSlider, QStyle, QToolTip,
+                               QVBoxLayout, QWidget)
 
 from .common import T, u, uv
 
@@ -34,7 +35,8 @@ class Switch(QAbstractButton):
         p.drawRoundedRect(QRectF(0, 0, w, h), h / 2, h / 2)
         m = max(2, round(h * 0.1))
         d = h - 2 * m
-        x = w - m - d if self.isChecked() else m
+        on_right = self.isChecked() != (self.layoutDirection() == Qt.RightToLeft)  # mirrored in RTL
+        x = w - m - d if on_right else m
         p.setBrush(QColor("#ffffff"))
         p.drawEllipse(QRectF(x, m, d, d))
         if self.hasFocus():
@@ -117,12 +119,15 @@ class FlowLayout(QLayout):
         m = self.contentsMargins()
         eff = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
         x, y, line_h = eff.x(), eff.y(), 0
+        parent = self.parentWidget()
+        direction = parent.layoutDirection() if parent is not None else QApplication.layoutDirection()
         for it in self._items:
             sz = it.sizeHint()
             if x + sz.width() > eff.right() + 1 and line_h > 0:
                 x, y, line_h = eff.x(), y + line_h + self._v, 0
             if not test:
-                it.setGeometry(QRect(QPoint(x, y), sz))
+                # right-to-left languages fill each line from the right edge
+                it.setGeometry(QStyle.visualRect(direction, eff, QRect(QPoint(x, y), sz)))
             x += sz.width() + self._h
             line_h = max(line_h, sz.height())
         return y + line_h - rect.y() + m.bottom()

@@ -71,7 +71,7 @@ def check_mode_fields(data) -> None:
 
 def sanitize_mode(entry: dict) -> dict:
     """Coerce a stored mode entry so a hand-edited or stale value cannot stop the service."""
-    if entry.get("base") not in hw.PROFILE_BY_BASE or not _int(entry["base"]):
+    if not _int(entry.get("base")) or entry["base"] not in hw.PROFILE_BY_BASE:
         entry["base"] = hw.BALANCED
     if not isinstance(entry.get("name"), str):
         entry["name"] = BUILTIN[entry["base"]]
@@ -112,9 +112,10 @@ def sanitize_settings(data: dict) -> None:
         if not _int(data[key]):
             data[key] = None
     a = data["aura"]
-    if not (isinstance(a, dict) and a.get("mode") in aura.MODES and _color(a.get("color"))
-            and (a.get("color2") is None or _color(a["color2"]))
-            and a.get("speed", "normal") in aura.SPEEDS):
+    # isinstance first: a list or object is not hashable and cannot be looked up in the tables
+    if not (isinstance(a, dict) and isinstance(a.get("mode"), str) and a["mode"] in aura.MODES
+            and _color(a.get("color")) and (a.get("color2") is None or _color(a["color2"]))
+            and isinstance(a.get("speed", "normal"), str) and a.get("speed", "normal") in aura.SPEEDS):
         data["aura"] = None
 
 
@@ -157,7 +158,8 @@ class Config:
         self.data.update({k: v for k, v in loaded.items() if k != "modes"})
         modes = loaded.get("modes")
         for k, v in (modes.items() if isinstance(modes, dict) else ()):
-            if not (k.isascii() and k.isdigit() and int(k) < MAX_MODES and str(int(k)) == k and isinstance(v, dict)):
+            if not (len(k) <= 2 and k.isascii() and k.isdigit() and int(k) < MAX_MODES
+                    and str(int(k)) == k and isinstance(v, dict)):
                 continue
             entry = _mode_entry(v.get("base", hw.BALANCED), v.get("name", k))
             entry.update(v)
@@ -168,8 +170,13 @@ class Config:
 
     def _keep_unreadable(self) -> None:
         """The next save replaces the file; keep what was there for the user to recover."""
+        kept = self.path + ".corrupt"
+        n = 1
+        while os.path.lexists(kept):  # an earlier copy is never replaced
+            n += 1
+            kept = f"{self.path}.corrupt.{n}"
         try:
-            os.replace(self.path, self.path + ".corrupt")
+            os.replace(self.path, kept)
         except OSError:
             pass
 

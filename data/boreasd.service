@@ -9,7 +9,10 @@ Conflicts=asusd.service supergfxd.service
 Type=notify
 ExecStart=/usr/bin/boreasd
 Restart=on-failure
-TimeoutStartSec=30
+# Up to 20 s waiting for asus-wmi, then the GPU mode: unloading the NVIDIA modules and the
+# firmware's dgpu_disable write can take tens of seconds. A start cut off in between leaves
+# the dGPU half switched.
+TimeoutStartSec=90
 
 [Install]
 WantedBy=multi-user.target

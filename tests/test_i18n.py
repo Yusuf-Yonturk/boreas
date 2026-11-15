@@ -102,6 +102,26 @@ class TestLookup(unittest.TestCase):
             i18n.set_language("tr")
             self.assertNotEqual(i18n.tr_msg(pattern), pattern, text)
 
+    def test_specific_template_wins_over_the_generic_one(self):
+        i18n.set_language("tr")
+        self.assertEqual(i18n.tr_msg("Could not apply the postponed Eco mode: [Errno 5] I/O error"),
+                         "Ertelenen Eco modu uygulanamadı: [Errno 5] I/O error")
+        self.assertEqual(i18n.tr_msg("Could not apply aura: Aura keyboard not found"),
+                         "aura uygulanamadı: Aura klavye bulunamadı")
+
+    def test_gpu_engine_errors_are_translated(self):
+        """What the GPU card and the backend switch can show must not stay in English."""
+        with open(os.path.join(ROOT, "boreas/gpu_engine.py"), encoding="utf-8") as fh:
+            raised = re.findall(r'raise OSError\("([^"]+)"\)', fh.read())
+        shown = [t for t in raised if not t.startswith(("Boreas GPU engine response", "Could not reset", "Could not restore nvidia-powerd after"))]
+        shown += ["Leave Ultimate and reboot before selecting the eBPF engine", "GPU switching is not supported on this device",
+                  "Backend transition could not be applied immediately", "No such fan: turbine", "Invalid value for ppt"]
+        self.assertGreaterEqual(len(shown), 14)
+        for lang in ("tr", "ar", "ja"):
+            i18n.set_language(lang)
+            for text in shown:
+                self.assertNotEqual(i18n.tr_msg(text), text, f"{lang}: {text}")
+
     def test_mode_names(self):
         i18n.set_language("es")
         self.assertEqual(i18n.mode_name({"id": 2, "name": "Silent", "builtin": True}), "Silencioso")

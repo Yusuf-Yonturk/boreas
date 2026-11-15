@@ -141,9 +141,9 @@ ayarlama servisiyle birlikte çalıştırmayın. Ayrıntılar: [CPU kontrolü](d
 
 ## Güncelleme
 
-Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca sürüm
-numarasının yazdığı küçük dosyayı indirir. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
-Gizle** görünür. **Güncelle** son sürümü GitHub'dan indirir, yönetici şifrenizi sorduktan sonra (pkexec)
+Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca yayımlanmış
+son sürümü sorar. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
+Gizle** görünür. **Güncelle** o sürümün kaynağını GitHub'dan indirir, yönetici şifrenizi sorduktan sonra (pkexec)
 kurar ve uygulamayı yeniden başlatır. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
 
 Elle güncellemek için:

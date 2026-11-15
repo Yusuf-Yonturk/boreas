@@ -102,9 +102,9 @@ and battery settings in the same window; press it again to go back.
 
 ## Updating
 
-Boreas checks GitHub 10 seconds after it starts and then once a day; each check only downloads the
-small file that holds the version number. When a newer version is available, the window shows
-**Update · Release notes · Hide**. **Update** downloads the latest version from GitHub, installs it
+Boreas checks GitHub 10 seconds after it starts and then once a day; each check only asks GitHub
+for the latest published release. When a newer version is available, the window shows
+**Update · Release notes · Hide**. **Update** downloads the source of that release from GitHub, installs it
 after asking for your administrator password (pkexec) and restarts the app. **Release notes** opens
 [CHANGELOG.md](CHANGELOG.md).
 

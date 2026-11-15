@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 
-from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QLibraryInfo, QPointF, QSettings, QSize, Qt, QTimer, QTranslator, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QGridLayout, QHBoxLayout, QLabel,
@@ -723,7 +723,7 @@ class MainWindow(QWidget):
                 text += " · " + _("dGPU in use, will be applied on the next boot")
             if g.get("backend") == "ebpf":
                 engine = g.get("engine") or {}
-                text = g.get("backend_error") or ("eBPF · " + str(engine.get("policy", "?"))
+                text = tr_msg(g.get("backend_error") or "") or ("eBPF · " + str(engine.get("policy", "?"))
                     + " · " + str(engine.get("power_state") or "?")
                     + " / " + str(engine.get("runtime_status") or "?"))
                 rtd3 = engine.get("rtd3_status")
@@ -997,6 +997,17 @@ def restart_app() -> None:
     os.execv(sys.executable, cmd)
 
 
+def install_qt_translation(app) -> bool:
+    """Qt's own texts (Yes/No, OK/Cancel, the colour dialog) in the app language, where Qt ships them."""
+    if i18n.current == i18n.DEFAULT:
+        return False
+    name = {"pt": "pt_BR", "zh": "zh_CN"}.get(i18n.current, i18n.current)
+    translator = QTranslator(app)
+    if not translator.load(f"qtbase_{name}", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        return False  # no catalog for this language (Hindi) or Qt translations are not installed
+    return app.installTranslator(translator)
+
+
 def main() -> int:
     # do not fall back to XWayland in a Wayland session: it looks blurry on a scaled screen
     if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
@@ -1011,6 +1022,7 @@ def main() -> int:
     i18n.set_language(i18n.choose(QSettings("boreas", "boreas")))
     if i18n.is_rtl():
         app.setLayoutDirection(Qt.RightToLeft)
+    install_qt_translation(app)
     apply_theme(app)
     watch_system_theme(app)
 

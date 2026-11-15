@@ -558,7 +558,10 @@ class FansWindow(QWidget):
 
     def _apply(self):
         if getattr(self, "loaded_mode", self.mode_id) != self.mode_id:
-            return  # the sliders still show another mode: saving now would copy it over this one
+            # The sliders still show another mode: saving now would copy it over this one. Ask for
+            # this mode's values again; the reply fills the page or shows why it cannot.
+            self._select_mode(self.mode_id)
+            return
         data = {
             "fans_apply": self.fans_apply.isChecked(),
             "power_apply": self.power_apply.isChecked(),

@@ -1358,6 +1358,15 @@ class TestSocket(Base):
             self.assertEqual(d.cfg.mode(hw.TURBO)["cpu_temp_floor_w"], 45)
             self.assertEqual(client.main(["cpufloor", "min"]), 0)
             self.assertIsNone(d.cfg.mode(hw.TURBO)["cpu_temp_floor_w"])
+            # a line that never ends is cut off at the limit, and the service keeps answering
+            import socket
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+                c.settimeout(10)
+                c.connect(sock)
+                c.sendall(b"x" * (daemon.MAX_REQUEST + 4096))
+                reply = c.makefile().readline()
+            self.assertEqual(json.loads(reply), {"ok": False, "error": "Request too large"})
+            self.assertEqual(client.call("status")["profile"], "performance")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -1393,14 +1402,49 @@ class TestSelfUpdate(unittest.TestCase):
 
             def __exit__(self, *a):
                 return False
-        return patch.object(update.urllib.request, "urlopen", lambda *a, **k: R(payload))
+        self.requested = []
+
+        def urlopen(req, *a, **k):
+            self.requested.append(req.full_url)
+            return R(payload)
+        return patch.object(update.urllib.request, "urlopen", urlopen)
+
+    def test_latest_is_a_published_release_with_the_helper(self):
+        from boreas import update
+        assets = [{"name": "boreas-gpu-engine"}, {"name": "boreas-gpu-engine.sha256"}]
+        ok = {"tag_name": "v9.0.0", "draft": False, "prerelease": False, "assets": assets}
+        with self._serve(json.dumps(ok).encode()):
+            self.assertEqual(update.fetch_latest(), "9.0.0")
+        self.assertEqual(self.requested, ["https://api.github.com/repos/Yusuf-Yonturk/boreas/releases/latest"])
+        # not installable yet, or not a release at all: nothing is offered
+        for bad in ({**ok, "assets": assets[:1]}, {**ok, "assets": []}, {**ok, "assets": None}, {**ok, "draft": True},
+                    {**ok, "prerelease": True}, {**ok, "tag_name": "nightly"}, {**ok, "tag_name": "v9/../x"},
+                    {**ok, "tag_name": None}, {"message": "API rate limit exceeded"}, [], "<html>"):
+            with self.subTest(bad=bad):
+                text = bad if isinstance(bad, str) else json.dumps(bad)
+                self.assertIsNone(update.parse_release(text))
+
+    def test_update_downloads_the_release_tag_not_the_branch(self):
+        import subprocess as sp
+        from boreas import update
+        good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'},
+                             prefix="boreas-9.0.0/")
+        with self._serve(good), patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"), \
+                patch.object(update.subprocess, "run", lambda cmd, **kw: sp.CompletedProcess(cmd, 0, "", "")):
+            update.run_update("9.0.0")
+            self.assertEqual(self.requested, ["https://codeload.github.com/Yusuf-Yonturk/boreas/tar.gz/refs/tags/v9.0.0"])
+            with self.assertRaises(ValueError):   # main moved on: a newer archive than the offered release
+                update.run_update("8.9.0")
+            for bad in ("", "main", "9.0.0/../../heads/main", None):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    update.run_update(bad)
 
     def test_download_extracts_project(self):
         from boreas import update
         good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'})
         d = tempfile.mkdtemp(prefix="boreas-upd-")
         with self._serve(good):
-            root = update.download_source(d)
+            root = update.download_source(d, "9.0.0")
         self.assertEqual(update.source_version(root), "9.0.0")
         self.assertTrue(os.access(os.path.join(root, "install.sh"), os.X_OK))
         shutil.rmtree(d)
@@ -1411,7 +1455,7 @@ class TestSelfUpdate(unittest.TestCase):
             d = tempfile.mkdtemp(prefix="boreas-upd-")
             with self._serve(self._tarball({"install.sh": b"", **bad})):
                 with self.assertRaises(ValueError):
-                    update.download_source(d)
+                    update.download_source(d, "9.0.0")
             self.assertFalse(os.path.exists(os.path.join(os.path.dirname(d), "evil.sh")))
             shutil.rmtree(d)
 
@@ -1521,6 +1565,11 @@ class TestRobustness(Base):
             '{"aura": {"mode": "static", "color": [1, 2]}}',
             '{"modes": {"0": {"base": 0, "name": 4, "fans_apply": true, "fan_cpu": "zz", "fan_gpu": [1, 2]}}}',
             '{"modes": {"0": {"base": 2, "power_apply": true, "ppt": {"ppt_pl1_spl": [1]}, "nv": {"nv_temp_target": "8"}}}}',
+            '{"modes": {"3": {"base": [1]}}}',
+            '{"modes": {"' + "9" * 5000 + '": {"base": 1}}}',
+            '{"aura": {"mode": ["static"], "color": [1, 2, 3]}}',
+            '{"aura": {"mode": "static", "color": [1, 2, 3], "speed": []}}',
+            '{"aura": {"mode": {}, "color": [1, 2, 3]}, "gpu_target": [], "gpu_backend": {}}',
         )
         for text in shapes:
             with self.subTest(text=text):
@@ -1550,6 +1599,9 @@ class TestRobustness(Base):
         self.assertEqual(c2.load_error, "")
 
     def test_unreadable_config_is_kept_and_reported(self):
+        import glob
+        for old in glob.glob(os.environ["BOREAS_CONFIG"] + ".corrupt*"):   # left by the other tests
+            os.remove(old)
         path = self._write_config('{"charge_limit": 60, "mo')
         d = daemon.Daemon(config.Config())
         self.assertIn("Settings file unreadable", d.notice)
@@ -1557,6 +1609,10 @@ class TestRobustness(Base):
         # like a first start: the values the hardware holds are adopted, not reset
         self.assertEqual(d.cfg["charge_limit"], 80)
         self.assertEqual(config.Config().load_error, "")
+        # a second unreadable file does not replace the copy kept from the first
+        self._write_config("second{")
+        config.Config()
+        self.assertEqual((get(path + ".corrupt"), get(path + ".corrupt.2")), ('{"charge_limit": 60, "mo', "second{"))
 
     def test_update_mode_rejects_unknown_mode_and_bad_types(self):
         d = daemon.Daemon(config.Config())
@@ -1573,6 +1629,33 @@ class TestRobustness(Base):
         d.reapply(at_boot=True)
         ok = {"name": "Dengeli", "power_apply": True, "ppt": {"ppt_pl1_spl": 60, "ppt_pl2_sppt": None}, "fan_cpu": None}
         self.assertEqual(d.handle({"cmd": "update_mode", "mode": 0, "data": ok})["mode"]["ppt"]["ppt_pl1_spl"], 60)
+
+    def test_default_curve_reads_the_firmware_curve_once(self):
+        d = daemon.Daemon(config.Config())
+        saved = fans.DEFAULTS[hw.TURBO]["gpu"]
+        d.handle({"cmd": "update_mode", "mode": 0, "data": {"fans_apply": True, "fan_gpu": saved, "cpu_temp": 85}})
+        c = R + "/sys/class/hwmon/hwmon9"
+        factory = [45, 50, 55, 60, 65, 70, 75, 80] + [fans.pwm_to_pct(i * 12) for i in range(1, 9)]
+        real_write = hw.write
+
+        def firmware(path, value):   # asus-wmi: the read sends the throttle policy again
+            real_write(path, value)
+            if path.endswith("_enable") and value == 3:
+                real_write(os.path.dirname(path) + "/pwm2_enable", 2)
+                real_write(hw.ARMOURY + "/ppt_pl1_spl/current_value", 55)
+        with patch.object(hw, "write", firmware):
+            self.assertEqual(d.handle({"cmd": "default_curve", "fan": "cpu"})["curve"], factory)
+        # the first read put the whole mode back: the other fan's curve and the target survive
+        self.assertEqual((get(c + "/pwm2_enable"), fans.read_curve("gpu"), d.cpu.target), ("1", fans.fix_curve(saved), 85))
+        with patch.object(d, "apply_mode", side_effect=AssertionError("the mode was applied again")), \
+                patch.object(fans, "factory_curve", side_effect=AssertionError("the firmware curve was read again")):
+            for _ in range(3):       # opening the page again asks for the same curve
+                self.assertEqual(d.handle({"cmd": "default_curve", "fan": "cpu"})["curve"], factory)
+            # a mode of another profile gets the built-in curve, and never a read of the wrong profile
+            self.assertEqual(d.handle({"cmd": "default_curve", "fan": "cpu", "mode": hw.TURBO})["curve"],
+                             fans.DEFAULTS[hw.TURBO]["cpu"])
+        with self.assertRaises(ValueError):
+            d.handle({"cmd": "default_curve", "fan": "turbine"})
 
     def test_clamped_values_are_stored_as_written(self):
         d = daemon.Daemon(config.Config())
