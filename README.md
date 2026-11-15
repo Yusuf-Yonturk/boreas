@@ -1,24 +1,55 @@
 ![Boreas: ASUS laptop control for Linux](docs/banner.jpg)
 
-**Fan, CPU, GPU and battery control for ASUS ROG & TUF laptops on Linux.**
+**The G-Helper-style control panel for ASUS ROG & TUF laptops on Linux.**
 
 **English** · [Türkçe](README.tr.md)
 
-Boreas is an open-source Armoury Crate alternative for Linux. It manages performance modes, custom fan
-curves, CPU and GPU power limits, GPU modes (Eco, Optimized and the Ultimate MUX switch), Aura keyboard
-lighting and the battery charge limit on ASUS ROG and TUF laptops.
+Boreas gives your ASUS laptop on Linux what Armoury Crate and G-Helper give it on Windows: one small
+window for performance modes, custom fan curves, CPU and GPU power limits, GPU modes (Eco, Optimized and
+the Ultimate MUX switch), Aura keyboard lighting and the battery charge limit. Every mode keeps its own
+fans, power limits and CPU temperature target, so one click changes how the whole machine behaves. Free
+and open source.
 
 It builds on the work of the [asus-linux.org](https://asus-linux.org) community: all the hardware support
 comes from their kernel drivers (asus-wmi, asus-armoury). Boreas replaces the userspace side (asusd,
 supergfxd, rog-control-center) with a single small system service (`boreasd`) and a tray app (`boreas`).
 
+The window layout is modelled on [G-Helper](https://github.com/seerge/g-helper) on purpose, so it feels
+familiar if you come from Windows. No code is shared: G-Helper is a Windows program, Boreas is written from
+scratch in Python and Qt. Boreas is Linux only; on Windows, use G-Helper.
+
 ![Boreas: light theme, dark theme, fans and power page](docs/screenshots.png)
 
-Developed and tested on a ROG Strix G713PV with CachyOS (kernel 7.3, asus-armoury); other models and
-distributions may behave differently.
+## Tested hardware
 
-**Languages:** English, Türkçe, 简体中文, हिन्दी, Español, العربية, Français, Português (Brasil), Русский,
-Deutsch, 日本語.
+| Model | Distribution, kernel | Status |
+|---|---|---|
+| ROG Strix G713PV | CachyOS, kernel 7.3 (asus-armoury) | developed and tested here |
+
+Boreas is built on the kernel's standard asus-wmi / asus-armoury interfaces, so it is not written for one
+model. Cards for hardware it does not find (GPU modes, panel overdrive, refresh rate) stay hidden. Your
+model can be the next row: run Boreas, then [open an issue](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose)
+with the output of `boreasctl status` and `uname -r`, whether everything worked or not.
+
+## Why Boreas
+
+- **One window, one service.** The whole userspace side is `boreasd` and a tray app, in place of asusd,
+  supergfxd and rog-control-center. Everything in the window is also on the command line (`boreasctl`).
+- **A mode is a complete preset.** Fan curves, power limits, CPU Boost, power profile and temperature
+  target are stored per mode, and you can add your own modes next to Silent / Balanced / Turbo. Switching
+  mode changes all of it at once: from the window, the tray, Fn+F5, or automatically on battery / AC.
+- **A CPU temperature target.** Pick 75-95 °C for a mode and Boreas steers the power limits towards it,
+  with a power floor so a gaming mode does not fall to the firmware's minimum.
+- **Eco without a reboot**, through the optional eBPF GPU backend (experimental).
+- **The layout G-Helper users already know**, in 11 languages, light and dark, with in-app updates.
+- **Easy to try, easy to undo.** On first start Boreas adopts your current settings and writes nothing to
+  the hardware; `sudo ./uninstall.sh` brings asusd, supergfxd and power-profiles-daemon back.
+
+**Boreas or asusctl?** If you want G-Helper on Linux, one window where every mode carries its own fans,
+power limits and temperature target, choose Boreas. If you need the AniMe Matrix or Slash display, choose
+[asusctl](https://github.com/OpenGamingCollective/asusctl), the asus-linux.org project's own tool. They
+write the same kernel files, so only one can run at a time; the installer masks asusd and supergfxd and the
+uninstaller brings them back.
 
 ## Features
 
@@ -70,15 +101,21 @@ The installer asks for the interface language (Enter = English). To skip the que
 `sudo BOREAS_LANG=de ./install.sh`. Each user can change the language later with the globe button in
 the window. Chinese and Japanese need `noto-fonts-cjk`; Hindi and Arabic need `noto-fonts`.
 
-The script masks `asusd`, `asus-shutdown`, `supergfxd` and `power-profiles-daemon` (they write
-the same sysfs files; `disable` is not enough because asusd is started by a udev rule on every
-boot and power-profiles-daemon by the desktop over D-Bus) and enables `boreasd`. The desktop's
-own power-profile menu (KDE battery applet, GNOME quick settings) therefore shows nothing;
-Boreas owns the mode. To hand control back temporarily:
-`sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`. On first start the service adopts the current charge limit, keyboard brightness,
-mode and GPU mode; it writes nothing to the hardware.
+### What the installer changes on your system
 
-Uninstall: `sudo ./uninstall.sh` (removes the masks and brings asusd / supergfxd / power-profiles-daemon back).
+- It masks `asusd`, `asus-shutdown`, `supergfxd` and `power-profiles-daemon` and enables `boreasd`.
+  They write the same sysfs files; `disable` is not enough because asusd is started by a udev rule on
+  every boot and power-profiles-daemon by the desktop over D-Bus.
+- The desktop's own power-profile menu (KDE battery applet, GNOME quick settings) therefore shows
+  nothing; Boreas owns the mode. To hand control back temporarily:
+  `sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`.
+- On first start the service adopts the current charge limit, keyboard brightness, mode and GPU mode;
+  it writes nothing to the hardware.
+- `boreasd` runs as root and listens on a local socket (`/run/boreas.sock`, `wheel` group). The
+  service makes no network connections. The tray app asks GitHub for the latest release (it can be
+  turned off, see [Updating](#updating)), and the installer downloads the GPU helper from this
+  repository's GitHub Release.
+- `sudo ./uninstall.sh` removes the masks and brings asusd / supergfxd / power-profiles-daemon back.
 
 If KDE → Settings → Power Management uses different power profiles for AC and battery, it conflicts
 with Boreas's "auto mode on battery / AC"; turn one of them off.
@@ -121,53 +158,29 @@ menu (**Check for updates**) or with `BOREAS_NO_UPDATE_CHECK=1`.
 
 ## CPU temperature target
 
-Boreas now approaches the selected 75-95 °C target by adjusting ASUS CPU power
-limits through `asus-armoury` sysfs. It does not instantiate the old raw SMU
-backend or fall back to PCI access. No BIOS-version allowlist or custom kernel
-module is needed for this path. Support requires a CPU sensor and valid current,
-minimum and maximum values for the exposed CPU power controls, including SPL.
-This is capability detection, not a promise of support for every ASUS laptop.
+Each mode can have a 75-95 °C target. Above the target Boreas lowers the ASUS CPU power limits (SPL and,
+where exposed, SPPT/FPPT) through `asus-armoury`; when the CPU cools it raises them again, never above
+what the mode and your own power limits set. If the limits reach their floor and the CPU is still hot, it
+steps below the mode's own CPU policy rung by rung (EPP notch by notch, then cpufreq boost off; with the
+Performance power profile: boost off, then the default governor, then EPP) and restores them in reverse order. The per-mode **sustained power floor** keeps SPL
+from being lowered below a chosen wattage, so a gaming mode can hold 45 W instead of the firmware's 30 W
+minimum.
 
-Above the target the controller lowers SPL and available SPPT/FPPT by 2 to 6 W
-per second; from three degrees below the target it recovers 2 W every 2 s, never
-exceeding the values captured after applying the selected profile and optional
-user power limits. The per-mode **sustained power floor** keeps SPL from being
-lowered below a chosen wattage (a gaming mode can hold 45 W instead of the
-firmware's 30 W minimum). When the caps reach their floor and the CPU is still
-hot, the controller steps below the mode's own CPU policy, rung by rung: EPP one
-notch down, then cpufreq boost off, then (with the Performance power profile) the
-default governor, and restores them in reverse order when the CPU cools. The
-mode's own CPU Boost and power profile are the ceiling; the controller never goes
-above them. On models requiring custom fans, the profile's factory curves are
-enabled unless the user selected custom curves. Choosing Default stops feedback
-and restores the power values and the CPU policy. Mode changes and resume
-reconfigure it. An external profile change discards the previous profile's saved
-power values.
+```bash
+boreasctl cputemp 85        # target for the active mode
+boreasctl cputemp default   # turn it off
+boreasctl cpufloor 45       # sustained power floor; `cpufloor min` = firmware minimum
+```
 
-Small drifts of the power limits (firmware rounding, the delayed policy rerun
-after a profile write) are followed, and a user power limit the firmware undid is
-written again; only a writer that keeps fighting stops the loop. A missing sensor,
-rejected write or readback mismatch stops feedback and reports an error; saving
-the mode again retries. Do not run another power tuning service concurrently.
-Sysfs readback can be cached by the driver: it confirms the requested setting,
-not actual physical enforcement.
+**This is a software target, not a hard temperature ceiling.** Boost, firmware, shared GPU cooling and
+service delays can cause overshoots. At minimum power the state becomes `limited` if the temperature is
+still above the target. It needs a CPU sensor and valid ranges for the exposed CPU power controls,
+including SPL; this is capability detection, not a promise of support for every ASUS laptop. The default path needs no BIOS
+allowlist and no custom kernel module, and nothing reaches the SMU through raw PCI access. Do not run another power tuning service
+at the same time.
 
-`boreasctl cputemp 85` sets the active mode's target; `cputemp default` disables it.
-`boreasctl cpufloor 45` sets the active mode's sustained power floor; `cpufloor min`
-returns to the firmware minimum. `cpu_temp` status reports `control:
-power-feedback`, `target`, `state`, `error`, `ceilings_w`, `requested_w`,
-`floor_w`, `stage`, `ladder`, `effective`, `baseline` and `hard_limit: false`.
-`applied` is null because no hardware temperature limit was programmed. The
-existing saved targets are reused.
-A previous SMU setting is not reset by this backend; the normal firmware policy
-or reboot may be needed to clear an old setting.
-
-**This is a software target, not a hard temperature ceiling.** Boost, firmware,
-shared GPU cooling and service delays can cause overshoots. At minimum power the
-state becomes `limited` if temperature is still above target. An experimental
-opt-in kernel SMU bridge (`smu-bridge`) is restricted to the documented G713PV /
-G713PV.336 configuration; it is not a general ASUS SMU backend.
-See [controller details](docs/cpu-temperature.md).
+How the controller steps, what it does on errors, the status fields and the experimental `smu-bridge`
+(G713PV / G713PV.336 only) are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
 
 ## GPU modes
 
