@@ -7,6 +7,7 @@ Newest version first.
 
 - CPU temperature target, **fast path**: with the power limits at their floor and the CPU 5 °C or more above the target for 3 s, the controller now goes through the whole escalation ladder at once, up to and including `cpufreq/boost` off, instead of one rung every 15 s after a 10 s grace. On machines where the firmware does not let the sustained limit bind (ROG Strix G713PV: 30 W requested, 50 to 60 W drawn, 93 °C for 25 s) the overshoot now ends a few seconds after the limits reach their floor
 - A rung that is needed again within 60 s of its release is held longer the next time: the hold after an escalation doubles per relapse from 20 s up to 320 s and goes back to 20 s after a calm minute, a new target or floor, or a mode change. Before, a sustained load switched boost off and on again about every 40 s
+- In-app update: the folder the new version is downloaded to stays private to your user until the installer has run. It was readable by everyone, and with a permissive umask another local user could have changed the files before they were installed as root
 
 ## 0.1.6
 

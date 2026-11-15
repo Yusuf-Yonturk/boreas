@@ -1443,3 +1443,24 @@ class TestSelfUpdate(unittest.TestCase):
             with self.assertRaises(ValueError):   # an archive older than expected is not installed
                 update.run_update("9.1.0")
 
+    def test_run_update_keeps_the_download_folder_private(self):
+        """Root installs these files; no other local user may reach them while the password dialog is open."""
+        import stat
+        import subprocess as sp
+        from unittest.mock import patch
+        from boreas import update
+        good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'})
+        modes = []
+
+        def fake_run(cmd, **kw):
+            folder = os.path.dirname(os.path.dirname(cmd[2]))   # <tmp>/boreas-main/install.sh
+            modes.append(stat.S_IMODE(os.stat(folder).st_mode))
+            return sp.CompletedProcess(cmd, 0, "", "")
+        old = os.umask(0)   # a lax umask must not matter
+        try:
+            with self._serve(good), patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"), \
+                    patch.object(update.subprocess, "run", fake_run):
+                update.run_update("9.0.0")
+        finally:
+            os.umask(old)
+        self.assertEqual(modes, [0o700])
