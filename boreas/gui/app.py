@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 
-from PySide6.QtCore import QPointF, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QLibraryInfo, QPointF, QSettings, QSize, Qt, QTimer, QTranslator, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QGridLayout, QHBoxLayout, QLabel,
@@ -466,10 +466,11 @@ class MainWindow(QWidget):
             if self.stale:
                 self.refresh()
                 return
+            if isinstance(r, Exception):
+                return  # the callbacks (held choices among them) wait for the next status that arrives
             callbacks, self.pending = self.pending, []
-            if not isinstance(r, Exception):
-                for cb in callbacks:
-                    cb()
+            for cb in callbacks:
+                cb()
         run_async(lambda: call("status"), done)
         self.timer.setInterval(2000 if self.isVisible() else 5000)
 
@@ -722,7 +723,7 @@ class MainWindow(QWidget):
                 text += " · " + _("dGPU in use, will be applied on the next boot")
             if g.get("backend") == "ebpf":
                 engine = g.get("engine") or {}
-                text = g.get("backend_error") or ("eBPF · " + str(engine.get("policy", "?"))
+                text = tr_msg(g.get("backend_error") or "") or ("eBPF · " + str(engine.get("policy", "?"))
                     + " · " + str(engine.get("power_state") or "?")
                     + " / " + str(engine.get("runtime_status") or "?"))
                 rtd3 = engine.get("rtd3_status")
@@ -780,6 +781,11 @@ class MainWindow(QWidget):
         self.last_ac = s["ac"]
         self._render_screen()
 
+    def _tray_pick(self, setter, value):
+        # A click toggles the check mark by itself; the next status draws the real state again.
+        self._menu_sig = None
+        setter(value)
+
     def _build_tray_menu(self):
         s = self.status
         sig = (tuple((x["id"], x["name"]) for x in s.get("modes", [])), s.get("mode"),
@@ -791,14 +797,14 @@ class MainWindow(QWidget):
         m.clear()
         for mode in s.get("modes", []):
             act = QAction(mode_name(mode), m, checkable=True, checked=mode["id"] == s["mode"])
-            act.triggered.connect(lambda _=False, i=mode["id"]: self.set_mode(i))
+            act.triggered.connect(lambda _=False, i=mode["id"]: self._tray_pick(self.set_mode, i))
             m.addAction(act)
         if s.get("gpu"):
             m.addSeparator()
             target = s.get("gpu_target") or s["gpu"]["mode"]
             for k, label in GPU_LABELS:
                 act = QAction(f"GPU: {_(label)}", m, checkable=True, checked=k == target)
-                act.triggered.connect(lambda _=False, key=k: self.set_gpu(key))
+                act.triggered.connect(lambda _=False, key=k: self._tray_pick(self.set_gpu, key))
                 m.addAction(act)
         m.addSeparator()
         upd = QAction(_("Check for updates"), m, checkable=True, checked=self._updates_enabled())
@@ -884,7 +890,8 @@ class MainWindow(QWidget):
                 self, _("GPU mode"),
                 _("Switching to or from Ultimate changes the MUX switch and needs a reboot. Continue?"))
             if r != QMessageBox.Yes:
-                self.render()
+                if self.status:
+                    self.render()
                 return
 
         def after(r):
@@ -990,6 +997,17 @@ def restart_app() -> None:
     os.execv(sys.executable, cmd)
 
 
+def install_qt_translation(app) -> bool:
+    """Qt's own texts (Yes/No, OK/Cancel, the colour dialog) in the app language, where Qt ships them."""
+    if i18n.current == i18n.DEFAULT:
+        return False
+    name = {"pt": "pt_BR", "zh": "zh_CN"}.get(i18n.current, i18n.current)
+    translator = QTranslator(app)
+    if not translator.load(f"qtbase_{name}", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        return False  # no catalog for this language (Hindi) or Qt translations are not installed
+    return app.installTranslator(translator)
+
+
 def main() -> int:
     # do not fall back to XWayland in a Wayland session: it looks blurry on a scaled screen
     if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
@@ -1004,6 +1022,7 @@ def main() -> int:
     i18n.set_language(i18n.choose(QSettings("boreas", "boreas")))
     if i18n.is_rtl():
         app.setLayoutDirection(Qt.RightToLeft)
+    install_qt_translation(app)
     apply_theme(app)
     watch_system_theme(app)
 

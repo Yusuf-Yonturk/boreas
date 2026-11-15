@@ -244,11 +244,14 @@ def battery_info() -> dict:
     }
 
 
-def set_charge_limit(value: int) -> None:
+def set_charge_limit(value: int) -> int:
+    """Returns the limit that was written (40..100)."""
     d = battery_dir()
     if not d:
         raise ValueError("Battery not found")
-    write(d + "/charge_control_end_threshold", max(40, min(100, int(value))))
+    value = max(40, min(100, int(value)))
+    write(d + "/charge_control_end_threshold", value)
+    return value
 
 
 # ---- keyboard light -----------------------------------------------------------
@@ -257,9 +260,12 @@ def kbd_brightness() -> tuple[int | None, int | None]:
     return read_int(KBD_LED + "/brightness"), read_int(KBD_LED + "/max_brightness")
 
 
-def set_kbd_brightness(value: int) -> None:
+def set_kbd_brightness(value: int) -> int:
+    """Returns the level that was written (0..max_brightness)."""
     _, mx = kbd_brightness()
-    write(KBD_LED + "/brightness", max(0, min(mx or 3, int(value))))
+    value = max(0, min(mx or 3, int(value)))
+    write(KBD_LED + "/brightness", value)
+    return value
 
 
 # ---- CPU boost & energy performance preference (EPP) --------------------------

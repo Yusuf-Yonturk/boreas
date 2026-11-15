@@ -91,6 +91,31 @@ class TestPanels(unittest.TestCase):
         self.w.quitting = True
         self.w.tray.hide()
 
+    def test_late_reply_of_another_mode_is_dropped_and_apply_waits(self):
+        jobs, sent = [], []
+        with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
+            f = A.FansWindow(self.w)                 # built inside the patch: no real job outlives the test
+            jobs.clear()
+            f._select_mode(0)
+            f._select_mode(1)
+            self.w.call = lambda cmd, **kw: sent.append(cmd) or {}
+            f._apply()                               # mode 1 is not on screen yet: asked for again, not saved
+            self.assertEqual((sent, len(jobs)), ([], 3))
+            jobs.pop()
+            entry = {"fans_apply": False, "power_apply": True, "ppt": {"ppt_pl1_spl": 90}, "nv": {}}
+            jobs[1][1]({"mode": {**entry, "ppt": {"ppt_pl1_spl": 40}}})
+            jobs[0][1]({"mode": entry})              # mode 0 answers last and must not replace mode 1
+            self.assertEqual(f.sliders["ppt_pl1_spl"].slider.value(), 40)
+            f._apply()
+            self.assertEqual(len(jobs), 3)
+            f._select_mode(0)
+            jobs[-1][1](A.DaemonError("timed out"))  # the fetch failed: Apply fetches again instead of doing nothing
+            n = len(jobs)
+            f._apply()
+            self.assertEqual((len(jobs), f.loaded_mode), (n + 1, None))
+            jobs[-1][1]({"mode": entry})
+            self.assertEqual(f.loaded_mode, 0)
+
     def test_power_sliders_do_not_leak_between_modes(self):
         f = A.FansWindow(self.w)
         spl = f.sliders["ppt_pl1_spl"].slider
@@ -412,6 +437,60 @@ class TestPanels(unittest.TestCase):
         self.assertEqual(actions, [("set_overdrive", {"value": 0})])
 
 
+class TestRightToLeft(unittest.TestCase):
+    def test_flow_layout_fills_from_the_right(self):
+        from PySide6.QtCore import QRect, Qt
+        from PySide6.QtWidgets import QPushButton
+        from boreas.gui.widgets import FlowLayout
+        for direction, first_is_left in ((Qt.LeftToRight, True), (Qt.RightToLeft, False)):
+            host = QWidget()
+            host.setLayoutDirection(direction)
+            lay = FlowLayout(host)
+            a, b = QPushButton("first"), QPushButton("second")
+            lay.addWidget(a)
+            lay.addWidget(b)
+            lay.setGeometry(QRect(0, 0, 600, 60))
+            self.assertEqual(a.x() < b.x(), first_is_left)
+            self.assertTrue(0 <= min(a.x(), b.x()) and max(a.geometry().right(), b.geometry().right()) < 600)
+
+    def test_switch_knob_is_mirrored(self):
+        from PySide6.QtCore import Qt
+        from boreas.gui.widgets import Switch
+
+        def knob_on_the_right(direction, checked):
+            sw = Switch()
+            sw.setLayoutDirection(direction)
+            sw.setChecked(checked)
+            img = sw.grab().toImage()
+            y = img.height() // 2
+            white = [x for x in range(img.width()) if img.pixelColor(x, y).lightness() > 250]
+            return sum(white) / len(white) > img.width() / 2
+        self.assertTrue(knob_on_the_right(Qt.LeftToRight, True))
+        self.assertFalse(knob_on_the_right(Qt.LeftToRight, False))
+        self.assertFalse(knob_on_the_right(Qt.RightToLeft, True))
+        self.assertTrue(knob_on_the_right(Qt.RightToLeft, False))
+
+    def test_qt_dialog_texts_follow_the_app_language(self):
+        from PySide6.QtCore import QCoreApplication, QLibraryInfo, QTranslator
+        path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+        has_catalog = os.path.exists(os.path.join(path, "qtbase_de.qm"))
+        before = qa.findChildren(QTranslator)
+        try:
+            i18n.set_language("de")
+            self.assertEqual(A.install_qt_translation(qa), has_catalog)
+            if has_catalog:
+                self.assertEqual(QCoreApplication.translate("QPlatformTheme", "Cancel"), "Abbrechen")
+            i18n.set_language("hi")   # Qt ships no Hindi catalog: stays English, no error
+            self.assertFalse(A.install_qt_translation(qa))
+            i18n.set_language("en")
+            self.assertFalse(A.install_qt_translation(qa))
+        finally:
+            for t in qa.findChildren(QTranslator):
+                if t not in before:
+                    qa.removeTranslator(t)
+            i18n.set_language("tr")
+
+
 class TestIcon(unittest.TestCase):
     def test_icon_is_wind_glyph(self):
         self.assertEqual(len(A._wind_paths()), 3)
@@ -479,6 +558,10 @@ class TestUpdateCheck(unittest.TestCase):
             w.start_update()
         self.assertEqual(restarted, [1])
         self.assertEqual(self.calls[-1].__name__, "<lambda>")
+        seen = []
+        with patch.object(A.update, "run_update", lambda version: seen.append(version)):
+            self.calls[-1]()                # the job itself: the offered release is the one installed
+        self.assertEqual(seen, ["9.9.9"])
 
     def test_update_cancel_and_failure_are_shown(self):
         from boreas import update
@@ -554,6 +637,37 @@ class TestHeldSelection(unittest.TestCase):
         self.jobs.pop(0)({**self.STATUS, "mode": 1})
         self.assertEqual(self.checked(), 1)
         self.assertEqual(w.hold, {})
+
+    def test_failed_action_releases_the_choice_once_the_service_answers(self):
+        w = self.w
+        w.render()
+        w.set_mode(1)
+        self.jobs.pop(0)(A.DaemonError("down"))      # the action failed, a status is requested
+        self.jobs.pop(0)(A.DaemonError("down"))      # and that status failed too
+        w.render()
+        self.assertEqual(self.checked(), 1)
+        w.refresh()
+        self.jobs.pop(0)(dict(self.STATUS))          # the service is back and still reports Balanced
+        self.assertEqual(self.checked(), 0)
+        self.assertEqual(w.hold, {})
+
+    def test_tray_check_marks_follow_the_status_after_a_click(self):
+        w = self.w
+        w.render()
+        act = next(a for a in w.tray_menu.actions() if a.isChecked())
+        name = act.text()
+        act.trigger()                                # the active mode again: Qt unchecks the item itself
+        self.jobs.pop(0)({})
+        self.jobs.pop(0)(dict(self.STATUS))
+        self.assertEqual([a.text() for a in w.tray_menu.actions() if a.isCheckable() and a.isChecked()][:1],
+                         [name])
+
+    def test_cancelled_ultimate_before_the_first_status(self):
+        w = self.w
+        w.status = {}
+        with patch.object(A.QMessageBox, "question", return_value=A.QMessageBox.No):
+            w.set_gpu("ultimate")                    # used to raise KeyError('mode') in render()
+        self.assertEqual(self.jobs, [])
 
     def test_click_leaves_only_one_selected(self):
         w = self.w

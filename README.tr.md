@@ -1,25 +1,57 @@
 ![Boreas: Linux için ASUS laptop kontrolü](docs/banner.jpg)
 
-**Linux'ta ASUS ROG ve TUF dizüstüler için fan, CPU, GPU ve pil kontrolü.**
+**Linux'ta ASUS ROG ve TUF dizüstüler için G-Helper tarzı kontrol paneli.**
 
 [English](README.md) · **Türkçe**
 
-Boreas, Linux için açık kaynaklı bir Armoury Crate alternatifidir. ASUS ROG ve TUF dizüstülerde performans
-modlarını, özel fan eğrilerini, CPU ve GPU güç limitlerini, GPU modlarını (Eco, Optimized ve Ultimate MUX
-anahtarı), Aura klavye aydınlatmasını ve pil şarj limitini yönetir.
+Boreas, Armoury Crate ve G-Helper'ın Windows'ta verdiğini ASUS dizüstünüze Linux'ta verir: performans
+modları, özel fan eğrileri, CPU ve GPU güç limitleri, GPU modları (Eco, Optimized ve Ultimate MUX anahtarı),
+Aura klavye aydınlatması ve pil şarj limiti için tek küçük pencere. Her mod kendi fanlarını, güç
+limitlerini ve CPU sıcaklık hedefini taşır; tek tıkla bütün makinenin davranışı değişir. Özgür ve açık
+kaynak.
 
 [asus-linux.org](https://asus-linux.org) topluluğunun çalışması üzerine kuruludur: donanım desteğinin
 tamamı onların çekirdek sürücülerinden (asus-wmi, asus-armoury) gelir. Boreas, kullanıcı tarafındaki kısmı
 (asusd, supergfxd, rog-control-center) tek bir küçük sistem servisi (`boreasd`) ve bir tepsi uygulamasıyla
 (`boreas`) değiştirir.
 
+Pencere düzeni bilerek [G-Helper](https://github.com/seerge/g-helper) örnek alınarak yapıldı; Windows'tan
+gelenlere tanıdık gelsin diye. Ortak kod yoktur: G-Helper bir Windows programıdır, Boreas Python ve Qt ile
+sıfırdan yazıldı. Boreas yalnız Linux içindir; Windows'ta G-Helper kullanın.
+
 ![Boreas: açık tema, koyu tema, fanlar ve güç sayfası](docs/screenshots.png)
 
-CachyOS kurulu bir ROG Strix G713PV (kernel 7.3, asus-armoury) üzerinde geliştirildi ve denendi; başka
-modellerde ve dağıtımlarda farklı davranabilir.
+## Denenen donanım
 
-**Diller:** English, Türkçe, 简体中文, हिन्दी, Español, العربية, Français, Português (Brasil), Русский,
-Deutsch, 日本語.
+| Model | Dağıtım, çekirdek | Durum |
+|---|---|---|
+| ROG Strix G713PV | CachyOS, kernel 7.3 (asus-armoury) | burada geliştirildi ve denendi |
+
+Boreas çekirdeğin standart asus-wmi / asus-armoury arayüzleri üzerine kuruludur, tek bir model için
+yazılmadı. Bulamadığı donanımın kartları (GPU modları, panel overdrive, yenileme hızı) gizli kalır.
+Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her şey çalışsa da çalışmasa da
+`boreasctl status` ve `uname -r` çıktısıyla
+[bir issue açın](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose).
+
+## Neden Boreas
+
+- **Tek pencere, tek servis.** Kullanıcı tarafının tamamı `boreasd` ve bir tepsi uygulamasıdır; asusd,
+  supergfxd ve rog-control-center'ın yerini alır. Penceredeki her şey komut satırında da vardır (`boreasctl`).
+- **Mod eksiksiz bir ön ayardır.** Fan eğrileri, güç limitleri, CPU Boost, güç profili ve sıcaklık hedefi
+  mod başına saklanır; Sessiz / Dengeli / Turbo'nun yanına kendi modlarınızı ekleyebilirsiniz. Mod
+  değişince hepsi birlikte değişir: pencereden, tepsiden, Fn+F5 ile ya da pil / prize göre otomatik.
+- **CPU sıcaklık hedefi.** Bir mod için 75-95 °C seçin; Boreas güç limitlerini o hedefe göre yönetir. Güç
+  tabanı sayesinde oyun modu firmware'in minimumuna düşmez.
+- **Yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
+- **G-Helper kullananların zaten bildiği düzen**, 11 dilde, açık ve koyu temayla, uygulama içi güncellemeyle.
+- **Denemesi kolay, geri alması kolay.** İlk açılışta Boreas mevcut ayarlarınızı benimser ve donanıma
+  hiçbir şey yazmaz; `sudo ./uninstall.sh` asusd, supergfxd ve power-profiles-daemon'ı geri getirir.
+
+**Boreas mı, asusctl mi?** Linux'ta G-Helper istiyorsanız, yani her modun kendi fanlarını, güç limitlerini
+ve sıcaklık hedefini taşıdığı tek bir pencere, Boreas'ı seçin. AniMe Matrix ya da Slash ekranı gerekiyorsa
+asus-linux.org projesinin kendi aracı olan [asusctl](https://github.com/OpenGamingCollective/asusctl)'i
+seçin. İkisi aynı çekirdek dosyalarına yazar, aynı anda yalnız biri çalışabilir; kurulum asusd ve
+supergfxd'yi maskeler, kaldırma betiği geri getirir.
 
 ## Özellikler
 
@@ -72,16 +104,20 @@ Kurulum arayüz dilini sorar (Enter = English). Sormadan kurmak için: `sudo BOR
 Her kullanıcı dili sonradan penceredeki küre düğmesinden değiştirebilir. Çince ve Japonca için
 `noto-fonts-cjk`, Hintçe ve Arapça için `noto-fonts` gerekir.
 
-Betik `asusd`, `asus-shutdown`, `supergfxd` ve `power-profiles-daemon`'ı maskeler (aynı sysfs
-dosyalarına yazıyorlar; asusd udev kuralıyla, power-profiles-daemon masaüstü tarafından D-Bus ile
-her açılışta başlatıldığı için `disable` yetmez), `boreasd`'yi açar. Masaüstünün kendi güç profili
-menüsü (KDE pil simgesi, GNOME hızlı ayarlar) bu yüzden boş görünür; modu Boreas yönetir. Kontrolü
-geçici olarak geri vermek için:
-`sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`.
-İlk açılışta servis mevcut şarj limitini, klavye parlaklığını, modu ve GPU modunu benimser;
-donanıma hiçbir şey yazmaz.
+### Kurulum sisteminizde neyi değiştirir
 
-Geri almak: `sudo ./uninstall.sh` (maskeler kaldırılır, asusd / supergfxd / power-profiles-daemon geri açılır).
+- `asusd`, `asus-shutdown`, `supergfxd` ve `power-profiles-daemon`'ı maskeler, `boreasd`'yi açar.
+  Hepsi aynı sysfs dosyalarına yazıyor; asusd udev kuralıyla, power-profiles-daemon masaüstü tarafından
+  D-Bus ile her açılışta başlatıldığı için `disable` yetmez.
+- Masaüstünün kendi güç profili menüsü (KDE pil simgesi, GNOME hızlı ayarlar) bu yüzden boş görünür;
+  modu Boreas yönetir. Kontrolü geçici olarak geri vermek için:
+  `sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`.
+- İlk açılışta servis mevcut şarj limitini, klavye parlaklığını, modu ve GPU modunu benimser;
+  donanıma hiçbir şey yazmaz.
+- `boreasd` root olarak çalışır ve yerel bir soketi dinler (`/run/boreas.sock`, `wheel` grubu). Servis
+  ağa bağlanmaz. Tepsi uygulaması GitHub'a son sürümü sorar (kapatılabilir, bkz.
+  [Güncelleme](#güncelleme)), kurulum betiği de GPU yardımcısını bu deponun GitHub Release'inden indirir.
+- `sudo ./uninstall.sh` maskeleri kaldırır, asusd / supergfxd / power-profiles-daemon geri açılır.
 
 KDE'de Ayarlar → Güç Yönetimi'nde prize ve pile ayrı güç profili seçiliyse Boreas'ın
 "pil/prize göre otomatik mod"uyla çakışır; ikisinden birini kapatın.
@@ -103,47 +139,36 @@ Zorlamak için `BOREAS_THEME=light boreas` ya da `dark`. `BOREAS_SCALE=1` arayü
 (varsayılan `0.78`), `BOREAS_LANG=tr boreas` dili zorlar. Sağ üstteki **Fanlar ve güç** düğmesi aynı pencerede fan eğrileri,
 güç limitleri ve pil sayfasını açar; tekrar basınca ana sayfaya döner.
 
-CPU sıcaklık hedefi artık ASUS'un `asus-armoury` güç arayüzü üzerinden yönetilir.
-Hedefin üstünde Boreas CPU'nun SPL ve mevcut SPPT/FPPT watt sınırlarını saniyede
-2-6 W azaltır; hedefin üç derece altından itibaren 2 saniyede 2 W artırır ve seçili
-profil ile kullanıcı güç ayarlarından alınan başlangıç tavanlarını aşmaz. Mod başına
-**sürekli güç tabanı** SPL'nin seçilen wattın altına çekilmesini önler (oyun modunda
-firmware'in 30 W minimumu yerine 45 W tutulabilir). Limitler tabana inip CPU hâlâ
-sıcaksa denetleyici modun kendi CPU politikasının altına kademe kademe iner: önce
-EPP bir kademe, sonra cpufreq boost kapalı, sonra (Performans güç profilinde)
-varsayılan governor; CPU soğuyunca ters sırayla geri alır. Modun CPU Boost ve güç
-profili ayarı tavandır, denetleyici bunların üstüne hiç çıkmaz. SMU/PCI erişimine
-geri dönmez.
-BIOS sürüm listesi veya özel kernel modülü gerektirmez; geçerli güç aralıkları,
-SPL kontrolü ve CPU sıcaklık sensörü gerekir. Her ASUS destekleniyor demek değildir.
+## CPU sıcaklık hedefi
 
-Güç kontrolü için özel fan eğrisi gerektiren modellerde, kullanıcı eğrisi yoksa
-profilin fabrika eğrileri etkinleştirilir. Varsayılan seçimi kontrolü kapatır ve
-hâlâ Boreas'ın yönettiği watt değerlerini ve CPU politikasını geri yükler. Profil ve
-uyku dönüşünde kontrol yeniden hazırlanır. Güç limitlerindeki küçük kaymalar
-(firmware yuvarlaması, profil yazımından sonraki gecikmeli politika) izlenir,
-firmware'in bozduğu kullanıcı limiti yeniden yazılır; yalnız inatla karşı yazan bir
-servis döngüyü durdurur. Sensör kaybı, yazma hatası veya geri okuma uyuşmazlığı
-kontrolü durdurur ve hata gösterir; modu yeniden kaydetmek tekrar dener.
+Her moda 75-95 °C arasında bir hedef verilebilir. Hedefin üstünde Boreas, ASUS'un CPU güç limitlerini
+(SPL ve varsa SPPT/FPPT) `asus-armoury` üzerinden düşürür; CPU soğuyunca yeniden yükseltir ve modun ve
+sizin güç limitlerinizin belirlediği değerin üstüne hiç çıkmaz. Limitler tabana inip CPU hâlâ sıcaksa
+modun kendi CPU politikasının altına kademe kademe iner (EPP kademe kademe, sonra cpufreq boost kapalı;
+Performans güç profilinde: önce boost kapalı, sonra varsayılan governor, sonra EPP), soğuyunca ters sırayla
+geri alır. Mod başına **sürekli güç tabanı** SPL'nin
+seçilen wattın altına çekilmesini önler; oyun modunda firmware'in 30 W minimumu yerine 45 W tutulabilir.
 
-`boreasctl cputemp 85` etkin modun hedefini ayarlar; `cputemp default` kapatır.
-`boreasctl cpufloor 45` etkin modun sürekli güç tabanını ayarlar; `cpufloor min`
-firmware minimumuna döner. Durumda `control: power-feedback`, `target`, `state`,
-`error`, `ceilings_w`, `requested_w`, `floor_w`, `stage`, `ladder`, `effective` ve
-`baseline` bulunur. `applied` null'dır; donanıma sıcaklık limiti yazılmaz.
-Eski kayıtlı hedefler kullanılır, önceki SMU ayarı bu yöntemle sıfırlanmaz.
+```bash
+boreasctl cputemp 85        # etkin modun hedefi
+boreasctl cputemp default   # kapat
+boreasctl cpufloor 45       # sürekli güç tabanı; `cpufloor min` = firmware minimumu
+```
 
-**Bu kesin sıcaklık tavanı değildir.** Kısa süreli aşım olabilir; en düşük güçte
-bile hedefe ulaşılamazsa `limited` durumu bildirilir. İsteğe bağlı deneysel çekirdek
-SMU köprüsü (`smu-bridge`) yalnızca belgelenen G713PV / G713PV.336 yapılandırmasıyla
-sınırlıdır; genel ASUS SMU desteği değildir. Başka bir güç
-ayarlama servisiyle birlikte çalıştırmayın. Ayrıntılar: [CPU kontrolü](docs/cpu-temperature.md).
+**Bu yazılımsal bir hedeftir, kesin sıcaklık tavanı değildir.** Boost, firmware, GPU ile paylaşılan
+soğutma ve servis gecikmeleri hedefin aşılmasına yol açabilir. En düşük güçte bile sıcaklık hedefin
+üstündeyse durum `limited` olur. CPU sıcaklık sensörü ve SPL dahil sunulan güç kontrolleri için geçerli
+aralıklar gerekir; her ASUS dizüstü destekleniyor demek değildir. Varsayılan yol BIOS sürüm listesi ya da özel
+çekirdek modülü istemez; SMU'ya ham PCI erişimi hiçbir yerde yoktur. Başka bir güç ayarlama servisiyle birlikte çalıştırmayın.
+
+Denetleyicinin adımları, hata durumunda ne yaptığı, durum alanları ve deneysel `smu-bridge`
+(yalnız G713PV / G713PV.336) [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
 
 ## Güncelleme
 
-Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca sürüm
-numarasının yazdığı küçük dosyayı indirir. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
-Gizle** görünür. **Güncelle** son sürümü GitHub'dan indirir, yönetici şifrenizi sorduktan sonra (pkexec)
+Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca yayımlanmış
+son sürümü sorar. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
+Gizle** görünür. **Güncelle** o sürümün kaynağını GitHub'dan indirir, yönetici şifrenizi sorduktan sonra (pkexec)
 kurar ve uygulamayı yeniden başlatır. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
 
 Elle güncellemek için:

@@ -1,6 +1,10 @@
 #!/bin/sh
 # Uninstalls Boreas and brings asusd / supergfxd / power-profiles-daemon back. Service settings stay in /etc/boreas.
 set -e
+if [ "$(id -u)" != 0 ]; then
+    echo "Run as root: sudo ./uninstall.sh" >&2
+    exit 1
+fi
 systemctl disable --now boreasd.service 2>/dev/null || true
 rm -rf /usr/lib/boreas /usr/share/doc/boreas
 rm -f /usr/bin/boreas /usr/bin/boreasd /usr/bin/boreasctl \

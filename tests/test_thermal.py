@@ -24,7 +24,6 @@ class TestController(unittest.TestCase):
             ("boreas.thermal.hw.set_attr", {"side_effect": self.write}),
             ("boreas.thermal.hw.temps", {"side_effect": lambda: {"cpu": self.temp}}),
             ("boreas.thermal.time.monotonic", {"side_effect": lambda: self.now}),
-            ("boreas.ryzen.bridge_available", {"return_value": False}),
             ("boreas.thermal.hw.cpu_epp_files", {"side_effect": lambda: self.cpufreq["epp"]}),
             ("boreas.thermal.hw.cpu_boost_paths", {"side_effect": lambda: self.cpufreq["boost"]}),
             ("boreas.thermal.hw.cpu_governor_choices", {"side_effect": lambda: self.cpufreq["gov"]}),
@@ -664,21 +663,6 @@ class TestSmuBridgeBackend(unittest.TestCase):
         with self.assertRaises(ryzen.SmuAccessError):
             self.bridge.set(83)
         self.assertEqual(self.calls, [])
-
-        with patch.object(ryzen, "detect", return_value=self.family), \
-                patch.object(hw, "exists", side_effect=lambda p: p == ryzen.BRIDGE_DEVICE), \
-                patch.object(hw, "read", return_value="Y"):
-            self.assertFalse(ryzen.bridge_available())
-        with patch.object(ryzen, "detect", return_value=self.family), \
-                patch.object(hw, "exists", return_value=True), \
-                patch.object(hw, "read", return_value="N"):
-            self.assertFalse(ryzen.bridge_available())
-        with patch.object(ryzen, "detect", return_value=self.family), \
-                patch.object(hw, "exists", return_value=True), \
-                patch.object(hw, "read", return_value="Y"):
-            self.assertTrue(ryzen.bridge_available())
-            with patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "0"}):
-                self.assertFalse(ryzen.bridge_available())
 
 
 class TestBridgeOptInWarning(unittest.TestCase):

@@ -265,6 +265,8 @@ def set_eco(enabled: bool) -> None:
         return
     cur = hw.get_attr("dgpu_disable")
     if cur is None:
+        if not enabled:
+            return  # a MUX-only device: without dgpu_disable the dGPU is never off
         raise ValueError("Eco mode is not supported")
     if bool(cur.current) == enabled:
         return

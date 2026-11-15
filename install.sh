@@ -36,7 +36,8 @@ else
     version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$SRC/boreas/__init__.py")
     base="${BOREAS_GPU_ENGINE_URL:-https://github.com/Yusuf-Yonturk/boreas/releases/download/v$version}"
     helper_tmp=$(mktemp -d)
-    trap 'rm -rf "$helper_tmp"' EXIT HUP INT TERM
+    trap 'rm -rf "$helper_tmp"' EXIT
+    trap 'exit 130' HUP INT TERM  # stop here; the EXIT trap cleans up
     helper_src="$helper_tmp/boreas-gpu-engine"
     echo "Downloading the GPU helper for Boreas $version from $base"
     if ! fetch "$base/boreas-gpu-engine" "$helper_src" || ! fetch "$base/boreas-gpu-engine.sha256" "$helper_src.sha256"; then

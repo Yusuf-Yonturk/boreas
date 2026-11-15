@@ -19,10 +19,11 @@ import time
 import traceback
 
 from . import aura, fans, gpu, hw, thermal
-from .config import BUILTIN, Config
+from .config import BUILTIN, Config, check_mode_fields
 
 SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
+MAX_REQUEST = 1024 * 1024  # bytes per request line; the largest real one (a mode update) is a few kB
 POLL_SECONDS = 1.0
 ECO_RETRY_TICKS = 15
 # High temperature log: 95 °C, or 5 °C above a lowered limit. Not every second:
@@ -68,8 +69,13 @@ class Daemon:
         bridge_warning = self.cpu.opt_in_warning()
         if bridge_warning:
             log(bridge_warning)
+        # Firmware fan curves by (mode base, fan). Reading one resets the fans, so it is done once.
+        self.factory_curves: dict[tuple[int, str], list[int]] = {}
         self.hot: dict | None = None  # the ongoing high temperature episode
         self.temp_peak: dict | None = None  # highest since the service started
+        if self.cfg.load_error:
+            # the unreadable file is kept next to the new one as config.json.corrupt
+            self.set_notice(f"Settings file unreadable, started from the current hardware state: {self.cfg.load_error}")
         if self.cfg.fresh:
             self.import_current()
 
@@ -126,19 +132,8 @@ class Daemon:
                 self.cpu.fail("Required ASUS fan curve interface unavailable")
                 thermal_ready = False
             for fan in fans.available_fans():
-                curve = m.get(f"fan_{fan}")
                 try:
-                    if force_fans and not curve:
-                        curve = fans.factory_curve(fan)
-                    if thermal_on and hw.fan_required() and not curve:
-                        # A selected custom curve may not have been saved yet.
-                        curve = fans.factory_curve(fan)
-                        if not curve:
-                            raise ValueError("Required ASUS fan curve unavailable")
-                    if (m["fans_apply"] or force_fans) and curve:
-                        fans.write_curve(fan, curve)
-                    elif fans.is_enabled(fan):
-                        fans.disable_curve(fan)
+                    self.apply_fan(fan, m)
                 except (OSError, ValueError) as e:
                     self.set_notice(f"Could not write the {fan} fan curve: {e}")
                     if thermal_on and hw.fan_required():
@@ -178,6 +173,22 @@ class Daemon:
                 f"{f' +boost {boost_mode}' if boost_mode != 'default' else ''}"
                 f"{f' +cpu target {self.cpu.target}°C' if self.cpu.target is not None else ''}"
                 f"{f' +floor {floor}W' if self.cpu.target is not None and floor else ''}")
+
+    def apply_fan(self, fan: str, m: dict, factory: list | None = None) -> None:
+        """One fan's curve for mode m. factory: the firmware curve when the caller has just read it."""
+        target = m.get("cpu_temp")
+        thermal_on = target is not None and target < thermal.DEFAULT_TEMP
+        force_fans = (m["power_apply"] or thermal_on) and not m["fans_apply"] and hw.fan_required()
+        curve = m.get(f"fan_{fan}")
+        if not curve and (force_fans or (thermal_on and hw.fan_required())):
+            # the model keeps its power limits only with a curve; a selected custom one may not be saved yet
+            curve = factory or fans.factory_curve(fan)
+            if not curve and thermal_on:
+                raise ValueError("Required ASUS fan curve unavailable")
+        if (m["fans_apply"] or force_fans) and curve:
+            fans.write_curve(fan, curve)
+        elif fans.is_enabled(fan):
+            fans.disable_curve(fan)
 
     def apply_cpu_policy(self, m: dict) -> None:
         """CPU governor ("power profile") first, then boost/EPP: under the performance governor
@@ -327,9 +338,10 @@ class Daemon:
                                 + ("It will be applied after a reboot." if e.hard else
                                    "It will be applied automatically when the dGPU is free (usually after a reboot)."))
                 return {"busy": e.users, "deferred": True}
-            except OSError as e:
-                # the firmware rejected the request; do not let it crash the service at boot (and keep
-                # the display manager waiting). If the user chose the mode, pass the error on to them.
+            except (OSError, ValueError, subprocess.SubprocessError) as e:
+                # the firmware rejected the request, Eco is not offered or systemctl hung; do not let
+                # it crash the service at boot (and keep the display manager waiting). If the user
+                # chose the mode, pass the error on to them.
                 self.set_notice(f"Could not change the GPU mode: {e}")
                 if explicit:
                     raise
@@ -463,6 +475,10 @@ class Daemon:
                     self.set_notice("The postponed Eco mode has been applied.")
                 except gpu.GpuBusy:
                     pass
+                except (OSError, ValueError, subprocess.SubprocessError) as e:
+                    # not a busy dGPU: retrying every 15 s would only repeat the error
+                    self.eco_stuck = True
+                    self.set_notice(f"Could not apply the postponed Eco mode: {e}")
 
             profile = hw.get_profile()
             if profile and profile != self.last_profile:
@@ -559,11 +575,14 @@ class Daemon:
             if cmd == "cycle_mode":
                 self.set_mode(c.next_mode(c["mode"], bool(req.get("back"))))
                 return {"mode": c["mode"]}
+            if cmd in ("get_mode", "update_mode") and not c.has_mode(int(req["mode"])):
+                raise ValueError(f"No such mode: {req['mode']}")
             if cmd == "get_mode":
                 return {"mode": c.mode(int(req["mode"]))}
             if cmd == "update_mode":
                 mode_id = int(req["mode"])
                 entry = c.mode(mode_id)
+                check_mode_fields(req["data"])
                 t = req["data"].get("cpu_temp")
                 if t is not None and (type(t) is not int or not thermal.MIN_TEMP <= t <= thermal.DEFAULT_TEMP):
                     raise ValueError(f"CPU temperature limit must be {thermal.MIN_TEMP}..{thermal.DEFAULT_TEMP}")
@@ -579,10 +598,12 @@ class Daemon:
                     lo, hi = (a.min, a.max) if a and a.min is not None and a.max is not None else (1, 300)
                     if type(f) is not int or not lo <= f <= hi:
                         raise ValueError(f"CPU power floor must be {lo}..{hi} W")
+                # every curve is checked before the first field is stored
+                curves = {k: fans.fix_curve(v) for k, v in req["data"].items() if k.startswith("fan_") and v}
                 changed = set()
                 for k, v in req["data"].items():
                     if k in entry and k != "base":
-                        value = fans.fix_curve(v) if k.startswith("fan_") and v else v
+                        value = curves.get(k, v)
                         if entry[k] != value:
                             changed.add(k)
                         entry[k] = value
@@ -606,12 +627,20 @@ class Daemon:
                 return {"mode": entry}
             if cmd == "default_curve":
                 fan = req["fan"]
+                if fan not in fans.FANS:
+                    raise ValueError(f"No such fan: {fan}")
                 base = c.mode(int(req.get("mode", c["mode"])))["base"]
-                curve = None
-                if base == c.mode(c["mode"])["base"]:
+                curve = self.factory_curves.get((base, fan))
+                if not curve and base == c.mode(c["mode"])["base"]:
                     try:
+                        # The read makes asus-wmi send the throttle policy again, which switches every
+                        # custom curve off and resets the power limits: the whole mode has to be put
+                        # back. The curve is a firmware constant per profile, so it is read once and
+                        # opening the page again does not disturb a running mode.
                         curve = fans.factory_curve(fan)
                         self.apply_mode(c["mode"], write_profile=False)
+                        if curve:
+                            self.factory_curves[(base, fan)] = curve
                     except OSError:
                         curve = None
                 if not curve:
@@ -635,13 +664,11 @@ class Daemon:
             if cmd == "set_gpu_backend":
                 return self.set_gpu_backend(req.get("backend"))
             if cmd == "set_charge_limit":
-                hw.set_charge_limit(int(req["value"]))
-                c["charge_limit"] = int(req["value"])
+                c["charge_limit"] = hw.set_charge_limit(int(req["value"]))
                 c.save()
                 return {}
             if cmd == "set_kbd":
-                hw.set_kbd_brightness(int(req["brightness"]))
-                c["kbd_brightness"] = int(req["brightness"])
+                c["kbd_brightness"] = hw.set_kbd_brightness(int(req["brightness"]))
                 c.save()
                 return {}
             if cmd == "set_aura":
@@ -664,12 +691,19 @@ class Daemon:
             if cmd == "clear_notice":
                 self.notice = ""
                 return {}
-        raise ValueError(f"bilinmeyen komut: {cmd}")
+        raise ValueError(f"Unknown command: {cmd}")
 
 
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
-        for line in self.rfile:
+        while True:
+            # readline with a limit: a client that never sends a newline cannot grow the service's memory
+            line = self.rfile.readline(MAX_REQUEST + 1)
+            if not line:
+                return
+            if len(line) > MAX_REQUEST:
+                self.wfile.write((json.dumps({"ok": False, "error": "Request too large"}) + "\n").encode())
+                return
             try:
                 req = json.loads(line)
                 resp = {"ok": True, **(self.server.daemon_obj.handle(req) or {})}

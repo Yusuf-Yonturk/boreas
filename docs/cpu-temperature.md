@@ -126,6 +126,10 @@ With the opt-in `smu-bridge`, `applied` is the last 0x3F argument the SMU
 acknowledged; that is not proof of physical behavior. Sysfs readback may be a
 driver cache, so it is not proof of physical power or temperature behavior either.
 
+A setting written by the removed SMU backend in an earlier version is not reset by
+`power-feedback`; the normal firmware policy or a reboot may be needed to clear it.
+Previously saved targets are reused.
+
 ## Observed on the G713PV (2026-11-04, on battery)
 
 Dengeli: target 82 C, user PL1 40 W (= the floor, so the caps had no room), CPU
@@ -159,11 +163,11 @@ Run `python3 -m unittest discover -s tests -v`. Controller tests cover saturatio
 hysteresis, rate limits, gradual recovery, sensor loss, outside writers, missing
 ranges, partial failures, ignored writes, restoration and a synthetic thermal plant.
 Daemon tests cover mode changes, explicit power ceilings, GUI/API target updates,
-fan requirements and that the raw PCI `ryzen.CpuTemp` backend is never constructed.
+fan requirements and that the SMU is not called without the bridge opt-in.
 Bridge tests use a fake ioctl and cover opt-in/`enable_hw` gating, the single 5 s
 reapply, restore-on-stop and fault latching; they do not exercise the real module.
-Existing isolated raw SMU tests remain as historical transport coverage, not the
-active implementation.
+The raw PCI SMU transport and its isolated tests were removed; a test asserts that
+`boreas/ryzen.py` holds no userspace PCI access.
 
 No physical temperature test or installation is implied by the unit tests alone.
 

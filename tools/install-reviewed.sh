@@ -4,7 +4,8 @@ set -eu
 [ "$(id -u)" = 0 ] || { echo "Run with sudo: sudo sh tools/install-reviewed.sh" >&2; exit 1; }
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 STAGE=$(mktemp -d /tmp/boreas-reviewed.XXXXXX)
-trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
+trap 'rm -rf "$STAGE"' EXIT
+trap 'exit 130' HUP INT TERM  # stop here; the EXIT trap cleans up
 DESTDIR="$STAGE" sh "$REPO/install.sh" --files-only
 "$STAGE/usr/lib/boreas/boreas-gpu-engine" --protocol-info
 # The live install below reuses the staged helper, so the checked file is the installed one

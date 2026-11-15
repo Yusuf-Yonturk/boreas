@@ -88,7 +88,6 @@ def build_tree():
     put(R + "/dev/hidraw1", "")
     put(R + ryzen.CPUINFO, "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\n"
         "model\t\t: 97\nmodel name\t: AMD Ryzen 9 7845HX with Radeon Graphics\n\nprocessor\t: 1\n")
-    put(R + ryzen.ROOT_COMPLEX, "")
 
 
 class Base(unittest.TestCase):
@@ -568,297 +567,21 @@ class TestGpu(Base):
         self.assertNotEqual(d.cfg["mode_ac"], 42)
 
 
-class FakeSmn:
-    """SMU mailbox: fills the response register when a command is written."""
-
-    def __init__(self, fam, statuses=None, idle=ryzen.OK, read_limit=None, follow_writes=True):
-        self.fam, self.statuses = fam, statuses or {}
-        self.regs = {fam.rsp: idle}
-        self.sent = []
-        self.limit = read_limit
-        self.follow_writes = follow_writes
-        self.limit_queries = 0
-
-    def read(self, fd, addr):
-        return self.regs.get(addr, 0)
-
-    def write(self, fd, addr, value):
-        self.regs[addr] = value
-        if addr != self.fam.msg:
-            return
-        if value == self.fam.get_limit:
-            self.limit_queries += 1
-            self.regs[self.fam.rsp] = self.statuses.get(
-                value, ryzen.OK if self.limit is not None else ryzen.UNKNOWN_CMD)
-            self.regs[self.fam.arg] = (55 << 16) | (self.limit or 0)
-            return
-        self.sent.append((value, self.regs.get(self.fam.arg, 0)))
-        status = self.statuses.get(value, ryzen.OK)
-        if value == ryzen.GET_SMU_VERSION and status == ryzen.OK:
-            self.regs[self.fam.arg] = 0x4C4D00
-        if value == self.fam.tctl and status == ryzen.OK and self.follow_writes and self.limit is not None:
-            self.limit = self.regs[self.fam.arg]
-        self.regs[self.fam.rsp] = status
-
-
-def fake_smu(cpu, **kw):
-    smn = FakeSmn(cpu.family, **kw)
-    cpu.smu._read, cpu.smu._write = smn.read, smn.write
-    return smn
-
-
-class TestSmuTransport(unittest.TestCase):
-    def setUp(self):
-        self.smu = ryzen.Smu(ryzen.FAMILIES[(0x19, 0x61)], path="/fake-pci-config")
-        self.addr = self.smu.f.rsp
-
-    @staticmethod
-    def packed(value):
-        return value.to_bytes(4, "little")
-
-    def assert_disabled_without_reopening(self):
-        with patch.object(ryzen.os, "open") as opened:
-            with self.assertRaises(ryzen.SmuError):
-                self.smu.send(0x3F, 83)
-        opened.assert_not_called()
-
-    def test_changed_selector_prevents_data_write_and_future_commands(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4) as writes, \
-                patch.object(ryzen.os, "pread", return_value=self.packed(0x11141294)):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._write(91, self.addr, 0)
-        self.assertEqual([c.args[2] for c in writes.call_args_list], [ryzen.SMN_ADDR])
-        self.assert_disabled_without_reopening()
-
-    def test_changed_selector_prevents_data_read(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", return_value=self.packed(0x11140294)) as reads:
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._read(91, self.addr)
-        self.assertEqual([c.args[2] for c in reads.call_args_list], [ryzen.SMN_ADDR])
-
-    def test_selector_change_during_read_discards_apparent_success(self):
-        values = [self.packed(self.addr), self.packed(ryzen.OK), self.packed(0x11140294)]
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=values):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._read(91, self.addr)
-        self.assert_disabled_without_reopening()
-
-    def test_selector_change_during_write_stops_subsequent_access(self):
-        values = [self.packed(self.addr), self.packed(0x11140294)]
-        with patch.object(ryzen.os, "pwrite", return_value=4) as writes, \
-                patch.object(ryzen.os, "pread", side_effect=values):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._write(91, self.addr, 0)
-        # The already completed write cannot be undone; no retry is allowed.
-        self.assertEqual([c.args[2] for c in writes.call_args_list], [ryzen.SMN_ADDR, ryzen.SMN_DATA])
-        self.assert_disabled_without_reopening()
-
-    def test_short_selector_write_never_reaches_data_port(self):
-        with patch.object(ryzen.os, "pwrite", return_value=2) as writes, \
-                patch.object(ryzen.os, "pread") as reads:
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._write(91, self.addr, 0)
-        self.assertEqual(writes.call_count, 1)
-        reads.assert_not_called()
-        self.assert_disabled_without_reopening()
-
-    def test_short_data_read_is_not_a_valid_response(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=[self.packed(self.addr), b"\x01"]):
-            with self.assertRaises(ryzen.SmuError):
-                self.smu._read(91, self.addr)
-        self.assert_disabled_without_reopening()
-
-    def test_consistent_access_still_reads_and_writes(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=[self.packed(self.addr), self.packed(1), self.packed(self.addr)]):
-            self.assertEqual(self.smu._read(91, self.addr), 1)
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", return_value=self.packed(self.addr)):
-            self.smu._write(91, self.addr, 0)
-        self.assertEqual(self.smu.error, "")
-
-    def test_io_error_latches_before_any_followup_command(self):
-        with patch.object(ryzen.os, "pwrite", return_value=4), \
-                patch.object(ryzen.os, "pread", side_effect=OSError("PCI unavailable")):
-            with self.assertRaisesRegex(ryzen.SmuAccessError, "PCI unavailable"):
-                self.smu._read(91, self.addr)
-        self.assert_disabled_without_reopening()
-
-    def test_short_data_write_latches_the_transport(self):
-        with patch.object(ryzen.os, "pwrite", side_effect=[4, 2]), \
-                patch.object(ryzen.os, "pread", return_value=self.packed(self.addr)):
-            with self.assertRaises(ryzen.SmuAccessError):
-                self.smu._write(91, self.addr, 0)
-        self.assert_disabled_without_reopening()
-
-    def test_failed_argument_write_never_publishes_the_command(self):
-        attempted = []
-        def write(fd, addr, value):
-            attempted.append(addr)
-            if addr == self.smu.f.arg + 4:
-                raise self.smu._fault("SMN selector changed during arguments")
-        with patch.object(ryzen.os, "open", return_value=91), \
-                patch.object(ryzen.os, "close") as closed, \
-                patch.object(self.smu, "_wait", return_value=ryzen.OK), \
-                patch.object(self.smu, "_write", side_effect=write):
-            with self.assertRaises(ryzen.SmuAccessError):
-                self.smu.send(0x3F, 83)
-        self.assertNotIn(self.smu.f.msg, attempted)
-        closed.assert_called_once_with(91)
-        self.assert_disabled_without_reopening()
-
-
-class TestCpuTemp(Base):
+class TestCpuDetect(Base):
     def test_detect_dragon_range(self):
         self.assertEqual(ryzen.detect().name, "Dragon Range")
         put(R + ryzen.CPUINFO, "vendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\n")
         self.assertIsNone(ryzen.detect())
         put(R + ryzen.CPUINFO, "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 116\n")
-        self.assertIsNone(ryzen.detect())  # Phoenix: a different mailbox, not supported
+        self.assertIsNone(ryzen.detect())  # Phoenix: another command set, not supported
 
-    def test_set_probes_version_then_sends_mp1_tctl(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu)
-        cpu.set(85)
-        cpu.set(80)
-        # Raphael family: MP1 0x3F, one version query on first use
-        self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 85), (0x3F, 80)])
-        self.assertEqual(cpu.version_str(), "76.77.0")
-        self.assertEqual(cpu.applied, 80)
-
-    def test_readback_can_be_disabled_without_disabling_temperature_writes(self):
-        with patch.dict(os.environ, BOREAS_SMU_READBACK="0"):
-            cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, read_limit=100)
-        cpu.set(83)
-        cpu.set(82)
-        self.assertEqual(smn.limit_queries, 0)
-        self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 83), (0x3F, 82)])
-        self.assertEqual(cpu.applied, 82)
-        self.assertFalse(cpu.readback_verified)
-        self.assertIsNone(cpu.reported_limit)
-
-    def test_transaction_diagnostics_are_bounded_and_do_not_read_hardware(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen.os, "pread") as read, contextlib.redirect_stderr(output):
-            for _ in range(70):
-                cpu.smu._trace_transaction(0x3F, 83, ryzen.OK, 0, True)
-        read.assert_not_called()
-        lines = output.getvalue().splitlines()
-        self.assertEqual(len(lines), 64)
-        self.assertTrue(json.loads(lines[0].removeprefix("SMU_DIAGNOSTIC "))["sent"])
-
-    def test_probe_failure_never_sends_tctl(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x02: ryzen.UNKNOWN_CMD})
-        with self.assertRaises(ryzen.SmuError):
-            cpu.set(85)
-        self.assertEqual(smn.sent, [(0x02, 0)])
-        self.assertFalse(cpu.supported())
-
-    def test_busy_mailbox_is_not_written(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, idle=0)
-        with self.assertRaises(ryzen.SmuError):
-            cpu.set(85)
-        self.assertEqual(smn.sent, [])
-
-    def test_invalid_idle_response_does_not_send_a_command(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, idle=0x20212210)
-        with self.assertRaisesRegex(ryzen.SmuError, "Invalid SMU mailbox response.*before command"):
-            cpu.set(85)
-        self.assertEqual(smn.sent, [])
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-
-    def test_diagnostics_disabled_does_not_add_pci_reads(self):
-        cpu = ryzen.CpuTemp()
-        cpu.smu.diagnostics = False
-        with patch.object(ryzen.os, "pread") as read:
-            cpu.smu._trace_invalid_reply(-1, 0x20212210, 0x3F, 83, "before_command")
-        read.assert_not_called()
-
-    def test_diagnostics_record_index_and_reread_without_resending(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, idle=0x20212210)
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen.os, "pread", return_value=(0x59800).to_bytes(4, "little")), \
-                contextlib.redirect_stderr(output):
-            with self.assertRaises(ryzen.SmuError):
-                cpu.set(83)
-        line = output.getvalue().strip()
-        record = json.loads(line.removeprefix("SMU_DIAGNOSTIC "))
-        self.assertEqual(record["selected_index_after_read"], "0x59800")
-        self.assertEqual(record["response"], "0x20212210")
-        self.assertEqual(record["stage"], "before_command")
-        self.assertEqual(smn.sent, [])
-
-    def test_diagnostic_read_failure_preserves_original_error(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        fake_smu(cpu, idle=0x20212210)
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen.os, "pread", side_effect=OSError("read failed")), \
-                contextlib.redirect_stderr(output):
-            with self.assertRaisesRegex(ryzen.SmuError, "0x20212210"):
-                cpu.set(83)
-        self.assertIn('"diagnostic_error": "read failed"', output.getvalue())
-
-    def test_invalid_command_reply_does_not_claim_applied(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x3F: 0x20212210})
-        with self.assertRaisesRegex(ryzen.SmuError, "Invalid SMU mailbox response.*after command"):
-            cpu.set(85)
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-        self.assertEqual(smn.sent[-1], (0x3F, 85))
-
-    def test_command_timeout_is_not_reported_as_a_firmware_rejection(self):
-        import io
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x3F: 0})
-        cpu.smu.diagnostics = True
-        output = io.StringIO()
-        with patch.object(ryzen, "TIMEOUT", 0), contextlib.redirect_stderr(output):
-            with self.assertRaisesRegex(ryzen.SmuError, "Timed out waiting for the SMU command response"):
-                cpu.set(83)
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-        self.assertEqual(smn.sent, [(0x02, 0), (0x3F, 83)])
-        records = [json.loads(line.removeprefix("SMU_DIAGNOSTIC "))
-                   for line in output.getvalue().splitlines()]
-        self.assertEqual(records[-1]["status"], "0x0")
-        self.assertTrue(records[-1]["sent"])
-
-    def test_explicit_firmware_failure_stays_a_rejection(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, statuses={0x3F: ryzen.FAILED})
-        with self.assertRaisesRegex(ryzen.SmuError, r"The SMU rejected the command \(failed\)"):
-            cpu.set(83)
-        self.assertEqual(cpu.applied, ryzen.DEFAULT_TEMP)
-        self.assertEqual(smn.sent[-1], (0x3F, 83))
-
-    def test_invalid_readback_response_disables_further_commands(self):
-        cpu = ryzen.CpuTemp()
-        smn = fake_smu(cpu, read_limit=96)
-        cpu.set(85)
-        smn.regs[cpu.family.rsp] = 0x20212210
-        self.assertIsNone(cpu.read_limit())
-        self.assertIn("Invalid SMU mailbox response", cpu.readback_error)
-        self.assertFalse(cpu.supported())
-        smn.regs[cpu.family.rsp] = ryzen.OK
-        n = len(smn.sent)
-        with self.assertRaises(ryzen.SmuAccessError):
-            cpu.set(80)
-        self.assertEqual(len(smn.sent), n)
-        self.assertEqual(cpu.applied, 85)
+    def test_no_userspace_smu_transport(self):
+        """The service reaches the SMU through the kernel bridge only; nothing opens PCI config space."""
+        import inspect
+        self.assertFalse({"Smu", "CpuTemp"} & set(dir(ryzen)))
+        src = inspect.getsource(ryzen)
+        for needle in ("/sys/bus/pci", "pwrite", "pread"):
+            self.assertNotIn(needle, src)
 
 
 class TestThermalDaemon(Base):
@@ -872,7 +595,8 @@ class TestThermalDaemon(Base):
         return d, None, clock
 
     def test_no_smu_access_and_target_edit(self):
-        with patch.object(ryzen, "CpuTemp", side_effect=AssertionError("SMU forbidden")):
+        # without the opt-in the bridge is never called either: the power limits do the work
+        with patch.object(ryzen.BridgeSmu, "send", side_effect=AssertionError("SMU forbidden")):
             d, _, clock = self._daemon(85)
             d.apply_mode(hw.BALANCED)
             self.assertTrue(fans.is_enabled("cpu"))
@@ -1358,6 +1082,15 @@ class TestSocket(Base):
             self.assertEqual(d.cfg.mode(hw.TURBO)["cpu_temp_floor_w"], 45)
             self.assertEqual(client.main(["cpufloor", "min"]), 0)
             self.assertIsNone(d.cfg.mode(hw.TURBO)["cpu_temp_floor_w"])
+            # a line that never ends is cut off at the limit, and the service keeps answering
+            import socket
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+                c.settimeout(10)
+                c.connect(sock)
+                c.sendall(b"x" * (daemon.MAX_REQUEST + 4096))
+                reply = c.makefile().readline()
+            self.assertEqual(json.loads(reply), {"ok": False, "error": "Request too large"})
+            self.assertEqual(client.call("status")["profile"], "performance")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -1393,14 +1126,49 @@ class TestSelfUpdate(unittest.TestCase):
 
             def __exit__(self, *a):
                 return False
-        return patch.object(update.urllib.request, "urlopen", lambda *a, **k: R(payload))
+        self.requested = []
+
+        def urlopen(req, *a, **k):
+            self.requested.append(req.full_url)
+            return R(payload)
+        return patch.object(update.urllib.request, "urlopen", urlopen)
+
+    def test_latest_is_a_published_release_with_the_helper(self):
+        from boreas import update
+        assets = [{"name": "boreas-gpu-engine"}, {"name": "boreas-gpu-engine.sha256"}]
+        ok = {"tag_name": "v9.0.0", "draft": False, "prerelease": False, "assets": assets}
+        with self._serve(json.dumps(ok).encode()):
+            self.assertEqual(update.fetch_latest(), "9.0.0")
+        self.assertEqual(self.requested, ["https://api.github.com/repos/Yusuf-Yonturk/boreas/releases/latest"])
+        # not installable yet, or not a release at all: nothing is offered
+        for bad in ({**ok, "assets": assets[:1]}, {**ok, "assets": []}, {**ok, "assets": None}, {**ok, "draft": True},
+                    {**ok, "prerelease": True}, {**ok, "tag_name": "nightly"}, {**ok, "tag_name": "v9/../x"},
+                    {**ok, "tag_name": None}, {"message": "API rate limit exceeded"}, [], "<html>"):
+            with self.subTest(bad=bad):
+                text = bad if isinstance(bad, str) else json.dumps(bad)
+                self.assertIsNone(update.parse_release(text))
+
+    def test_update_downloads_the_release_tag_not_the_branch(self):
+        import subprocess as sp
+        from boreas import update
+        good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'},
+                             prefix="boreas-9.0.0/")
+        with self._serve(good), patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"), \
+                patch.object(update.subprocess, "run", lambda cmd, **kw: sp.CompletedProcess(cmd, 0, "", "")):
+            update.run_update("9.0.0")
+            self.assertEqual(self.requested, ["https://codeload.github.com/Yusuf-Yonturk/boreas/tar.gz/refs/tags/v9.0.0"])
+            with self.assertRaises(ValueError):   # main moved on: a newer archive than the offered release
+                update.run_update("8.9.0")
+            for bad in ("", "main", "9.0.0/../../heads/main", None):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    update.run_update(bad)
 
     def test_download_extracts_project(self):
         from boreas import update
         good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'})
         d = tempfile.mkdtemp(prefix="boreas-upd-")
         with self._serve(good):
-            root = update.download_source(d)
+            root = update.download_source(d, "9.0.0")
         self.assertEqual(update.source_version(root), "9.0.0")
         self.assertTrue(os.access(os.path.join(root, "install.sh"), os.X_OK))
         shutil.rmtree(d)
@@ -1411,7 +1179,7 @@ class TestSelfUpdate(unittest.TestCase):
             d = tempfile.mkdtemp(prefix="boreas-upd-")
             with self._serve(self._tarball({"install.sh": b"", **bad})):
                 with self.assertRaises(ValueError):
-                    update.download_source(d)
+                    update.download_source(d, "9.0.0")
             self.assertFalse(os.path.exists(os.path.join(os.path.dirname(d), "evil.sh")))
             shutil.rmtree(d)
 
@@ -1464,3 +1232,163 @@ class TestSelfUpdate(unittest.TestCase):
         finally:
             os.umask(old)
         self.assertEqual(modes, [0o700])
+
+
+class TestRobustness(Base):
+    """A stored or received value must never keep the service from starting."""
+
+    def _write_config(self, text):
+        path = os.environ["BOREAS_CONFIG"]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_mux_only_device_boots_and_reaches_ultimate(self):
+        # gpu_mux_mode without dgpu_disable: Standard is the only non-Ultimate state
+        shutil.rmtree(ARM + "/dgpu_disable")
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+        d.reapply(at_boot=True)
+        self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.ULTIMATE}), {"reboot": True})
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
+        with self.assertRaises(ValueError):
+            gpu.set_eco(True)
+
+    def test_gpu_failure_at_boot_does_not_stop_the_service(self):
+        d = daemon.Daemon(config.Config())
+        d.cfg["gpu_target"] = gpu.ECO
+        for exc in (ValueError("no eco"), daemon.subprocess.TimeoutExpired("systemctl", 5)):
+            with patch.object(gpu, "set_eco", side_effect=exc):
+                d.reapply(at_boot=True)
+            self.assertIn("Could not change the GPU mode", d.notice)
+            with patch.object(gpu, "set_eco", side_effect=exc), self.assertRaises(type(exc)):
+                d.apply_gpu_target(gpu.ECO, explicit=True)
+
+    def test_postponed_eco_failure_does_not_skip_the_tick(self):
+        d = daemon.Daemon(config.Config())
+        d.ticks = daemon.ECO_RETRY_TICKS - 1
+        put(R + hw.PLATFORM_PROFILE, "performance")   # an external change the same tick must still see
+        with patch.object(d, "eco_pending", return_value=True), \
+                patch.object(gpu, "set_eco", side_effect=OSError(errno.EIO, "firmware")):
+            d.tick()
+        self.assertEqual(d.cfg["mode"], hw.TURBO)
+        self.assertTrue(d.eco_stuck)
+        self.assertIn("postponed Eco", d.notice)
+
+    def test_malformed_config_shapes_load(self):
+        shapes = (
+            "[]",
+            '{"modes": []}',
+            '{"modes": {"3": 5}}',
+            '{"modes": {"x": {"base": 0}}}',
+            '{"modes": {"3": {"base": 7}}, "mode_ac": 3}',
+            '{"modes": {"99": {"base": 1}}}',
+            '{"mode_ac": "abc", "mode": null, "mode_battery": 42}',
+            '{"aura": 5, "gpu_target": "warp", "gpu_backend": 3, "charge_limit": "x"}',
+            '{"aura": {"mode": "static", "color": [1, 2]}}',
+            '{"modes": {"0": {"base": 0, "name": 4, "fans_apply": true, "fan_cpu": "zz", "fan_gpu": [1, 2]}}}',
+            '{"modes": {"0": {"base": 2, "power_apply": true, "ppt": {"ppt_pl1_spl": [1]}, "nv": {"nv_temp_target": "8"}}}}',
+            '{"modes": {"3": {"base": [1]}}}',
+            '{"modes": {"' + "9" * 5000 + '": {"base": 1}}}',
+            '{"aura": {"mode": ["static"], "color": [1, 2, 3]}}',
+            '{"aura": {"mode": "static", "color": [1, 2, 3], "speed": []}}',
+            '{"aura": {"mode": {}, "color": [1, 2, 3]}, "gpu_target": [], "gpu_backend": {}}',
+        )
+        for text in shapes:
+            with self.subTest(text=text):
+                build_tree()
+                self._write_config(text)
+                d = daemon.Daemon(config.Config())
+                d.reapply(at_boot=True)
+                st = d.status()
+                self.assertTrue(all(d.cfg.has_mode(d.cfg[k]) for k in ("mode", "mode_ac", "mode_battery")))
+                self.assertEqual([m["id"] for m in st["modes"]][:3], config.MODE_ORDER)
+                self.assertEqual(d.cfg.mode(0)["base"], hw.BALANCED)
+                self.assertIsInstance(d.cfg.mode(0)["name"], str)
+                json.dumps(st)
+
+    def test_valid_stored_values_survive_the_load_checks(self):
+        c = config.Config()
+        new = c.add_mode(hw.TURBO)
+        c.mode(new).update(name="Oyun", fans_apply=True, fan_cpu=fans.DEFAULTS[hw.TURBO]["cpu"],
+                           power_apply=True, ppt={"ppt_pl1_spl": 90, "ppt_pl2_sppt": None},
+                           nv={"nv_temp_target": 80}, cpu_temp=85, cpu_temp_floor_w=45)
+        c["mode_ac"] = new
+        c["aura"] = {"mode": "breathe", "color": [255, 0, 10], "color2": None, "speed": "fast"}
+        c["gpu_target"], c["gpu_backend"], c["charge_limit"] = gpu.OPTIMIZED, "ebpf", 60
+        c.save()
+        c2 = config.Config()
+        self.assertEqual(c2.data, c.data)
+        self.assertEqual(c2.load_error, "")
+
+    def test_unreadable_config_is_kept_and_reported(self):
+        import glob
+        for old in glob.glob(os.environ["BOREAS_CONFIG"] + ".corrupt*"):   # left by the other tests
+            os.remove(old)
+        path = self._write_config('{"charge_limit": 60, "mo')
+        d = daemon.Daemon(config.Config())
+        self.assertIn("Settings file unreadable", d.notice)
+        self.assertEqual(get(path + ".corrupt"), '{"charge_limit": 60, "mo')
+        # like a first start: the values the hardware holds are adopted, not reset
+        self.assertEqual(d.cfg["charge_limit"], 80)
+        self.assertEqual(config.Config().load_error, "")
+        # a second unreadable file does not replace the copy kept from the first
+        self._write_config("second{")
+        config.Config()
+        self.assertEqual((get(path + ".corrupt"), get(path + ".corrupt.2")), ('{"charge_limit": 60, "mo', "second{"))
+
+    def test_update_mode_rejects_unknown_mode_and_bad_types(self):
+        d = daemon.Daemon(config.Config())
+        for cmd in ("update_mode", "get_mode"):
+            with self.assertRaises(ValueError):
+                d.handle({"cmd": cmd, "mode": 9, "data": {"name": "ghost"}})
+        self.assertEqual(d.cfg.mode(hw.BALANCED)["name"], "Balanced")
+        bad = ({"ppt": [1]}, {"ppt": {"ppt_pl1_spl": "9"}}, {"nv": {"nv_temp_target": [1]}}, {"name": 5},
+               {"fans_apply": "yes"}, {"fan_cpu": "zz"}, {"power_apply": 1}, [1])
+        for data in bad:
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                d.handle({"cmd": "update_mode", "mode": 0, "data": data})
+        self.assertEqual(d.cfg.mode(0), config.Config().mode(0))
+        d.reapply(at_boot=True)
+        ok = {"name": "Dengeli", "power_apply": True, "ppt": {"ppt_pl1_spl": 60, "ppt_pl2_sppt": None}, "fan_cpu": None}
+        self.assertEqual(d.handle({"cmd": "update_mode", "mode": 0, "data": ok})["mode"]["ppt"]["ppt_pl1_spl"], 60)
+
+    def test_default_curve_reads_the_firmware_curve_once(self):
+        d = daemon.Daemon(config.Config())
+        saved = fans.DEFAULTS[hw.TURBO]["gpu"]
+        d.handle({"cmd": "update_mode", "mode": 0, "data": {"fans_apply": True, "fan_gpu": saved, "cpu_temp": 85}})
+        c = R + "/sys/class/hwmon/hwmon9"
+        factory = [45, 50, 55, 60, 65, 70, 75, 80] + [fans.pwm_to_pct(i * 12) for i in range(1, 9)]
+        real_write = hw.write
+
+        def firmware(path, value):   # asus-wmi: the read sends the throttle policy again
+            real_write(path, value)
+            if path.endswith("_enable") and value == 3:
+                real_write(os.path.dirname(path) + "/pwm2_enable", 2)
+                real_write(hw.ARMOURY + "/ppt_pl1_spl/current_value", 55)
+        with patch.object(hw, "write", firmware):
+            self.assertEqual(d.handle({"cmd": "default_curve", "fan": "cpu"})["curve"], factory)
+        # the first read put the whole mode back: the other fan's curve and the target survive
+        self.assertEqual((get(c + "/pwm2_enable"), fans.read_curve("gpu"), d.cpu.target), ("1", fans.fix_curve(saved), 85))
+        with patch.object(d, "apply_mode", side_effect=AssertionError("the mode was applied again")), \
+                patch.object(fans, "factory_curve", side_effect=AssertionError("the firmware curve was read again")):
+            for _ in range(3):       # opening the page again asks for the same curve
+                self.assertEqual(d.handle({"cmd": "default_curve", "fan": "cpu"})["curve"], factory)
+            # a mode of another profile gets the built-in curve, and never a read of the wrong profile
+            self.assertEqual(d.handle({"cmd": "default_curve", "fan": "cpu", "mode": hw.TURBO})["curve"],
+                             fans.DEFAULTS[hw.TURBO]["cpu"])
+        with self.assertRaises(ValueError):
+            d.handle({"cmd": "default_curve", "fan": "turbine"})
+
+    def test_clamped_values_are_stored_as_written(self):
+        d = daemon.Daemon(config.Config())
+        d.handle({"cmd": "set_charge_limit", "value": 20})
+        d.handle({"cmd": "set_kbd", "brightness": 9})
+        self.assertEqual((d.cfg["charge_limit"], d.cfg["kbd_brightness"]), (40, 3))
+
+    def test_cli_rejects_non_numeric_arguments(self):
+        with patch.object(client, "call", return_value={"mode": 0}), contextlib.redirect_stderr(open(os.devnull, "w")):
+            for argv in (["charge", "abc"], ["kbd", "x"], ["cputemp", "hot"], ["cpufloor", "low"]):
+                with self.subTest(argv=argv):
+                    self.assertEqual(client.main(argv), 2)
