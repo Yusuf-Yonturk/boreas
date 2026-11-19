@@ -120,6 +120,12 @@ class TestFans(Base):
         # a last point that is hotter than the hold temperature keeps its own floor
         self.assertEqual(fans.fix_curve([30, 40, 50, 60, 70, 80, 90, 110] + [0] * 8)[-1], 48)
 
+    def test_unreadable_point_is_not_read_as_zero(self):
+        os.remove(R + "/sys/class/hwmon/hwmon9/pwm1_auto_point6_pwm")
+        self.assertIsNone(fans.read_curve("cpu"))
+        self.assertIsNone(fans.factory_curve("cpu"))
+        self.assertEqual(len(fans.read_curve("gpu")), 16)
+
     def test_write_curve_rejects_all_zero(self):
         with self.assertRaises(ValueError):
             fans.write_curve("cpu", [30, 40, 50, 60, 61, 62, 63, 64] + [0] * 8)
@@ -622,6 +628,23 @@ class TestThermalDaemon(Base):
             self.assertEqual(hw.get_attr("ppt_pl1_spl").current, 55)
             self.assertFalse(fans.is_enabled("cpu"))
 
+    def test_temperature_control_continues_while_the_service_lock_is_held(self):
+        # a GPU switch or a hung systemctl holds d.lock for tens of seconds
+        d, _, clock = self._daemon(85)
+        d.apply_mode(hw.BALANCED)
+        d.tick()
+        self.assertFalse(d.cover_stalled_tick())  # the watcher is ticking: nothing to cover
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        stepped = []
+        with d.lock:
+            clock[0] += 10
+            t = threading.Thread(target=lambda: stepped.append(d.cover_stalled_tick()))
+            t.start()
+            t.join(5)
+        self.assertEqual(stepped, [True])
+        self.assertLess(hw.get_attr("ppt_pl1_spl").current, 55)
+        self.assertFalse(d.cover_stalled_tick())  # one step per stall window, not two
+
     def test_inactive_edit_and_invalid_values(self):
         d, _, _ = self._daemon(None)
         for value in (50, 100, "85", True, 85.5):
@@ -885,6 +908,20 @@ class TestDaemon(Base):
         # The independent command path remains usable after the failed reapply.
         d.handle({"cmd": "set_charge_limit", "value": 70})
         self.assertEqual(d.status()["battery"]["limit"], 70)
+
+    def test_failed_mode_change_keeps_the_running_mode_whole(self):
+        d = self.make()
+        d.cfg.mode(hw.BALANCED)["cpu_temp"] = 85
+        d.apply_mode(hw.BALANCED)
+        self.assertEqual(d.cpu.target, 85)
+        error = OSError(errno.EOPNOTSUPP, "Operation not supported")
+        with patch.object(hw, "set_profile", side_effect=error):
+            with self.assertRaises(OSError):
+                d.handle({"cmd": "set_mode", "mode": hw.TURBO})
+        self.assertEqual(d.cfg["mode"], hw.BALANCED)
+        self.assertEqual(d.cfg[d.source_key()], hw.BALANCED)  # a later save does not store Turbo
+        self.assertEqual(d.cpu.target, 85)                    # the temperature target is still held
+        self.assertEqual(d.status()["cpu_temp"]["state"], "active")
 
     def test_requested_profile_failure_is_still_reported(self):
         d = self.make()

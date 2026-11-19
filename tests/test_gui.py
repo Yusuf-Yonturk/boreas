@@ -101,6 +101,35 @@ class TestPanels(unittest.TestCase):
             self.w._slider_action(int(A.QSlider.SliderPageStepSub.value), lambda: applied.append("click"))
         self.assertEqual(applied, ["key", "click"])
 
+    def test_apply_does_not_save_another_modes_curve_while_the_default_is_loading(self):
+        jobs, sent = [], []
+        curve = [30, 40, 50, 60, 70, 80, 90, 100, 10, 20, 30, 40, 50, 60, 70, 80]
+        default = [40, 50, 60, 65, 70, 80, 90, 100, 5, 10, 20, 30, 40, 50, 60, 70]
+        entry = {"fans_apply": True, "power_apply": False, "ppt": {}, "nv": {}}
+        self.w.status["fan_curves"] = ["cpu"]
+        with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
+            f = A.FansWindow(self.w)
+            jobs.clear()
+            f._select_mode(0)
+            jobs.pop()[1]({"mode": {**entry, "fan_cpu": curve}})
+            f._select_mode(1)
+            jobs.pop()[1]({"mode": {**entry, "fan_cpu": None}})  # no curve saved: the default is asked for
+            self.assertEqual(f.editors["cpu"].curve, curve)      # mode 0's curve is still drawn
+            self.w.call = lambda cmd, **kw: sent.append((cmd, kw)) or {}
+            f._apply()
+            jobs[-1][0]()
+            self.assertIsNone([kw for cmd, kw in sent if cmd == "update_mode"][-1]["data"]["fan_cpu"])
+            jobs[-2][1](A.DaemonError("timed out"))              # the default failed: said, and still not saved
+            self.assertIn("timed out", f.result.text())
+            f._apply()
+            jobs[-1][0]()
+            self.assertIsNone([kw for cmd, kw in sent if cmd == "update_mode"][-1]["data"]["fan_cpu"])
+            f._load_default("cpu")
+            jobs[-1][1]({"curve": default})
+            f._apply()
+            jobs[-1][0]()
+            self.assertEqual([kw for cmd, kw in sent if cmd == "update_mode"][-1]["data"]["fan_cpu"], default)
+
     def test_late_reply_of_another_mode_is_dropped_and_apply_waits(self):
         jobs, sent = [], []
         with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):

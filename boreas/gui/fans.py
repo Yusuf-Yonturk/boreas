@@ -202,10 +202,12 @@ class FansWindow(QWidget):
         # Fan curves
         fc, fl, _info = card(_("Fan curves"))
         self.editors: dict[str, CurveEditor] = {}
+        self.curve_ready: set[str] = set()  # fans whose editor shows a curve of the mode on screen
         fl.addSpacing(uv(10))
         for fan in main.status.get("fan_curves", []):
             ed = CurveEditor(_(TITLES[fan]), fan)
             ed.changed.connect(self._dirty)
+            ed.changed.connect(lambda fan=fan: self.curve_ready.add(fan))  # dragged: the user's own curve
             self.editors[fan] = ed
             fl.addWidget(ed)
         if not self.editors:
@@ -483,10 +485,12 @@ class FansWindow(QWidget):
                 self._sync_conflict_hint()
             if self.cpu_floor:
                 self.cpu_floor.slider.setValue(self.entry.get("cpu_temp_floor_w") or self.cpu_floor.slider.minimum())
+            self.curve_ready = set()
             for fan, ed in self.editors.items():
                 curve = self.entry.get(f"fan_{fan}")
                 if curve:
                     ed.set_curve(curve)
+                    self.curve_ready.add(fan)
                 else:
                     self._load_default(fan)
         finally:
@@ -503,11 +507,20 @@ class FansWindow(QWidget):
         return 0
 
     def _load_default(self, fan):
+        # Until the reply arrives the editor still draws the previous curve (another mode's,
+        # or the one being reset): Apply must not save that as this mode's curve.
         mode = self.mode_id
+        self.curve_ready.discard(fan)
 
         def done(r):
-            if not isinstance(r, Exception) and mode == self.mode_id:
-                self.editors[fan].set_curve(r["curve"])
+            if mode != self.mode_id:
+                return
+            if isinstance(r, Exception):
+                self.result_icon.hide()
+                self.result.setText(tr_msg(str(r)))
+                return
+            self.editors[fan].set_curve(r["curve"])
+            self.curve_ready.add(fan)
         run_async(lambda: self.main.call("default_curve", fan=fan, mode=mode), done)
 
     def _factory(self):
@@ -579,7 +592,8 @@ class FansWindow(QWidget):
             v = self.cpu_floor.slider.value()
             data["cpu_temp_floor_w"] = v if v > self.cpu_floor.slider.minimum() else None
         for fan, ed in self.editors.items():
-            data[f"fan_{fan}"] = ed.curve
+            # a curve that is not this mode's yet is saved as "none": the firmware curve
+            data[f"fan_{fan}"] = list(ed.curve) if fan in self.curve_ready else None
         mode = self.mode_id
         self._set_status("Applying…")
 

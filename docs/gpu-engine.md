@@ -24,7 +24,9 @@ rejected. Hotplug while already in Eco is NOT automatically handled in this firs
 version: choose Standard before attaching an external screen. No udev refresh
 and no automatic helper restart after a fault: the blocks drop with the helper
 and status shows the error until you choose a GPU mode again, which starts a
-fresh helper for that request only. Restart boreasd in Standard after changing
+fresh helper for that request only. If nvidia-powerd could not be started again
+after the fault, the fresh helper inherits that pending restore and every
+Standard request retries it. Restart boreasd in Standard after changing
 GPUs/drivers. No automatic fallback from eBPF to firmware.
 
 ## Helper source and reproducible build
@@ -53,11 +55,13 @@ the binary: there is no binary to forget to rebuild.
 3. otherwise it downloads the two release files for the version in `boreas/__init__.py`
    into a temporary directory and compares the sha256.
 
-A failed download or a checksum mismatch aborts the installation with nothing
-installed; the message names the `BOREAS_GPU_ENGINE` option. The in-app updater
-installs from the `main` source archive, so a version on `main` needs its
-`v<version>` Release before installed copies can update to it. Installing the
-helper never selects eBPF.
+A checksum mismatch aborts the installation with nothing installed. A failed
+download does not: the helper is optional, so Boreas is installed without it
+(a helper that is already installed stays), the eBPF backend is unavailable
+until `install.sh` runs again with network access, and the warning names the
+`BOREAS_GPU_ENGINE` option. The in-app updater installs the source archive of
+the release's tag, and only offers a release that carries the helper.
+Installing the helper never selects eBPF.
 
 To reproduce the CI build on x86_64 Linux with LLVM 23, a C toolchain and
 bpf-linker available in PATH:

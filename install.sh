@@ -41,16 +41,22 @@ else
     helper_src="$helper_tmp/boreas-gpu-engine"
     echo "Downloading the GPU helper for Boreas $version from $base"
     if ! fetch "$base/boreas-gpu-engine" "$helper_src" || ! fetch "$base/boreas-gpu-engine.sha256" "$helper_src.sha256"; then
-        echo "Could not download the GPU helper from $base" >&2
-        echo "Check the network, or install offline with BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine" >&2
-        exit 1
-    fi
-    expected=$(cut -d' ' -f1 "$helper_src.sha256")
-    actual=$(sha256sum "$helper_src" | cut -d' ' -f1)
-    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-        echo "GPU helper checksum mismatch: expected $expected, got $actual" >&2
-        echo "Nothing was installed. Retry, or install offline with BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine" >&2
-        exit 1
+        # The helper is optional: without it only the eBPF GPU backend is missing. A helper
+        # that is already installed is left as it is.
+        echo "Warning: could not download the GPU helper from $base" >&2
+        echo "         Boreas is installed without it; the eBPF GPU backend stays unavailable (or keeps the" >&2
+        echo "         helper already installed). Run install.sh again when the network is back, or use" >&2
+        echo "         BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine." >&2
+        helper_src=""
+    else
+        expected=$(cut -d' ' -f1 "$helper_src.sha256")
+        actual=$(sha256sum "$helper_src" | cut -d' ' -f1)
+        if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            # a helper that arrived but does not match is never skipped over
+            echo "GPU helper checksum mismatch: expected $expected, got $actual" >&2
+            echo "Nothing was installed. Retry, or install offline with BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine" >&2
+            exit 1
+        fi
     fi
 fi
 
@@ -153,15 +159,29 @@ fi
 # hardware (undo: uninstall.sh). asusd is a "static" unit and the asusctl udev rule
 # starts it on every boot; power-profiles-daemon is D-Bus activated by the desktop.
 # disable does not help, and through Conflicts= in boreasd they would stop us too.
+# What is masked here is recorded with its previous state, so uninstall.sh brings back only
+# that: a unit the user had masked or disabled before Boreas stays the way they left it.
+MASKED=/etc/boreas/masked-units
 systemctl daemon-reload
 for s in asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service; do
-    if [ -n "$(systemctl list-unit-files --no-legend "$s" 2>/dev/null)" ] &&
-       [ "$(systemctl is-enabled "$s" 2>/dev/null)" != masked ]; then
+    was=$(systemctl is-enabled "$s" 2>/dev/null || true)
+    if [ -n "$(systemctl list-unit-files --no-legend "$s" 2>/dev/null)" ] && [ "$was" != masked ]; then
         echo "masking: $s"
         systemctl mask --now "$s"
+        install -d /etc/boreas
+        grep -q "^$s " "$MASKED" 2>/dev/null || echo "$s $was" >> "$MASKED"
     fi
 done
 systemctl enable boreasd.service
 systemctl restart boreasd.service  # so the old code does not keep running after an update
 echo "Installed. UI: boreas   CLI: boreasctl status"
+# the socket is root:wheel 0660; without the group it is root-only and the UI cannot connect
+if ! getent group wheel >/dev/null 2>&1; then
+    echo "Warning: there is no 'wheel' group, so only root can reach the service (sudo boreasctl status)."
+    echo "         Create it and add your user: sudo groupadd wheel && sudo usermod -aG wheel <user>, then log in again."
+elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &&
+     ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx wheel; then
+    echo "Warning: $SUDO_USER is not in the 'wheel' group, so the UI and boreasctl cannot reach the service."
+    echo "         sudo usermod -aG wheel $SUDO_USER, then log in again."
+fi
 echo "If rog-control-center starts automatically, turn that off in its settings."

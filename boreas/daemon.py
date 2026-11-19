@@ -25,6 +25,8 @@ SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
 MAX_REQUEST = 1024 * 1024  # bytes per request line; the largest real one (a mode update) is a few kB
 POLL_SECONDS = 1.0
+# the watcher missed this many seconds of temperature control: another thread steps in
+THERMAL_STALL = 3 * POLL_SECONDS
 ECO_RETRY_TICKS = 15
 # High temperature log: 95 °C, or 5 °C above a lowered limit. Not every second:
 # two lines per episode (start + end, with the peak) go to the journal.
@@ -57,6 +59,11 @@ class Daemon:
         self.cfg = config or Config()
         gpu.gpu_engine.set_config_backend(self.cfg.data.get("gpu_backend"))
         self.lock = threading.RLock()
+        # The temperature controller has its own lock, always taken after self.lock: a GPU switch
+        # or a hung systemctl can hold self.lock for tens of seconds, and the CPU limit must not
+        # go unattended that long (see cover_stalled_tick).
+        self.cpu_lock = threading.RLock()
+        self.thermal_tick_at = time.monotonic()
         self.last_profile = hw.get_profile()
         self.last_ac = hw.ac_online()
         self.custom_power = False
@@ -108,18 +115,26 @@ class Daemon:
     def apply_mode(self, mode_id: int, write_profile: bool = True,
                    external_profile: bool = False) -> None:
         """Write order: profile → fans → power."""
-        with self.lock:
+        with self.lock, self.cpu_lock:
             if not self.cfg.has_mode(mode_id):
                 mode_id = hw.BALANCED
             m = self.cfg.mode(mode_id)
             profile = hw.PROFILE_BY_BASE[m["base"]]
 
+            running_target = self.cpu.target
             self.cpu.stop(restore=not external_profile)
             restore_error = self.cpu.error
             # the profile is written every time; even the same value makes the firmware
             # rerun the throttle policy and reset the custom power limits
             if write_profile:
-                hw.set_profile(profile)
+                try:
+                    hw.set_profile(profile)
+                except OSError:
+                    # Nothing of the new mode was written. The mode that keeps running gets its
+                    # temperature target back instead of silently losing it.
+                    if running_target is not None and self.cfg.has_mode(self.cfg["mode"]):
+                        self.apply_cpu_temp(running_target, self.cfg.mode(self.cfg["mode"]))
+                    raise
                 time.sleep(0.1)
             self.last_profile = hw.get_profile()
             self.cfg["mode"] = mode_id
@@ -230,19 +245,40 @@ class Daemon:
         m = m or {}
         user_caps = {n: int(v) for n, v in (m.get("ppt") or {}).items()
                      if v is not None and n in thermal.POWER_ATTRS} if m.get("power_apply") else {}
-        self.cpu.start(temp, floor_w=m.get("cpu_temp_floor_w"), user_caps=user_caps)
-        self.log_thermal_events()
-        self.report_thermal_error()
-        if not self.cpu.error:
-            if self.notice.startswith("Could not apply the CPU temperature limit:"):
-                self.notice = ""
-            self.thermal_notice_for = ""
-        return not self.cpu.error
+        with self.cpu_lock:
+            self.cpu.start(temp, floor_w=m.get("cpu_temp_floor_w"), user_caps=user_caps)
+            self.log_thermal_events()
+            self.report_thermal_error()
+            if not self.cpu.error:
+                if self.notice.startswith("Could not apply the CPU temperature limit:"):
+                    self.notice = ""
+                self.thermal_notice_for = ""
+            return not self.cpu.error
 
     def maintain_cpu_temp(self) -> None:
-        self.cpu.tick()
-        self.log_thermal_events()
-        self.report_thermal_error()
+        with self.cpu_lock:
+            self.cpu.tick()
+            self.thermal_tick_at = time.monotonic()
+            self.log_thermal_events()
+            self.report_thermal_error()
+
+    def cover_stalled_tick(self) -> bool:
+        """One controller step when the watcher has been kept waiting on self.lock.
+
+        Runs on its own thread and takes cpu_lock only. While the watcher ticks normally this
+        does nothing, so the controller is never stepped twice in a second."""
+        if time.monotonic() - self.thermal_tick_at < THERMAL_STALL:
+            return False
+        self.maintain_cpu_temp()
+        return True
+
+    def thermal_watch(self) -> None:
+        while True:
+            time.sleep(POLL_SECONDS)
+            try:
+                self.cover_stalled_tick()
+            except Exception:
+                log(traceback.format_exc())
 
     def _later(self, delay: float, fn) -> None:
         t = threading.Timer(delay, fn)
@@ -251,8 +287,14 @@ class Daemon:
 
     def set_mode(self, mode_id: int) -> None:
         with self.lock:
-            self.cfg[self.source_key()] = mode_id
-            self.apply_mode(mode_id)
+            key = self.source_key()
+            previous = self.cfg[key]
+            self.cfg[key] = mode_id
+            try:
+                self.apply_mode(mode_id)
+            except OSError:
+                self.cfg[key] = previous  # a later save must not store a mode that never ran
+                raise
             self.cfg.save()
 
     # ---- GPU -------------------------------------------------------------------
@@ -504,6 +546,10 @@ class Daemon:
             self.maintain_cpu_temp()
             self.track_temp()
 
+    def cpu_temp_status(self) -> dict | None:
+        with self.cpu_lock:
+            return self.cpu.status() if self.cpu.supported() or self.cpu.error else None
+
     def track_temp(self) -> None:
         t = hw.temps().get("cpu")
         if t is None:
@@ -564,7 +610,7 @@ class Daemon:
             "cpu_boost_supported": hw.cpu_boost_supported(),
             "cpu_governors": hw.cpu_governor_choices(),
             "cpu_policy": {"governor": hw.cpu_governor(), "epp": hw.cpu_epp(), "boost": hw.cpu_boost_enabled()},
-            "cpu_temp": (self.cpu.status() if self.cpu.supported() or self.cpu.error else None),
+            "cpu_temp": self.cpu_temp_status(),
             "temp_peak": self.temp_peak,
             "notice": self.notice,
         }
@@ -749,6 +795,7 @@ def main() -> None:
         log(f"group '{SOCKET_GROUP}' not found, socket is root-only")
 
     threading.Thread(target=d.watch, daemon=True).start()
+    threading.Thread(target=d.thermal_watch, daemon=True).start()
     sd_notify("READY=1")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:

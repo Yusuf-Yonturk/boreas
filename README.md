@@ -83,7 +83,9 @@ one-time 100 % charge, boot sound (`boot_sound`), USB-C charging mode, Aura seco
 Requirements: a systemd-based distribution, a kernel with the asus-wmi / asus-armoury drivers,
 Python 3.11+, PySide6 (for the UI), `kscreen-doctor` for refresh-rate control on KDE, and Qt's Wayland
 plugin for a sharp UI on Wayland. Install Python and PySide6 with your distribution's package manager
-(on Arch / CachyOS: `sudo pacman -S --needed python pyside6 qt6-wayland`).
+(on Arch / CachyOS: `sudo pacman -S --needed python pyside6 qt6-wayland`). Your user must be in the
+`wheel` group to use the UI and `boreasctl`: the service socket is open to root and that group only.
+Distributions without a `wheel` group (Debian, Ubuntu) need it created first; the installer warns about both.
 
 ```bash
 git clone https://github.com/Yusuf-Yonturk/boreas.git
@@ -93,7 +95,8 @@ sudo ./install.sh
 
 The optional eBPF GPU helper (`boreas-gpu-engine`) is not in the repository: CI builds it from
 the Rust source and attaches it to the GitHub Release of each version, and the installer downloads
-it for the version being installed and checks its sha256 before writing anything. Offline, or to
+it for the version being installed and checks its sha256 before writing anything. If the download
+fails, Boreas is installed without the helper and only the eBPF backend is unavailable. Offline, or to
 install your own build, point the installer at a file: `sudo BOREAS_GPU_ENGINE=/path/to/boreas-gpu-engine ./install.sh`.
 See [docs/gpu-engine.md](docs/gpu-engine.md).
 
@@ -108,14 +111,17 @@ the window. Chinese and Japanese need `noto-fonts-cjk`; Hindi and Arabic need `n
   every boot and power-profiles-daemon by the desktop over D-Bus.
 - The desktop's own power-profile menu (KDE battery applet, GNOME quick settings) therefore shows
   nothing; Boreas owns the mode. To hand control back temporarily:
-  `sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`.
+  `sudo systemctl stop boreasd && sudo systemctl unmask power-profiles-daemon && sudo systemctl start power-profiles-daemon`.
+  To give it back to Boreas (both must not run together, and the mask does not return by itself):
+  `sudo systemctl mask --now power-profiles-daemon && sudo systemctl start boreasd`.
 - On first start the service adopts the current charge limit, keyboard brightness, mode and GPU mode;
   it writes nothing to the hardware.
 - `boreasd` runs as root and listens on a local socket (`/run/boreas.sock`, `wheel` group). The
   service makes no network connections. The tray app asks GitHub for the latest release (it can be
   turned off, see [Updating](#updating)), and the installer downloads the GPU helper from this
   repository's GitHub Release.
-- `sudo ./uninstall.sh` removes the masks and brings asusd / supergfxd / power-profiles-daemon back.
+- `sudo ./uninstall.sh` removes the masks the installer added and brings those services back. A service
+  you had masked or disabled yourself before installing Boreas stays that way.
 
 If KDE → Settings → Power Management uses different power profiles for AC and battery, it conflicts
 with Boreas's "auto mode on battery / AC"; turn one of them off.
