@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
-from ..fans import POINTS, fix_curve, safety_floor
+from ..fans import POINTS, fix_curve, point_floor
 from ..i18n import _, mode_name, tr_msg
 from .common import Hold, T, fs, run_async, u, uv
 from .widgets import (CheckDot, Segmented, Switch, ValueSlider, card, footer_bar, hline, row,  # noqa: F401
@@ -134,7 +134,7 @@ class CurveEditor(QWidget):
         lo_t = self.curve[i - 1] if i > 0 else T_MIN
         hi_t = self.curve[i + 1] if i < POINTS - 1 else T_MAX
         self.curve[i] = max(lo_t, min(hi_t, t))
-        self.curve[POINTS + i] = max(safety_floor(self.curve[i]), min(100, s))
+        self.curve[POINTS + i] = max(point_floor(i, self.curve[i]), min(100, s))
         # keep speeds monotonic: push the points on the right up and the ones on the left down
         for j in range(i + 1, POINTS):
             self.curve[POINTS + j] = max(self.curve[POINTS + j], self.curve[POINTS + i])

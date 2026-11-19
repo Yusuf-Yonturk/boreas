@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 from dataclasses import dataclass
 
 ROOT = os.environ.get("BOREAS_SYSFS_ROOT", "")
@@ -91,6 +92,9 @@ def _armoury_dir(name: str) -> str:
 
 
 def attr_path(name: str) -> str | None:
+    # the name becomes a path component of a file root writes to
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        return None
     if exists(_armoury_dir(name) + "/current_value"):
         return _armoury_dir(name) + "/current_value"
     legacy = f"{NB_WMI}/{NB_WMI_NAMES.get(name, name)}"

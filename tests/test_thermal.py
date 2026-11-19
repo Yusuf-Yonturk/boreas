@@ -99,6 +99,14 @@ class TestController(unittest.TestCase):
         self.step(86, 30)
         self.assertEqual(self.c.state, "limited")
 
+    def test_hot_never_raises_a_cap_that_sits_below_the_floor(self):
+        self.c.start(85, floor_w=40)
+        self.attrs[self.PL1].current = 25  # the firmware (or another tool) lowered PL1 under the floor
+        self.step(90, 5)
+        self.assertEqual(self.attrs[self.PL1].current, 25)
+        self.assertNotIn((self.PL1, 40), self.writes)
+        self.assertEqual(self.c.error, "")
+
     def test_pl1_floor_clamps_requests_and_marks_limited(self):
         self.c.start(85, floor_w=40)
         self.step(95, 20)

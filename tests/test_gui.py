@@ -91,6 +91,16 @@ class TestPanels(unittest.TestCase):
         self.w.quitting = True
         self.w.tray.hide()
 
+    def test_slider_drag_does_not_write_on_every_step(self):
+        # actionTriggered carries a plain int; a drag (SliderMove) is applied by sliderReleased only
+        applied = []
+        with patch.object(A.QTimer, "singleShot", lambda ms, fn: fn()):
+            self.w._slider_action(int(A.QSlider.SliderMove.value), lambda: applied.append("move"))
+            self.w._slider_action(A.QSlider.SliderMove, lambda: applied.append("move"))
+            self.w._slider_action(int(A.QSlider.SliderSingleStepAdd.value), lambda: applied.append("key"))
+            self.w._slider_action(int(A.QSlider.SliderPageStepSub.value), lambda: applied.append("click"))
+        self.assertEqual(applied, ["key", "click"])
+
     def test_late_reply_of_another_mode_is_dropped_and_apply_waits(self):
         jobs, sent = [], []
         with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):

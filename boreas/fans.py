@@ -46,6 +46,16 @@ def safety_floor(temp: int) -> int:
     return max(0, math.ceil((temp - 70) * 1.2))
 
 
+# The firmware holds the last point's speed for every temperature above it, so the last point
+# answers for the whole range up to here, wherever the user put it.
+HOLD_TEMP = 100
+
+
+def point_floor(index: int, temp: int) -> int:
+    """The lowest speed allowed for curve point `index` placed at `temp`."""
+    return safety_floor(max(temp, HOLD_TEMP) if index == POINTS - 1 else temp)
+
+
 def fix_curve(curve: list[int]) -> list[int]:
     """Makes temperatures and speeds monotonically increasing (the kernel rejects a decreasing curve)."""
     if len(curve) != 2 * POINTS:
@@ -55,7 +65,7 @@ def fix_curve(curve: list[int]) -> list[int]:
     for i in range(1, POINTS):
         if t[i] < t[i - 1]:
             t[i] = t[i - 1]
-    s = [max(v, safety_floor(t[i])) for i, v in enumerate(s)]
+    s = [max(v, point_floor(i, t[i])) for i, v in enumerate(s)]
     for i in range(1, POINTS):
         if s[i] < s[i - 1]:
             s[i] = s[i - 1]
@@ -100,10 +110,10 @@ def write_curve(fan: str, curve: list[int]) -> None:
     n = FANS[fan]
     if not d:
         raise ValueError("This device doesn't support custom fan curves")
-    curve = fix_curve(curve)
-    if not any(curve[POINTS:]):
+    if len(curve) == 2 * POINTS and not any(int(x) for x in curve[POINTS:]):
         # an all-zero curve is never written
         raise ValueError("The fan curve is all zeros")
+    curve = fix_curve(curve)
     for i in range(POINTS):
         hw.write(f"{d}/pwm{n}_auto_point{i + 1}_temp", curve[i])
         hw.write(f"{d}/pwm{n}_auto_point{i + 1}_pwm", pct_to_pwm(curve[POINTS + i]))
