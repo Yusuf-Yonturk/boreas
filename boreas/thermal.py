@@ -410,6 +410,8 @@ class Controller:
             a = attrs[name]
             old = a.current
             value = max(self.floor(name, a), min(self.ceilings[name], old + delta))
+            if delta < 0:
+                value = min(old, value)  # a cap already under the floor is never raised while hot
             if value == old:
                 continue
             # Record intent even if the write partially succeeds then raises.

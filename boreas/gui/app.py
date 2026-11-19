@@ -574,7 +574,8 @@ class MainWindow(QWidget):
 
     def _slider_action(self, action, apply):
         # clicks, the wheel and arrow keys do not emit sliderReleased; the value changes after this signal
-        if action != QSlider.SliderMove:
+        # the signal carries a plain int, which never equals the enum member
+        if QSlider.SliderAction(action) != QSlider.SliderMove:
             QTimer.singleShot(0, apply)
 
     # ---- pages ----

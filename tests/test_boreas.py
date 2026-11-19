@@ -111,6 +111,15 @@ class TestFans(Base):
         c = fans.fix_curve([30, 40, 50, 60, 70, 80, 90, 100, 0, 0, 0, 0, 0, 0, 0, 0])
         self.assertEqual(c[8:], [0, 0, 0, 0, 0, 12, 24, 36])
 
+    def test_fix_curve_last_point_covers_everything_above_it(self):
+        # the firmware holds the last speed above the last point, so squeezing every point
+        # under 70°C must not switch the safety floor off
+        c = fans.fix_curve([20, 25, 30, 35, 40, 45, 50, 60, 2, 2, 2, 2, 2, 2, 2, 2])
+        self.assertEqual(c[:8], [20, 25, 30, 35, 40, 45, 50, 60])
+        self.assertEqual(c[8:], [2, 2, 2, 2, 2, 2, 2, fans.safety_floor(fans.HOLD_TEMP)])
+        # a last point that is hotter than the hold temperature keeps its own floor
+        self.assertEqual(fans.fix_curve([30, 40, 50, 60, 70, 80, 90, 110] + [0] * 8)[-1], 48)
+
     def test_write_curve_rejects_all_zero(self):
         with self.assertRaises(ValueError):
             fans.write_curve("cpu", [30, 40, 50, 60, 61, 62, 63, 64] + [0] * 8)
@@ -981,6 +990,53 @@ class TestDaemon(Base):
         self.assertEqual(get(R + "/sys/class/power_supply/BAT0/charge_control_end_threshold"), "60")
         self.assertEqual(get(R + hw.KBD_LED + "/brightness"), "1")
         self.assertEqual(get(f"{ARM}/panel_overdrive/current_value"), "0")
+
+    def test_update_mode_rejects_unknown_power_attribute_names(self):
+        # the name becomes part of a path root writes to: only the known limits are accepted
+        victim = R + "/etc/victim"
+        put(victim, "IMPORTANT")
+        d = self.make()
+        for key, name in (("ppt", "../../../../etc/victim"), ("nv", "../../../../etc/victim"),
+                          ("ppt", "dgpu_disable"), ("nv", "ppt_pl1_spl")):
+            with self.assertRaisesRegex(ValueError, key):
+                d.handle({"cmd": "update_mode", "mode": 0, "data": {"power_apply": True, key: {name: 0}}})
+        self.assertEqual(get(victim), "IMPORTANT")
+        self.assertEqual(d.cfg.mode(0)["ppt"].get("../../../../etc/victim"), None)
+        d.handle({"cmd": "update_mode", "mode": 0, "data": {"ppt": {"ppt_pl1_spl": 60}, "nv": {"nv_temp_target": 80}}})
+        self.assertEqual(d.cfg.mode(0)["ppt"], {"ppt_pl1_spl": 60})
+
+    def test_stored_unknown_power_attribute_names_are_dropped(self):
+        entry = config.sanitize_mode({"base": 0, "ppt": {"../../../../etc/victim": 0, "ppt_pl1_spl": 60},
+                                      "nv": {"x/y": 1, "nv_dynamic_boost": 10}})
+        self.assertEqual(entry["ppt"], {"ppt_pl1_spl": 60})
+        self.assertEqual(entry["nv"], {"nv_dynamic_boost": 10})
+
+    def test_attr_names_cannot_leave_the_attribute_folders(self):
+        victim = R + "/etc/victim"
+        put(victim, "IMPORTANT")
+        for name in ("../../../../etc/victim", "a/b", "..", ""):
+            self.assertIsNone(hw.attr_path(name))
+            with self.assertRaises(ValueError):
+                hw.set_attr(name, 5)
+        self.assertEqual(get(victim), "IMPORTANT")
+
+    def test_factory_read_does_not_switch_off_a_curve_just_written(self):
+        # asus-wmi: pwmN_enable=3 sends the throttle policy again, which switches every custom curve off
+        real_write = hw.write
+
+        def kernel_write(path, value):
+            real_write(path, value)
+            if path.endswith("_enable") and int(value) == 3:
+                for n in (1, 2):
+                    real_write(f"{os.path.dirname(path)}/pwm{n}_enable", 2)
+
+        d = self.make()
+        m = d.cfg.mode(hw.BALANCED)
+        m.update(fans_apply=True, cpu_temp=85, fan_cpu=list(fans.DEFAULTS[hw.BALANCED]["cpu"]), fan_gpu=None)
+        with patch.object(hw, "write", side_effect=kernel_write):
+            d.apply_mode(hw.BALANCED)
+        self.assertTrue(fans.is_enabled("cpu"))
+        self.assertTrue(fans.is_enabled("gpu"))
 
     def test_update_mode_fixes_curve(self):
         d = self.make()

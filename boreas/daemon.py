@@ -131,9 +131,19 @@ class Daemon:
             if thermal_on and hw.fan_required() and not fans.available_fans():
                 self.cpu.fail("Required ASUS fan curve interface unavailable")
                 thermal_ready = False
+            # Reading a firmware curve (enable=3) makes asus-wmi send the throttle policy again,
+            # which switches every custom curve off: all of them are read before any is written.
+            needs_factory = force_fans or (thermal_on and hw.fan_required())
+            factory = {}
+            for fan in fans.available_fans():
+                if needs_factory and not m.get(f"fan_{fan}"):
+                    try:
+                        factory[fan] = self.factory_curves.get((m["base"], fan)) or fans.factory_curve(fan)
+                    except OSError:
+                        pass  # apply_fan reads again and reports the failure
             for fan in fans.available_fans():
                 try:
-                    self.apply_fan(fan, m)
+                    self.apply_fan(fan, m, factory.get(fan))
                 except (OSError, ValueError) as e:
                     self.set_notice(f"Could not write the {fan} fan curve: {e}")
                     if thermal_on and hw.fan_required():

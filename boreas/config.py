@@ -48,6 +48,10 @@ def _curve(v) -> list | None:
     return v if isinstance(v, list) and len(v) == 16 and all(_int(x) for x in v) else None
 
 
+# the only names a mode may carry: each one becomes a sysfs file the service writes as root
+POWER_NAMES = {"ppt": hw.PPT_ATTRS, "nv": hw.NV_ATTRS}
+
+
 def check_mode_fields(data) -> None:
     """Type checks for mode fields arriving over the socket; ValueError names the field.
 
@@ -60,7 +64,8 @@ def check_mode_fields(data) -> None:
         elif key in ("fans_apply", "power_apply"):
             ok = isinstance(value, bool)
         elif key in ("ppt", "nv"):
-            ok = isinstance(value, dict) and all(v is None or _int(v) for v in value.values())
+            ok = isinstance(value, dict) and all(k in POWER_NAMES[key] and (v is None or _int(v))
+                                                 for k, v in value.items())
         elif key.startswith("fan_"):
             ok = value is None or isinstance(value, list)
         else:
@@ -85,7 +90,7 @@ def sanitize_mode(entry: dict) -> dict:
     entry["cpu_temp_floor_w"] = f if type(f) is int and f > 0 else None
     for key in ("ppt", "nv"):
         values = entry.get(key) if isinstance(entry.get(key), dict) else {}
-        entry[key] = {k: v for k, v in values.items() if v is None or _int(v)}
+        entry[key] = {k: v for k, v in values.items() if k in POWER_NAMES[key] and (v is None or _int(v))}
     for key in ("fan_cpu", "fan_gpu", "fan_mid"):
         entry[key] = _curve(entry.get(key))
     for key in ("fans_apply", "power_apply"):
