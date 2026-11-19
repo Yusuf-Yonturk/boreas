@@ -18,18 +18,7 @@ The window layout is modelled on [G-Helper](https://github.com/seerge/g-helper) 
 familiar if you come from Windows. No code is shared: G-Helper is a Windows program, Boreas is written from
 scratch in Python and Qt. Boreas is Linux only; on Windows, use G-Helper.
 
-![Boreas: light theme, dark theme, fans and power page](docs/screenshots.png)
-
-## Tested hardware
-
-| Model | Distribution, kernel | Status |
-|---|---|---|
-| ROG Strix G713PV | CachyOS, kernel 7.3 (asus-armoury) | developed and tested here |
-
-Boreas is built on the kernel's standard asus-wmi / asus-armoury interfaces, so it is not written for one
-model. Cards for hardware it does not find (GPU modes, panel overdrive, refresh rate) stay hidden. Your
-model can be the next row: run Boreas, then [open an issue](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose)
-with the output of `boreasctl status` and `uname -r`, whether everything worked or not.
+![Boreas: main window in the light theme, fan curves and power limits in the dark theme](docs/screenshots.png)
 
 ## Why Boreas
 
@@ -50,6 +39,17 @@ power limits and temperature target, choose Boreas. If you need the AniMe Matrix
 [asusctl](https://github.com/OpenGamingCollective/asusctl), the asus-linux.org project's own tool. They
 write the same kernel files, so only one can run at a time; the installer masks asusd and supergfxd and the
 uninstaller brings them back.
+
+## Tested hardware
+
+| Model | Distribution, kernel | Status |
+|---|---|---|
+| ROG Strix G713PV | CachyOS, kernel 7.3 (asus-armoury) | developed and tested here |
+
+Boreas is built on the kernel's standard asus-wmi / asus-armoury interfaces, so it is not written for one
+model. Cards for hardware it does not find (GPU modes, panel overdrive, refresh rate) stay hidden. Your
+model can be the next row: run Boreas, then [open an issue](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose)
+with the output of `boreasctl status` and `uname -r`, whether everything worked or not.
 
 ## Features
 

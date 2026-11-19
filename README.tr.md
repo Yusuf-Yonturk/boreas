@@ -19,19 +19,7 @@ Pencere düzeni bilerek [G-Helper](https://github.com/seerge/g-helper) örnek al
 gelenlere tanıdık gelsin diye. Ortak kod yoktur: G-Helper bir Windows programıdır, Boreas Python ve Qt ile
 sıfırdan yazıldı. Boreas yalnız Linux içindir; Windows'ta G-Helper kullanın.
 
-![Boreas: açık tema, koyu tema, fanlar ve güç sayfası](docs/screenshots.png)
-
-## Denenen donanım
-
-| Model | Dağıtım, çekirdek | Durum |
-|---|---|---|
-| ROG Strix G713PV | CachyOS, kernel 7.3 (asus-armoury) | burada geliştirildi ve denendi |
-
-Boreas çekirdeğin standart asus-wmi / asus-armoury arayüzleri üzerine kuruludur, tek bir model için
-yazılmadı. Bulamadığı donanımın kartları (GPU modları, panel overdrive, yenileme hızı) gizli kalır.
-Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her şey çalışsa da çalışmasa da
-`boreasctl status` ve `uname -r` çıktısıyla
-[bir issue açın](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose).
+![Boreas: açık temada ana pencere, koyu temada fan eğrileri ve güç limitleri](docs/screenshots.png)
 
 ## Neden Boreas
 
@@ -52,6 +40,18 @@ ve sıcaklık hedefini taşıdığı tek bir pencere, Boreas'ı seçin. AniMe Ma
 asus-linux.org projesinin kendi aracı olan [asusctl](https://github.com/OpenGamingCollective/asusctl)'i
 seçin. İkisi aynı çekirdek dosyalarına yazar, aynı anda yalnız biri çalışabilir; kurulum asusd ve
 supergfxd'yi maskeler, kaldırma betiği geri getirir.
+
+## Denenen donanım
+
+| Model | Dağıtım, çekirdek | Durum |
+|---|---|---|
+| ROG Strix G713PV | CachyOS, kernel 7.3 (asus-armoury) | burada geliştirildi ve denendi |
+
+Boreas çekirdeğin standart asus-wmi / asus-armoury arayüzleri üzerine kuruludur, tek bir model için
+yazılmadı. Bulamadığı donanımın kartları (GPU modları, panel overdrive, yenileme hızı) gizli kalır.
+Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her şey çalışsa da çalışmasa da
+`boreasctl status` ve `uname -r` çıktısıyla
+[bir issue açın](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose).
 
 ## Özellikler
 
