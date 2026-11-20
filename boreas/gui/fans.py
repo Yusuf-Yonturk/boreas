@@ -37,6 +37,7 @@ class CurveEditor(QWidget):
 
     def __init__(self, title: str, role: str, parent=None):
         super().__init__(parent)
+        self._fresh_drag = False
         self.title = title
         self.role = role
         self.curve = [30, 40, 50, 60, 70, 80, 90, 100, 0, 10, 20, 30, 40, 50, 60, 70]
@@ -121,6 +122,7 @@ class CurveEditor(QWidget):
 
     def mousePressEvent(self, e):
         self.drag = self._nearest(e.position())
+        self._fresh_drag = True
         self.update()
 
     def mouseMoveEvent(self, e):
@@ -131,6 +133,15 @@ class CurveEditor(QWidget):
         t = round(T_MIN + (pos.x() - a.left()) / a.width() * (T_MAX - T_MIN))
         s = round((a.bottom() - pos.y()) / a.height() * 100)
         i = self.drag
+        if self._fresh_drag:
+            # points lying on top of each other: the press cannot tell them apart, the direction
+            # can. The rightmost one moves right and the leftmost one moves left; any other
+            # choice is pinned by its neighbours and the pile could never be pulled apart.
+            self._fresh_drag = False
+            pile = [j for j in range(POINTS)
+                    if (self.curve[j], self.curve[POINTS + j]) == (self.curve[i], self.curve[POINTS + i])]
+            if len(pile) > 1 and t != self.curve[i]:
+                i = self.drag = pile[-1] if t > self.curve[i] else pile[0]
         lo_t = self.curve[i - 1] if i > 0 else T_MIN
         hi_t = self.curve[i + 1] if i < POINTS - 1 else T_MAX
         self.curve[i] = max(lo_t, min(hi_t, t))
@@ -201,6 +212,8 @@ class FansWindow(QWidget):
 
         # Fan curves
         fc, fl, _info = card(_("Fan curves"))
+        self.edits = 0        # counts changes, so a reply can tell whether it is still current
+        self.unsaved = False
         self.editors: dict[str, CurveEditor] = {}
         self.curve_ready: set[str] = set()  # fans whose editor shows a curve of the mode on screen
         fl.addSpacing(uv(10))
@@ -425,7 +438,15 @@ class FansWindow(QWidget):
 
     def _dirty(self, *_args):
         if not self._loading:
+            self.edits += 1
+            self.unsaved = True
             self._set_status("Not saved")
+
+    def follow_mode(self, mode_id) -> None:
+        """The active mode changed somewhere else (tray, main page, Fn key): show that mode, so
+        Apply does not quietly switch back. A page with unsaved edits is left alone."""
+        if mode_id != self.mode_id and mode_id in self.mode_names and not self.unsaved:
+            self._select_mode(mode_id)
 
     # ---- modes ----
 
@@ -495,6 +516,7 @@ class FansWindow(QWidget):
                     self._load_default(fan)
         finally:
             self._loading = False
+        self.unsaved = False
         self._set_status("Saved")
 
     def _fallback(self, name: str) -> int:
@@ -595,6 +617,7 @@ class FansWindow(QWidget):
             # a curve that is not this mode's yet is saved as "none": the firmware curve
             data[f"fan_{fan}"] = list(ed.curve) if fan in self.curve_ready else None
         mode = self.mode_id
+        sent = self.edits
         self._set_status("Applying…")
 
         def apply_and_activate():
@@ -603,6 +626,11 @@ class FansWindow(QWidget):
             return self.main.call("update_mode", mode=mode, data=data)
 
         def done(r):
-            self._set_status(str(r) if isinstance(r, Exception) else "Saved")
+            if isinstance(r, Exception):
+                self._set_status(str(r))
+            elif mode == self.mode_id:
+                # something changed while the request was on its way: that part is not saved
+                self.unsaved = self.edits != sent
+                self._set_status("Not saved" if self.unsaved else "Saved")
             self.main.refresh()
         run_async(apply_and_activate, done)

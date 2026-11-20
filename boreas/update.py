@@ -123,6 +123,9 @@ def source_version(root: str) -> str | None:
         return parse_version(f.read())
 
 
+INSTALL_WRAPPER = '/bin/sh "$0" || exit 1'
+
+
 def run_update(expected: str) -> str:
     """Downloads and installs the release `expected` with pkexec; returns the installed version.
     UpdateCancelled if the password dialog is closed."""
@@ -136,7 +139,9 @@ def run_update(expected: str) -> str:
         got = source_version(root)
         if not got or version_key(got) != version_key(expected):
             raise ValueError(f"Unexpected version in the update archive: {got}")
-        r = subprocess.run([pkexec, "/bin/sh", os.path.join(root, "install.sh")],
+        # 126 and 127 mean "cancelled" and "not authorized" only when pkexec itself says so:
+        # the installer's own exit status is folded into 1
+        r = subprocess.run([pkexec, "/bin/sh", "-c", INSTALL_WRAPPER, os.path.join(root, "install.sh")],
                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600)
         if r.returncode == PKEXEC_CANCEL:
             raise UpdateCancelled()

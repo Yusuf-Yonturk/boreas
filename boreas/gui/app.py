@@ -127,6 +127,10 @@ def _combo(width: int) -> QComboBox:
     return cb
 
 
+SCREEN_TRIES = 5
+SCREEN_RETRY_MS = 4000
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -148,6 +152,7 @@ class MainWindow(QWidget):
         # (so a stale status in flight does not make the button jump back): key -> (value, sequence no)
         self.hold: dict = {}
         self._hold_seq = 0
+        self._seen_mode = None  # the last mode a status reported, to notice a change made elsewhere
         self.error = ""         # error of the last action (cleared on success)
         self.status_error = ""  # the service cannot be reached
         self.update_version = ""  # version number if GitHub has a newer version
@@ -403,6 +408,7 @@ class MainWindow(QWidget):
         self._fan_icon()
         self._theme_icon()
         self._fit_header()
+        self._screen_tries = 0
         self._build_screen_buttons()
         self.refresh()
 
@@ -702,6 +708,9 @@ class MainWindow(QWidget):
             extra.append(_("limited"))
         if self.fans_window is not None:
             self.fans_window.render_cpu_temp(s.get("cpu_temp"), s["mode"])
+            if s["mode"] != self._seen_mode and self._seen_mode is not None:
+                self.fans_window.follow_mode(s["mode"])
+        self._seen_mode = s["mode"]
         self.mode_label.setText(f"{mode_name(cur)} ({saved})" + (" · " + ", ".join(extra) if extra else ""))
 
         g = s.get("gpu")
@@ -818,6 +827,11 @@ class MainWindow(QWidget):
 
     def _build_screen_buttons(self):
         info = screen.internal()
+        if info is None and self._screen_tries < SCREEN_TRIES:
+            # started with the session: KScreen may not answer yet. Without another look the
+            # refresh-rate row would stay hidden until the app is restarted.
+            self._screen_tries += 1
+            QTimer.singleShot(SCREEN_RETRY_MS, self._build_screen_buttons)
         self.screen_info.setText(f"{info['name']} · {info['current']} Hz" if info else "")
         rates = sorted(info["rates"]) if info else []
         items = []

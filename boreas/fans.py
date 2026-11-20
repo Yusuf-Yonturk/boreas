@@ -34,7 +34,9 @@ DEFAULTS = {
 
 
 def pct_to_pwm(pct: int) -> int:
-    return round(max(0, min(100, pct)) * 255 / 100)
+    # rounded up: the kernel turns pwm back into a percentage by cutting the fraction off, so a
+    # value rounded to the nearest reaches the firmware one percent low (12 % became 11 %)
+    return math.ceil(max(0, min(100, pct)) * 255 / 100)
 
 
 def pwm_to_pct(pwm: int) -> int:

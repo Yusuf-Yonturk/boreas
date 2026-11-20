@@ -187,7 +187,11 @@ class Engine:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait()
+                try:
+                    # a helper stuck in the kernel takes the signal only when it returns
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    print("GPU engine: the helper did not exit after SIGKILL", file=sys.stderr, flush=True)
             if self.process.stdout and not self.process.stdout.closed:
                 self.process.stdout.close()
         # Keep the failed child reference: no implicit restart / reblock after error.
@@ -216,6 +220,24 @@ def get():
     if _instance is None:
         _instance = Engine()
     return _instance
+
+
+def reap():
+    """From the service's periodic tick: notice a helper that died on its own.
+
+    Collects the exited child (no zombie) and brings nvidia-powerd back once. It never starts
+    a helper; that stays with the next explicit request."""
+    engine = _instance
+    if engine is None or engine.process is None or not engine.lock.acquire(blocking=False):
+        return
+    try:
+        if engine.process.poll() is not None and engine.powerd_stopped and not engine.restore_failed:
+            try:
+                engine._restore_powerd()
+            except OSError as exc:
+                print(f"GPU engine: {exc}", file=sys.stderr, flush=True)
+    finally:
+        engine.lock.release()
 
 
 def reset():

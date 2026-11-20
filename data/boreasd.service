@@ -13,6 +13,11 @@ Restart=on-failure
 # firmware's dgpu_disable write can take tens of seconds. A start cut off in between leaves
 # the dGPU half switched.
 TimeoutStartSec=90
+# The service needs /sys, /etc/boreas, /run and the NVIDIA units; nothing in a home folder or
+# the shared /tmp, and no way to gain privileges it does not start with.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

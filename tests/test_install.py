@@ -107,6 +107,20 @@ class HelperSourceTests(InstallTestCase):
         self.assertEqual(self.helper.read_bytes(), FAKE_HELPER)
         self.assertEqual(self.stamp.read_text().strip(), hashlib.sha256(FAKE_HELPER).hexdigest())
 
+    def test_destdir_without_files_only_is_refused(self):
+        # otherwise the files go to DESTDIR while masking and the restart hit this machine
+        result = subprocess.run(['sh', str(REPO / 'install.sh')], env=self.env(BOREAS_GPU_ENGINE=str(self.fake)),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--files-only', result.stderr)
+        self.assertFalse(self.stage.exists())
+
+    def test_plain_http_download_address_is_refused(self):
+        result = self.run_install(BOREAS_GPU_ENGINE_URL='http://example.invalid/boreas')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('https://', result.stderr)
+        self.assertFalse(self.stage.exists())
+
     def test_default_download_url_follows_the_package_version(self):
         # Checked statically: the default URL must never be fetched from a test.
         script = (REPO / 'install.sh').read_text()

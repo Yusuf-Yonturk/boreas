@@ -25,6 +25,8 @@ SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
 MAX_REQUEST = 1024 * 1024  # bytes per request line; the largest real one (a mode update) is a few kB
 POLL_SECONDS = 1.0
+# seconds a connection may sit without sending a request
+IDLE_TIMEOUT = 30
 # the watcher missed this many seconds of temperature control: another thread steps in
 THERMAL_STALL = 3 * POLL_SECONDS
 ECO_RETRY_TICKS = 15
@@ -64,6 +66,7 @@ class Daemon:
         # go unattended that long (see cover_stalled_tick).
         self.cpu_lock = threading.RLock()
         self.watch_tick_at = time.monotonic()  # the watcher's last pass, not the controller's
+        self.stopping = False
         self.last_profile = hw.get_profile()
         self.last_ac = hw.ac_online()
         self.custom_power = False
@@ -246,6 +249,8 @@ class Daemon:
         user_caps = {n: int(v) for n, v in (m.get("ppt") or {}).items()
                      if v is not None and n in thermal.POWER_ATTRS} if m.get("power_apply") else {}
         with self.cpu_lock:
+            if self.stopping:
+                return False
             self.cpu.start(temp, floor_w=m.get("cpu_temp_floor_w"), user_caps=user_caps)
             self.log_thermal_events()
             self.report_thermal_error()
@@ -257,6 +262,8 @@ class Daemon:
 
     def maintain_cpu_temp(self) -> None:
         with self.cpu_lock:
+            if self.stopping:
+                return
             self.cpu.tick()
             self.log_thermal_events()
             self.report_thermal_error()
@@ -267,7 +274,7 @@ class Daemon:
         Runs on its own thread and takes cpu_lock only. While the watcher ticks normally this
         does nothing. Once the watcher is stalled it steps on every call, at the watcher's own
         pace, until the watcher is back."""
-        if time.monotonic() - self.watch_tick_at < THERMAL_STALL:
+        if self.stopping or time.monotonic() - self.watch_tick_at < THERMAL_STALL:
             return False
         self.maintain_cpu_temp()
         return True
@@ -521,6 +528,7 @@ class Daemon:
                 return
 
             self.ticks += 1
+            gpu.gpu_engine.reap()
             if self.ticks % ECO_RETRY_TICKS == 0 and self.eco_pending():
                 try:
                     gpu.set_eco(True)
@@ -546,6 +554,15 @@ class Daemon:
             self.maintain_cpu_temp()
             self.watch_tick_at = time.monotonic()
             self.track_temp()
+
+    def shutdown(self) -> None:
+        """Give the power limits back for good: the watcher, the fallback and requests still
+        in flight must not start the controller again after this."""
+        with self.lock, self.cpu_lock:
+            self.stopping = True
+            self.cpu.stop()
+            self.log_thermal_events()
+            self.report_thermal_error()
 
     def cpu_temp_status(self) -> dict | None:
         with self.cpu_lock:
@@ -752,10 +769,16 @@ class Daemon:
 
 
 class Handler(socketserver.StreamRequestHandler):
+    # a client that connects and then sends nothing does not keep its thread forever
+    timeout = IDLE_TIMEOUT
+
     def handle(self):
         while True:
             # readline with a limit: a client that never sends a newline cannot grow the service's memory
-            line = self.rfile.readline(MAX_REQUEST + 1)
+            try:
+                line = self.rfile.readline(MAX_REQUEST + 1)
+            except OSError:  # idle for too long, or the connection was reset
+                return
             if not line:
                 return
             if len(line) > MAX_REQUEST:
@@ -780,35 +803,36 @@ def main() -> None:
         log("asus-nb-wmi / platform_profile not found, starting anyway")
     d = Daemon()
     log(f"boreasd starting, profile={d.last_profile}, ac={d.last_ac}")
-    d.reapply(at_boot=True)
-
-    try:
-        os.unlink(SOCKET)
-    except FileNotFoundError:
-        pass
-    server = Server(SOCKET, Handler)
-    server.daemon_obj = d
-    try:
-        os.chown(SOCKET, 0, grp.getgrnam(SOCKET_GROUP).gr_gid)
-        os.chmod(SOCKET, 0o660)
-    except (KeyError, PermissionError):
-        os.chmod(SOCKET, 0o600)
-        log(f"group '{SOCKET_GROUP}' not found, socket is root-only")
-
-    threading.Thread(target=d.watch, daemon=True).start()
-    threading.Thread(target=d.thermal_watch, daemon=True).start()
-    sd_notify("READY=1")
+    # From the first write on: a stop during the (possibly long) boot application must also
+    # give the power limits back and close the GPU helper.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    server = None
     try:
+        d.reapply(at_boot=True)
+
+        try:
+            os.unlink(SOCKET)
+        except FileNotFoundError:
+            pass
+        server = Server(SOCKET, Handler)
+        server.daemon_obj = d
+        try:
+            os.chown(SOCKET, 0, grp.getgrnam(SOCKET_GROUP).gr_gid)
+            os.chmod(SOCKET, 0o660)
+        except (KeyError, PermissionError):
+            os.chmod(SOCKET, 0o600)
+            log(f"group '{SOCKET_GROUP}' not found, socket is root-only")
+
+        threading.Thread(target=d.watch, daemon=True).start()
+        threading.Thread(target=d.thermal_watch, daemon=True).start()
+        sd_notify("READY=1")
         server.serve_forever()
     finally:
-        with d.lock:
-            d.cpu.stop()
-            d.log_thermal_events()
-            d.report_thermal_error()
+        d.shutdown()
         if gpu.gpu_engine._instance is not None:
             gpu.gpu_engine._instance.close()
-        server.server_close()
+        if server is not None:
+            server.server_close()
 
 
 def sd_notify(msg: str) -> None:

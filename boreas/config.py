@@ -195,6 +195,13 @@ class Config:
                 os.fsync(f.fileno())  # a power cut right after the rename must not leave an empty file
             os.chmod(tmp, 0o644)
             os.replace(tmp, self.path)
+            # the rename itself has to reach the disk too, or a power cut brings the old file back
+            with contextlib.suppress(OSError):
+                dfd = os.open(os.path.dirname(self.path), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

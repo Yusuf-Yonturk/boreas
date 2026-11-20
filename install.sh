@@ -9,6 +9,12 @@ if [ -z "$D" ] && [ "$(id -u)" != 0 ]; then
     echo "Run as root: sudo ./install.sh" >&2
     exit 1
 fi
+# DESTDIR stages files for a package. Without --files-only the steps after the copy (language
+# file, masking, service restart) would run against this machine while the files went elsewhere.
+if [ -n "$D" ] && [ "$1" != "--files-only" ]; then
+    echo "DESTDIR is for packaging and needs --files-only: DESTDIR=... ./install.sh --files-only" >&2
+    exit 1
+fi
 
 # The Rust GPU helper is built by CI and attached to the GitHub Release of each version;
 # the checkout does not carry it. It is resolved and verified before anything is written:
@@ -35,6 +41,12 @@ elif [ -f "$SRC/data/bin/boreas-gpu-engine" ]; then
 else
     version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$SRC/boreas/__init__.py")
     base="${BOREAS_GPU_ENGINE_URL:-https://github.com/Yusuf-Yonturk/boreas/releases/download/v$version}"
+    # The checksum comes from the same place as the helper: it catches a broken download, not a
+    # replaced one. The transport is what vouches for the source, so plain http is refused.
+    case "$base" in
+        https://*|file://*) ;;
+        *) echo "BOREAS_GPU_ENGINE_URL must be an https:// (or file://) address: $base" >&2; exit 1 ;;
+    esac
     helper_tmp=$(mktemp -d)
     trap 'rm -rf "$helper_tmp"' EXIT
     trap 'exit 130' HUP INT TERM  # stop here; the EXIT trap cleans up

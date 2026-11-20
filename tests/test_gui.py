@@ -130,6 +130,81 @@ class TestPanels(unittest.TestCase):
             jobs[-1][0]()
             self.assertEqual([kw for cmd, kw in sent if cmd == "update_mode"][-1]["data"]["fan_cpu"], default)
 
+    def _fans(self, jobs, curve=None):
+        entry = {"fans_apply": True, "power_apply": False, "ppt": {}, "nv": {}, "fan_cpu": curve}
+        self.w.status["fan_curves"] = ["cpu"]
+        f = A.FansWindow(self.w)
+        jobs.clear()
+        f._select_mode(0)
+        jobs.pop()[1]({"mode": entry})
+        return f
+
+    def test_saved_is_not_claimed_for_a_change_made_while_applying(self):
+        jobs = []
+        curve = [30, 40, 50, 60, 70, 80, 90, 100, 10, 20, 30, 40, 50, 60, 70, 80]
+        with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
+            f = self._fans(jobs, curve)
+            self.assertFalse(f.unsaved)
+            f.fans_apply.setChecked(False)
+            f._dirty()
+            self.w.call = lambda cmd, **kw: {}
+            f._apply()
+            f._dirty()                       # edited again before the answer
+            jobs[-1][1]({})
+            self.assertTrue(f.unsaved)
+            self.assertFalse(f.result_icon.isVisibleTo(f))
+            f._apply()
+            jobs[-1][1]({})                  # nothing changed in between this time
+            self.assertFalse(f.unsaved)
+
+    def test_fans_page_follows_a_mode_change_made_elsewhere(self):
+        jobs = []
+        with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
+            f = self._fans(jobs)
+            self.w.fans_window = f
+            f.follow_mode(1)                 # the tray switched to Turbo
+            self.assertEqual(f.mode_id, 1)
+            jobs.pop()[1]({"mode": {"fans_apply": False, "power_apply": False, "ppt": {}, "nv": {}}})
+            f._dirty()                       # unsaved work on the page is not thrown away
+            f.follow_mode(0)
+            self.assertEqual(f.mode_id, 1)
+            f.follow_mode(99)                # a mode this page does not know
+            self.assertEqual(f.mode_id, 1)
+        self.w.fans_window = None
+
+    def test_points_on_top_of_each_other_can_be_pulled_apart(self):
+        from PySide6.QtCore import QPointF
+        ed = sys.modules[A.FansWindow.__module__].CurveEditor("CPU", "cpu")
+        ed.resize(600, 300)
+        ed.set_curve([20] * 8 + [100] * 8)
+
+        class Ev:
+            def __init__(self, p):
+                self.p = p
+
+            def position(self):
+                return self.p
+        at = ed._pt(0)
+        ed.mousePressEvent(Ev(at))
+        ed.mouseMoveEvent(Ev(QPointF(at.x() + 200, at.y())))   # to the right: the last of the pile moves
+        ed.mouseReleaseEvent(None)
+        self.assertEqual(ed.curve[:7], [20] * 7)
+        self.assertGreater(ed.curve[7], 20)
+        ed.set_curve([60] * 8 + [100] * 8)
+        at = ed._pt(3)
+        ed.mousePressEvent(Ev(at))
+        ed.mouseMoveEvent(Ev(QPointF(at.x() - 150, at.y())))   # to the left: the first one moves
+        ed.mouseReleaseEvent(None)
+        self.assertLess(ed.curve[0], 60)
+        self.assertEqual(ed.curve[1:8], [60] * 7)
+
+    def test_theme_assets_fall_back_when_the_cache_folder_is_not_writable(self):
+        from boreas.gui import common
+        with patch.object(common.os, "makedirs", side_effect=PermissionError("read-only")):
+            chev, check = common._assets({"name": "dark", "text": "#ffffff"})
+        self.assertTrue(os.path.isfile(chev) and os.path.isfile(check))
+        self.assertNotIn(os.path.expanduser("~/.cache"), chev)
+
     def test_late_reply_of_another_mode_is_dropped_and_apply_waits(self):
         jobs, sent = [], []
         with patch.object(sys.modules[A.FansWindow.__module__], "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
@@ -822,6 +897,31 @@ class TestHeldSelection(unittest.TestCase):
         self.jobs.pop(1)({**self.STATUS, "mode": 1})
         self.assertEqual(self.checked(), 2)  # the second click is still pending, it does not jump to 1
         self.assertIn("mode", w.hold)
+
+
+class TestScreenRetry(unittest.TestCase):
+    def test_screen_row_is_looked_for_again_when_kscreen_is_late(self):
+        info = {"name": "eDP-1", "current": 240, "rates": {60: 1, 240: 2}}
+        later = []
+        with patch.object(A.screen, "internal", lambda: None), \
+                patch.object(A.QTimer, "singleShot", lambda ms, fn: later.append((ms, fn))):
+            w = A.MainWindow()
+        try:
+            retry = [fn for ms, fn in later if ms == A.SCREEN_RETRY_MS]
+            self.assertEqual(len(retry), 1)
+            self.assertFalse(w.screen_rates)
+            with patch.object(A.screen, "internal", lambda: info), patch.object(A.QTimer, "singleShot", lambda ms, fn: None):
+                retry[0]()
+            self.assertEqual(w.screen_rates, [60, 240])
+            with patch.object(A.screen, "internal", lambda: None), \
+                    patch.object(A.QTimer, "singleShot", lambda ms, fn: later.append((ms, fn))):
+                w._screen_tries = A.SCREEN_TRIES
+                n = len(later)
+                w._build_screen_buttons()
+                self.assertEqual(len(later), n)  # it gives up after a few looks
+        finally:
+            w.quitting = True
+            w.tray.hide()
 
 
 class TestScreenRate(unittest.TestCase):

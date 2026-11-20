@@ -107,6 +107,17 @@ class TestController(unittest.TestCase):
         self.assertNotIn((self.PL1, 40), self.writes)
         self.assertEqual(self.c.error, "")
 
+    def test_unreadable_limit_stops_the_controller_instead_of_escaping(self):
+        self.c.start(85)
+
+        def unreadable(name, value):
+            self.writes.append((name, value))
+            self.attrs[name].current = None  # the readback after the write fails
+        with patch("boreas.thermal.hw.set_attr", side_effect=unreadable):
+            self.step(90)  # must not raise
+        self.assertEqual(self.c.state, "error")
+        self.assertTrue(self.c.error)
+
     def test_pl1_floor_clamps_requests_and_marks_limited(self):
         self.c.start(85, floor_w=40)
         self.step(95, 20)

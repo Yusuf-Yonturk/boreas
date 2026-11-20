@@ -55,7 +55,9 @@ Tüm çeviriler [`boreas/translations.py`](boreas/translations.py) içindedir. H
 
 - **Bir çeviriyi düzeltmek:** listedeki metni değiştir.
 - **Yeni dil eklemek:** dil kodunu `ORDER`'a ekle, her satıra bir çeviri ekle, dilin kendi dilindeki
-  adını [`boreas/i18n.py`](boreas/i18n.py) içindeki `LANGUAGES`'a ve `install.sh` içindeki listeye ekle.
+  adını [`boreas/i18n.py`](boreas/i18n.py) içindeki `LANGUAGES`'a ekle. `install.sh` içinde dört yere girer:
+  `CODES`, "Interface language" altında basılan menü, "Choose 1-N" istemi ve yazı tipi paketi gerekiyorsa font
+  uyarısı (`case "$lang"`). İlk üçünü `tests/test_i18n.py` denetler.
 - `{name}` gibi yer tutucuları olduğu gibi bırak.
 
 Bir metin herhangi bir dilde eksikse ya da yer tutucu bozulmuşsa `tests/test_i18n.py` başarısız olur.
