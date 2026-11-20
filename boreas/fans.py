@@ -90,8 +90,13 @@ def read_curve(fan: str) -> list[int] | None:
         return None
     temps, speeds = [], []
     for i in range(1, POINTS + 1):
-        temps.append(hw.read_int(f"{d}/pwm{n}_auto_point{i}_temp") or 0)
-        speeds.append(pwm_to_pct(hw.read_int(f"{d}/pwm{n}_auto_point{i}_pwm") or 0))
+        temp = hw.read_int(f"{d}/pwm{n}_auto_point{i}_temp")
+        pwm = hw.read_int(f"{d}/pwm{n}_auto_point{i}_pwm")
+        if temp is None or pwm is None:
+            # a point read as 0 would become a curve that tops out at a low speed
+            return None
+        temps.append(temp)
+        speeds.append(pwm_to_pct(pwm))
     return temps + speeds
 
 

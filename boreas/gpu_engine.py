@@ -10,6 +10,7 @@ import os
 import select
 import stat
 import subprocess
+import sys
 import threading
 import time
 
@@ -51,6 +52,7 @@ class Engine:
         self.lock = threading.RLock()
         self.buffer = b""
         self.powerd_stopped = False
+        self.restore_failed = False
         atexit.register(self.close)
 
     def _start(self):
@@ -97,7 +99,14 @@ class Engine:
                         raise ValueError("GPU engine did not apply the requested policy")
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 self._disconnect()
-                self._restore_powerd()
+                # Status polls land here every few seconds once the helper is gone: the restore
+                # is tried once per fault, and its own failure does not replace the fault.
+                # An explicit Eco/Standard request and close() try it again.
+                if not self.restore_failed:
+                    try:
+                        self._restore_powerd()
+                    except OSError as restore_error:
+                        print(f"GPU engine: {restore_error}", file=sys.stderr, flush=True)
                 raise OSError(str(exc)) from exc
             if not response.get("ok"):
                 raise OSError(response.get("error", "GPU engine rejected request"))
@@ -106,7 +115,15 @@ class Engine:
     def set_eco(self, enabled):
         with self.lock:
             if not enabled:
-                self.request("standard")
+                try:
+                    self.request("standard")
+                except OSError:
+                    # a rejected request leaves the helper running: nvidia-powerd still comes back
+                    try:
+                        self._restore_powerd()
+                    except OSError:
+                        pass
+                    raise
                 self._restore_powerd()
                 return
             active = subprocess.run(["systemctl", "is-active", "--quiet", "nvidia-powerd.service"], timeout=5).returncode == 0
@@ -130,6 +147,18 @@ class Engine:
                 raise
 
     def _restore_powerd(self):
+        try:
+            self._start_powerd()
+        except subprocess.TimeoutExpired as exc:
+            # callers handle OSError only; a hung systemctl must not escape as something else
+            self.restore_failed = True
+            raise OSError("Could not restore nvidia-powerd") from exc
+        except OSError:
+            self.restore_failed = True
+            raise
+        self.restore_failed = False
+
+    def _start_powerd(self):
         if self.powerd_stopped:
             r = subprocess.run(["systemctl", "start", "nvidia-powerd.service"], timeout=10)
             if r.returncode:
@@ -168,7 +197,7 @@ class Engine:
             self._disconnect()
             try:
                 self._restore_powerd()
-            except (OSError, subprocess.SubprocessError):
+            except OSError:
                 if strict:
                     raise
 
@@ -197,8 +226,19 @@ def reset():
     """
     global _instance
     if _instance is not None:
-        _instance.close(strict=True)
-        _instance = None
+        old = _instance
+        try:
+            old.close(strict=True)
+            _instance = None
+        except OSError as exc:
+            # nvidia-powerd did not come back. The user still gets a fresh helper instead of a
+            # dead end until boreasd restarts; the new one inherits the pending restore, so the
+            # next Standard request tries it again.
+            print(f"GPU engine: {exc}; the fresh helper will retry", file=sys.stderr, flush=True)
+            old.powerd_stopped = False  # handed over: the old instance's atexit must not start it
+            _instance = Engine()
+            _instance.powerd_stopped = True
+            _instance.restore_failed = True
 
 
 def selected():

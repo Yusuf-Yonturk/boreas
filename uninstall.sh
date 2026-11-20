@@ -14,14 +14,40 @@ rm -f /usr/bin/boreas /usr/bin/boreasd /usr/bin/boreasctl \
       /usr/share/icons/hicolor/24x24/apps/boreas.svg
 rm -rf /etc/xdg/boreas
 systemctl daemon-reload
-for s in asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service; do
-    if [ "$(systemctl is-enabled "$s" 2>/dev/null)" = masked ]; then
-        systemctl unmask "$s"
-    fi
-done
+UNITS="asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service"
+MASKED=/etc/boreas/masked-units
+if [ -f "$MASKED" ]; then
+    # Only what install.sh masked comes back, in the state it had: a unit the user had masked
+    # or disabled before Boreas stays the way they left it.
+    back="" enable=""
+    while read -r s was; do
+        case " $UNITS " in *" $s "*) ;; *) continue ;; esac
+        if [ "$(systemctl is-enabled "$s" 2>/dev/null)" = masked ]; then
+            systemctl unmask "$s"
+        fi
+        if [ "$was" != disabled ]; then
+            back="$back $s"  # a disabled unit was not running at boot either
+        fi
+        if [ "$was" = enabled ]; then
+            enable="$enable $s"
+        fi
+    done < "$MASKED"
+    rm -f "$MASKED"
+else
+    # installed by a version that kept no record: every mask is taken to be ours.
+    # supergfxd is a normal enabled unit; asusd / asus-shutdown come from udev (static);
+    # power-profiles-daemon is started by the desktop over D-Bus
+    for s in $UNITS; do
+        if [ "$(systemctl is-enabled "$s" 2>/dev/null)" = masked ]; then
+            systemctl unmask "$s"
+        fi
+    done
+    back="$UNITS" enable="supergfxd.service"
+fi
 systemctl daemon-reload
-# supergfxd is a normal enabled unit; asusd / asus-shutdown come from udev (static);
-# power-profiles-daemon is started by the desktop over D-Bus
-systemctl enable supergfxd.service 2>/dev/null || true
-systemctl start asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service 2>/dev/null || true
+# $enable and $back are word lists
+# shellcheck disable=SC2086
+[ -z "$enable" ] || systemctl enable $enable 2>/dev/null || true
+# shellcheck disable=SC2086
+[ -z "$back" ] || systemctl start $back 2>/dev/null || true
 echo "Removed. Settings are kept in /etc/boreas."

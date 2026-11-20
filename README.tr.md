@@ -86,7 +86,10 @@ Aura ikinci renk.
 Gereksinimler: systemd kullanan bir dağıtım, asus-wmi / asus-armoury sürücüleri olan bir çekirdek,
 Python 3.11+, PySide6 (arayüz için), KDE'de ekran yenileme hızı için `kscreen-doctor` ve Wayland'de keskin
 görüntü için Qt'nin Wayland eklentisi. Python ve PySide6'yı dağıtımınızın paket yöneticisiyle kurun
-(Arch / CachyOS'ta: `sudo pacman -S --needed python pyside6 qt6-wayland`).
+(Arch / CachyOS'ta: `sudo pacman -S --needed python pyside6 qt6-wayland`). Arayüzü ve `boreasctl`'i
+kullanmak için kullanıcınız `wheel` grubunda olmalı: servis soketi yalnız root'a ve bu gruba açıktır.
+`wheel` grubu olmayan dağıtımlarda (Debian, Ubuntu) önce grubun oluşturulması gerekir; kurulum betiği iki
+durumda da uyarır.
 
 ```bash
 git clone https://github.com/Yusuf-Yonturk/boreas.git
@@ -96,7 +99,8 @@ sudo ./install.sh
 
 İsteğe bağlı eBPF GPU yardımcısı (`boreas-gpu-engine`) depoda tutulmaz: CI onu Rust kaynağından
 derleyip her sürümün GitHub Release'ine ekler; kurulum betiği kurulan sürüm için indirir ve hiçbir
-şey yazmadan önce sha256 sağlama toplamını denetler. Çevrimdışı kurmak ya da kendi derlemenizi kurmak
+şey yazmadan önce sha256 sağlama toplamını denetler. İndirme başarısız olursa Boreas yardımcısız
+kurulur ve yalnız eBPF arka ucu kullanılamaz. Çevrimdışı kurmak ya da kendi derlemenizi kurmak
 için dosyayı gösterin: `sudo BOREAS_GPU_ENGINE=/yol/boreas-gpu-engine ./install.sh`.
 Bkz. [docs/gpu-engine.md](docs/gpu-engine.md).
 
@@ -111,13 +115,16 @@ Her kullanıcı dili sonradan penceredeki küre düğmesinden değiştirebilir. 
   D-Bus ile her açılışta başlatıldığı için `disable` yetmez.
 - Masaüstünün kendi güç profili menüsü (KDE pil simgesi, GNOME hızlı ayarlar) bu yüzden boş görünür;
   modu Boreas yönetir. Kontrolü geçici olarak geri vermek için:
-  `sudo systemctl stop boreasd && sudo systemctl unmask --now power-profiles-daemon`.
+  `sudo systemctl stop boreasd && sudo systemctl unmask power-profiles-daemon && sudo systemctl start power-profiles-daemon`.
+  Kontrolü Boreas'a geri vermek için (ikisi birlikte çalışmamalı, maske kendiliğinden geri gelmez):
+  `sudo systemctl mask --now power-profiles-daemon && sudo systemctl start boreasd`.
 - İlk açılışta servis mevcut şarj limitini, klavye parlaklığını, modu ve GPU modunu benimser;
   donanıma hiçbir şey yazmaz.
 - `boreasd` root olarak çalışır ve yerel bir soketi dinler (`/run/boreas.sock`, `wheel` grubu). Servis
   ağa bağlanmaz. Tepsi uygulaması GitHub'a son sürümü sorar (kapatılabilir, bkz.
   [Güncelleme](#güncelleme)), kurulum betiği de GPU yardımcısını bu deponun GitHub Release'inden indirir.
-- `sudo ./uninstall.sh` maskeleri kaldırır, asusd / supergfxd / power-profiles-daemon geri açılır.
+- `sudo ./uninstall.sh` kurulumun eklediği maskeleri kaldırır ve o servisleri geri açar. Boreas'ı kurmadan
+  önce kendi maskelediğiniz ya da kapattığınız bir servis olduğu gibi kalır.
 
 KDE'de Ayarlar → Güç Yönetimi'nde prize ve pile ayrı güç profili seçiliyse Boreas'ın
 "pil/prize göre otomatik mod"uyla çakışır; ikisinden birini kapatın.

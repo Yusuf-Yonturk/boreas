@@ -158,6 +158,48 @@ class ServiceRollbackTests(unittest.TestCase):
         self.assertEqual(run.call_count, 4)
         engine.powerd_stopped = False
 
+    def test_status_polls_do_not_retry_a_failed_restore_or_hide_the_fault(self):
+        engine = gpu_engine.Engine()
+        self.addCleanup(setattr, engine, "powerd_stopped", False)  # atexit must not reach systemctl
+        engine.process = Mock(**{"poll.return_value": 1})  # the helper died while Eco was active
+        engine.powerd_stopped = True
+        failed = [Mock(returncode=1), Mock(returncode=0, stdout="exit-code\n")]
+        with patch.object(gpu_engine.subprocess, "run", side_effect=failed * 5) as run:
+            for _ in range(3):
+                with self.assertRaisesRegex(OSError, "GPU engine exited"):
+                    engine.request("status")
+            self.assertEqual([c.args[0][1] for c in run.call_args_list], ["start", "show"])
+            with self.assertRaisesRegex(OSError, "Could not restore"):
+                engine._restore_powerd()  # an explicit request still tries
+            self.assertEqual(run.call_count, 4)
+        self.assertTrue(engine.powerd_stopped)
+        engine.powerd_stopped = False
+
+    def test_restore_timeout_is_an_oserror(self):
+        engine = gpu_engine.Engine()
+        self.addCleanup(setattr, engine, "powerd_stopped", False)  # atexit must not reach systemctl
+        engine.process = Mock(**{"poll.return_value": 1})
+        engine.powerd_stopped = True
+        timeout = gpu_engine.subprocess.TimeoutExpired(["systemctl"], 10)
+        with patch.object(gpu_engine.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(OSError, "Could not restore nvidia-powerd"):
+                engine._restore_powerd()
+            with self.assertRaisesRegex(OSError, "GPU engine exited"):
+                engine.request("status")
+        self.assertTrue(engine.powerd_stopped)
+        engine.powerd_stopped = False
+
+    def test_rejected_standard_still_restores_powerd(self):
+        engine = gpu_engine.Engine()
+        self.addCleanup(setattr, engine, "powerd_stopped", False)  # atexit must not reach systemctl
+        engine.powerd_stopped = True
+        with patch.object(engine, "request", side_effect=OSError("map update failed")), \
+                patch.object(gpu_engine.subprocess, "run", return_value=Mock(returncode=0)) as run:
+            with self.assertRaisesRegex(OSError, "map update failed"):
+                engine.set_eco(False)
+        self.assertFalse(engine.powerd_stopped)
+        self.assertEqual([c.args[0][1] for c in run.call_args_list], ["start"])
+
     def test_start_limit_reset_failure_does_not_retry(self):
         engine = gpu_engine.Engine()
         engine.powerd_stopped = True
@@ -294,6 +336,37 @@ class BackendSwitchTests(unittest.TestCase):
                 self.d.set_gpu_backend("firmware")
         self.assertTrue(gpu_engine.selected())
         self.d.apply_gpu_target.assert_called_with("eco", explicit=True)
+
+
+class ResetTests(unittest.TestCase):
+    def tearDown(self):
+        if gpu_engine._instance is not None:
+            gpu_engine._instance.powerd_stopped = False  # atexit must not touch real services
+        gpu_engine._instance = None
+
+    def test_reset_hands_a_pending_powerd_restore_to_the_fresh_helper(self):
+        old = gpu_engine._instance = gpu_engine.Engine()
+        self.addCleanup(setattr, old, "powerd_stopped", False)  # atexit must not reach systemctl
+        old.process = Mock(**{"poll.return_value": 1})
+        old.powerd_stopped = True
+        failed = [Mock(returncode=1), Mock(returncode=0, stdout="exit-code\n")]
+        with patch.object(gpu_engine.subprocess, "run", side_effect=failed):
+            gpu_engine.reset()  # no dead end: the user can still pick a GPU mode
+        fresh = gpu_engine.get()
+        self.assertIsNot(fresh, old)
+        self.assertIsNone(fresh.process)
+        self.assertTrue(fresh.powerd_stopped)
+        self.assertFalse(old.powerd_stopped)
+        with patch.object(fresh, "request"), \
+                patch.object(gpu_engine.subprocess, "run", return_value=Mock(returncode=0)) as run:
+            fresh.set_eco(False)
+        self.assertEqual([c.args[0][1] for c in run.call_args_list], ["start"])
+        self.assertFalse(fresh.powerd_stopped)
+
+    def test_reset_without_a_pending_restore_leaves_no_instance(self):
+        gpu_engine._instance = gpu_engine.Engine()
+        gpu_engine.reset()
+        self.assertIsNone(gpu_engine._instance)
 
 
 class CompatibilityTests(unittest.TestCase):

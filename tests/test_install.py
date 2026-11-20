@@ -90,12 +90,22 @@ class HelperSourceTests(InstallTestCase):
         self.assertFalse((self.stage / 'usr/lib/boreas').exists())
         self.assertFalse(self.stage.exists())
 
-    def test_failed_download_aborts_with_offline_hint(self):
+    def test_failed_download_installs_without_the_helper(self):
+        # the helper is optional: no network must not block the whole installation
         result = self.run_install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Could not download the GPU helper', result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('could not download the GPU helper', result.stderr)
         self.assertIn('BOREAS_GPU_ENGINE=', result.stderr)
-        self.assertFalse(self.stage.exists())
+        self.assertTrue((self.stage / 'usr/lib/boreas/boreas/daemon.py').exists())
+        self.assertFalse(self.helper.exists())
+        self.assertFalse(self.stamp.exists())
+
+    def test_failed_download_keeps_an_installed_helper(self):
+        self.install()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.helper.read_bytes(), FAKE_HELPER)
+        self.assertEqual(self.stamp.read_text().strip(), hashlib.sha256(FAKE_HELPER).hexdigest())
 
     def test_default_download_url_follows_the_package_version(self):
         # Checked statically: the default URL must never be fetched from a test.
