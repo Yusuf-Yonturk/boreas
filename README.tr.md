@@ -17,7 +17,9 @@ tamamı onların çekirdek sürücülerinden (asus-wmi, asus-armoury) gelir. Bor
 
 Pencere düzeni bilerek [G-Helper](https://github.com/seerge/g-helper) örnek alınarak yapıldı; Windows'tan
 gelenlere tanıdık gelsin diye. Ortak kod yoktur: G-Helper bir Windows programıdır, Boreas Python ve Qt ile
-sıfırdan yazıldı. Boreas yalnız Linux içindir; Windows'ta G-Helper kullanın.
+sıfırdan yazıldı. Birkaç donanım ayrıntısı G-Helper ve asusctl okunarak öğrenildi; bunlar
+[üçüncü taraf bildirimlerinde](THIRD_PARTY_NOTICES.md) yazılıdır. Boreas yalnız Linux içindir; Windows'ta
+G-Helper kullanın.
 
 ![Boreas: açık temada ana pencere, koyu temada fan eğrileri ve güç limitleri](docs/screenshots.png)
 
@@ -69,7 +71,8 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | GPU: Eco / Standart / Optimized / Ultimate | ✓ | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran 60 Hz / maks / Otomatik | ✓ (KDE) | `kscreen-doctor` |
 | Panel overdrive | ✓ | `panel_overdrive` |
-| Klavye Aura (statik, nefes, döngü, gökkuşağı, strobe) | ✓ | hidraw, rapor 0x5D (output rapor) |
+| Klavye Aura (statik, iki renkli nefes, döngü, gökkuşağı, strobe; tuş başına RGB klavyelerde Star, Rain, Highlight, Laser, Ripple, Comet, Flash; 4 bölgeli klavyelerde bölge renkleri) | ✓ | hidraw, rapor 0x5D (output rapor) |
+| CPU sıcaklığını, GPU modunu ya da pili izleyen klavye rengi | ✓ | hidraw, rengi servis yazar |
 | Klavye parlaklığı | ✓ | `asus::kbd_backlight` |
 | Şarj limiti | ✓ | `charge_control_end_threshold` |
 | Fn+F5 / KDE güç profili | ✓ | servis profil değişimini izler, mod ayarlarını yeniden uygular |
@@ -79,7 +82,7 @@ Henüz yok: AniMe/Slash matrix, M4/ROG tuşu ataması (KDE kısayoluna `boreasct
 bağlanabilir), GPU saat ofsetleri, Ryzen undervolt (Curve Optimizer), çevre birimleri (fare, kulaklık),
 fan histerezisi, klavye ışığının uyku/kapanış ayarları (Aura power), prize/pile göre ayrı
 klavye parlaklığı, tek seferlik %100 şarj, açılış sesi (`boot_sound`), USB-C şarj modu,
-Aura ikinci renk.
+tuş başına renk.
 
 ## Kurulum
 

@@ -19,7 +19,7 @@ import time
 import traceback
 
 from . import aura, fans, gpu, hw, thermal
-from .config import BUILTIN, Config, check_mode_fields
+from .config import BUILTIN, Config, check_mode_fields, sanitize_aura
 
 SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
@@ -30,6 +30,7 @@ IDLE_TIMEOUT = 30
 # the watcher missed this many seconds of temperature control: another thread steps in
 THERMAL_STALL = 3 * POLL_SECONDS
 ECO_RETRY_TICKS = 15
+AURA_FOLLOW_STEP = 8  # a follow mode rewrites the keyboard color once a channel has moved this far
 # High temperature log: 95 °C, or 5 °C above a lowered limit. Not every second:
 # two lines per episode (start + end, with the peak) go to the journal.
 HOT_TEMP = 95
@@ -75,6 +76,9 @@ class Daemon:
         self.thermal_notice_for = ""  # the controller error the current notice reports
         self.gpu_temp_cache: tuple[float, int | None] = (0.0, None)
         self.ticks = 0
+        self.aura_shown: tuple[int, int, int] | None = None  # the color a follow mode last wrote
+        self.aura_follow_error = ""
+        self.aura_probed: str | None = None  # None = not asked yet, "" = asked, no answer
         self.cpu = thermal.Controller()
         bridge_warning = self.cpu.opt_in_warning()
         if bridge_warning:
@@ -456,9 +460,7 @@ class Daemon:
             ("charge_limit", lambda v: hw.set_charge_limit(v)),
             ("kbd_brightness", lambda v: hw.set_kbd_brightness(v)),
             ("overdrive", lambda v: hw.set_attr("panel_overdrive", v)),
-            ("aura", lambda v: aura.apply(v["mode"], tuple(v["color"]),
-                                          tuple(v["color2"]) if v.get("color2") else None,
-                                          v.get("speed", "normal"))),
+            ("aura", self.apply_aura),
         ]
         for key, fn in steps:
             if c[key] is None:
@@ -488,6 +490,43 @@ class Daemon:
                 self.apply_gpu_target(gpu.OPTIMIZED)
 
     # ---- watcher ---------------------------------------------------------------
+
+    def aura_kind(self) -> str | None:
+        """What kind of keyboard this is. It is asked once: the question wakes the keyboard up."""
+        if self.aura_probed is None and aura.find_device() is not None:
+            self.aura_probed = aura.probe() or ""
+            log(f"keyboard: {self.aura_probed or 'kind unknown'}")
+        return self.aura_probed or None
+
+    def apply_aura(self, a: dict) -> None:
+        """An effect the keyboard runs by itself is written once; a follow mode is kept up by follow_aura."""
+        self.aura_shown = None
+        if a["mode"] in aura.FOLLOW_MODES:
+            self.follow_aura(a)
+        elif a["mode"] == aura.ZONES:
+            aura.apply_zones(a["zones"])
+        else:
+            aura.apply(a["mode"], tuple(a["color"]), tuple(a["color2"]) if a.get("color2") else None,
+                       a.get("speed", "normal"))
+
+    def follow_aura(self, a: dict | None = None) -> None:
+        """Heatmap, GPU mode and battery: write the color when it has visibly changed."""
+        a = a or self.cfg["aura"]
+        if not a or a["mode"] not in aura.FOLLOW_MODES:
+            return
+        mode = a["mode"]
+        color = aura.follow_color(
+            mode,
+            hw.temps().get("cpu") if mode == "heatmap" else None,
+            hw.battery_info().get("capacity") if mode == "battery" else None,
+            (gpu.state()["mode"] if gpu.supported() else "standard") if mode == "gpu" else None)
+        if color is None:
+            return
+        shown = self.aura_shown
+        if shown is not None and max(abs(x - y) for x, y in zip(color, shown)) < AURA_FOLLOW_STEP:
+            return
+        aura.show(color)
+        self.aura_shown = color
 
     def watch(self) -> None:
         while True:
@@ -554,6 +593,14 @@ class Daemon:
             self.maintain_cpu_temp()
             self.watch_tick_at = time.monotonic()
             self.track_temp()
+            try:
+                self.follow_aura()
+            except (OSError, ValueError, KeyError) as e:
+                if self.aura_follow_error != str(e):  # an unplugged keyboard is reported once, not every second
+                    self.aura_follow_error = str(e)
+                    log(f"keyboard color: {e}")
+            else:
+                self.aura_follow_error = ""
 
     def shutdown(self) -> None:
         """Give the power limits back for good: the watcher, the fallback and requests still
@@ -623,6 +670,7 @@ class Daemon:
             "kbd": {"brightness": kb, "max": kb_max},
             "aura": c["aura"],
             "aura_device": aura.find_device() is not None,
+            "aura_modes": aura.modes_for(self.aura_kind()),
             "attrs": attrs,
             "custom_power": self.custom_power,
             "cpu_boost_supported": hw.cpu_boost_supported(),
@@ -748,9 +796,13 @@ class Daemon:
             if cmd == "set_aura":
                 a = {"mode": req["mode"], "color": list(req["color"]),
                      "color2": list(req["color2"]) if req.get("color2") else None,
-                     "speed": req.get("speed", "normal")}
-                aura.apply(a["mode"], tuple(a["color"]),
-                           tuple(a["color2"]) if a["color2"] else None, a["speed"])
+                     "speed": req.get("speed", "normal"),
+                     "zones": [list(z) for z in req["zones"]] if req.get("zones") else None}
+                check = {"aura": dict(a)}
+                sanitize_aura(check)
+                if check["aura"] is None:
+                    raise ValueError("invalid keyboard lighting settings")
+                self.apply_aura(a)
                 c["aura"] = a
                 c.save()
                 return {}

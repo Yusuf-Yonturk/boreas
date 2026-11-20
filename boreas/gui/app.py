@@ -36,7 +36,14 @@ GPU_HINTS = {
 # Always hold the dGPU device open; not counted in the status line (the tooltip still lists them)
 GPU_SYSTEM_USERS = ("systemd", "systemd-logind", "nvidia-powerd", "nvidia-persiste")
 AURA_MODES = [("static", "Static"), ("breathe", "Breathe"), ("cycle", "Color cycle"),
-              ("rainbow", "Rainbow"), ("strobe", "Strobe")]
+              ("rainbow", "Rainbow"), ("strobe", "Strobe")]   # until the service says what the keyboard has
+AURA_LABELS = {**dict(AURA_MODES), "zones": "Zones", "star": "Star", "rain": "Rain", "highlight": "Highlight",
+               "laser": "Laser", "ripple": "Ripple", "comet": "Comet", "flash": "Flash",
+               "heatmap": "Heatmap", "gpu": "GPU mode", "battery": "Battery"}
+AURA_ZONES = ("zones", "Zones")
+AURA_ZONE_COUNT = 4
+AURA_TWO_COLORS = ("breathe",)  # the effects that use the second color
+AURA_NO_COLOR = ("zones", "heatmap", "gpu", "battery")  # the color comes from the zones or from the machine
 AURA_SPEEDS = [("slow", "Slow"), ("normal", "Normal"), ("fast", "Fast")]
 
 # rows with segmented buttons: keep them off the lines above and below
@@ -319,6 +326,29 @@ class MainWindow(QWidget):
         self.aura_color.setCursor(Qt.PointingHandCursor)
         self.aura_color.clicked.connect(self.pick_color)
         self.color = QColor(self.settings.value("aura_color", "#ff0000"))
+        # the second color of the effects that fade between two; None = the same as the first
+        self.aura_color2 = QPushButton()
+        self.aura_color2.setFixedSize(u(60), uv(40))
+        self.aura_color2.setCursor(Qt.PointingHandCursor)
+        self.aura_color2.setToolTip(_("Second color"))
+        self.aura_color2.clicked.connect(self.pick_color2)
+        saved = self.settings.value("aura_color2", "")
+        self.color2 = QColor(saved) if saved and QColor(saved).isValid() else None
+        # one color per keyboard zone, left to right
+        saved = [QColor(x) for x in str(self.settings.value("aura_zones", "")).split(",") if x]
+        ok = len(saved) == AURA_ZONE_COUNT and all(c.isValid() for c in saved)
+        self.zone_colors = saved if ok else [QColor(self.color) for _i in range(AURA_ZONE_COUNT)]
+        self.aura_zone_buttons = []
+        bolgeler = QHBoxLayout()
+        bolgeler.setSpacing(u(10))
+        for i in range(AURA_ZONE_COUNT):
+            b = QPushButton()
+            b.setFixedSize(u(60), uv(40))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(_("Zone {n}").format(n=i + 1))
+            b.clicked.connect(lambda _checked=False, i=i: self.pick_zone(i))
+            bolgeler.addWidget(b)
+            self.aura_zone_buttons.append(b)
         self.kbd_level = QSlider(Qt.Horizontal)
         self.kbd_level.setFixedSize(u(340), max(u(28), 22))  # do not clip the handle
         self.kbd_level.setRange(0, 3)
@@ -329,14 +359,20 @@ class MainWindow(QWidget):
         efekt.setSpacing(u(14))
         efekt.addWidget(self.aura_mode)
         efekt.addWidget(self.aura_color)
+        efekt.addWidget(self.aura_color2)
         lay.addWidget(row(_("Effect"), efekt, height=60))
         lay.addWidget(hline())
+        self.aura_zone_row = row(_("Zone colors"), bolgeler, height=60)
+        self.aura_zone_line = hline()
+        lay.addWidget(self.aura_zone_row)
+        lay.addWidget(self.aura_zone_line)
         lay.addWidget(row(_("Speed"), self.aura_speed))
         lay.addWidget(hline())
         lay.addWidget(row(_("Brightness"), self.kbd_level, height=56))
         self.aura_mode.activated.connect(lambda _: self.set_aura())
         self.aura_speed.activated.connect(lambda _: self.set_aura())
         self._paint_color()
+        self._show_color2()
         self.kbd_card = card_
         cl.addWidget(card_)
         cl.addStretch(1)
@@ -760,13 +796,23 @@ class MainWindow(QWidget):
             self.kbd_level.setMaximum(kb["max"] or 3)
             self.kbd_level.setValue(kb["brightness"])
         a = s.get("aura")
+        if not self.aura_mode.view().isVisible():
+            self._offer_modes(s.get("aura_modes"))
         if a and not self.aura_mode.view().isVisible():
             self.aura_mode.setCurrentIndex(max(0, self.aura_mode.findData(a["mode"])))
             self.aura_speed.setCurrentIndex(max(0, self.aura_speed.findData(a.get("speed", "normal"))))
             self.color = QColor(*a["color"])
+            if a.get("color2"):
+                self.color2 = QColor(*a["color2"])
+            if a.get("zones"):
+                self.zone_colors = [QColor(*z) for z in a["zones"]]
             self._paint_color()
+            self._show_color2()
         self.aura_mode.setEnabled(s.get("aura_device", False))
         self.aura_color.setEnabled(s.get("aura_device", False))
+        self.aura_color2.setEnabled(s.get("aura_device", False))
+        for b in self.aura_zone_buttons:
+            b.setEnabled(s.get("aura_device", False))
         self.aura_speed.setEnabled(s.get("aura_device", False))
 
         bat = s.get("battery", {})
@@ -933,9 +979,38 @@ class MainWindow(QWidget):
         self.action("set_kbd", hold=("kbd", self.kbd_level.value()), brightness=self.kbd_level.value())
 
     def _paint_color(self):
-        c = self.color.name()
-        self.aura_color.setStyleSheet(
-            f"QPushButton {{ background:{c}; border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:0; }}")
+        for button, color in ((self.aura_color, self.color), (self.aura_color2, self.color2 or self.color),
+                              *zip(self.aura_zone_buttons, self.zone_colors)):
+            button.setStyleSheet(f"QPushButton {{ background:{color.name()}; border:1px solid rgba(0,0,0,0.15);"
+                                 " border-radius:8px; padding:0; }")
+
+    def _show_color2(self):
+        """Only the color controls the chosen effect uses are on screen."""
+        mode = self.aura_mode.currentData()
+        self.aura_color.setVisible(mode not in AURA_NO_COLOR)
+        self.aura_color2.setVisible(mode in AURA_TWO_COLORS)
+        self.aura_zone_row.setVisible(mode == AURA_ZONES[0])
+        self.aura_zone_line.setVisible(mode == AURA_ZONES[0])
+
+    def _offer_modes(self, modes):
+        """The effect list is what the service says this keyboard has."""
+        modes = [m for m in modes or () if m in AURA_LABELS]
+        have = [self.aura_mode.itemData(i) for i in range(self.aura_mode.count())]
+        if not modes or modes == have:
+            return
+        current = self.aura_mode.currentData()
+        self.aura_mode.clear()
+        for m in modes:
+            self.aura_mode.addItem(_(AURA_LABELS[m]), m)
+        self.aura_mode.setCurrentIndex(max(0, self.aura_mode.findData(current)))
+
+    def pick_zone(self, i: int):
+        c = QColorDialog.getColor(self.zone_colors[i], self, _("Zone {n}").format(n=i + 1))
+        if c.isValid():
+            self.zone_colors[i] = c
+            self.settings.setValue("aura_zones", ",".join(z.name() for z in self.zone_colors))
+            self._paint_color()
+            self.set_aura()
 
     def pick_color(self):
         c = QColorDialog.getColor(self.color, self, _("Keyboard color"))
@@ -945,9 +1020,23 @@ class MainWindow(QWidget):
             self._paint_color()
             self.set_aura()
 
+    def pick_color2(self):
+        c = QColorDialog.getColor(self.color2 or self.color, self, _("Second color"))
+        if c.isValid():
+            self.color2 = c
+            self.settings.setValue("aura_color2", c.name())
+            self._paint_color()
+            self.set_aura()
+
     def set_aura(self):
-        self.action("set_aura", mode=self.aura_mode.currentData(),
+        self._show_color2()
+        mode = self.aura_mode.currentData()
+        two = self.color2 if mode in AURA_TWO_COLORS else None
+        self.action("set_aura", mode=mode,
                     color=[self.color.red(), self.color.green(), self.color.blue()],
+                    color2=[two.red(), two.green(), two.blue()] if two else None,
+                    zones=[[z.red(), z.green(), z.blue()] for z in self.zone_colors]
+                    if mode == AURA_ZONES[0] else None,
                     speed=self.aura_speed.currentData())
 
     def set_charge(self):
