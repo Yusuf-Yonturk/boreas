@@ -225,7 +225,7 @@ def ac_online() -> bool:
     for d in glob.glob(p("/sys/class/power_supply/*")):
         try:
             with open(d + "/type") as f:
-                if f.read().strip() != "Mains":
+                if f.read().strip() not in ("Mains", "USB"):  # USB: a USB-C PD charger
                     continue
             with open(d + "/online") as f:
                 if f.read().strip() == "1":

@@ -20,14 +20,22 @@ def call(cmd: str, timeout: float = 30, **kw) -> dict:
             s.connect(SOCKET)
         except OSError as e:
             raise DaemonError(f"Could not connect to boreasd ({e}). Is the service running?") from e
-        s.sendall((json.dumps({"cmd": cmd, **kw}) + "\n").encode())
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    resp = json.loads(buf or b"{}")
+        try:
+            s.sendall((json.dumps({"cmd": cmd, **kw}) + "\n").encode())
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        except OSError as e:  # a timeout or a reset while the service is busy or restarting
+            raise DaemonError(f"Could not connect to boreasd ({e}). Is the service running?") from e
+    try:
+        resp = json.loads(buf or b"{}")
+    except ValueError as e:  # the service went away in the middle of its answer
+        raise DaemonError(f"Could not connect to boreasd ({e}). Is the service running?") from e
+    if not isinstance(resp, dict):
+        raise DaemonError("unknown error")
     if not resp.pop("ok", False):
         raise DaemonError(resp.get("error", "unknown error"))
     return resp

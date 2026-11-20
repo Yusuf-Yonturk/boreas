@@ -126,6 +126,14 @@ class TestFans(Base):
         self.assertIsNone(fans.factory_curve("cpu"))
         self.assertEqual(len(fans.read_curve("gpu")), 16)
 
+    def test_a_speed_is_never_rounded_down_on_the_way_to_the_firmware(self):
+        # the kernel reads pwm back as a percentage with the fraction cut off
+        for pct in range(101):
+            pwm = fans.pct_to_pwm(pct)
+            self.assertGreaterEqual(pwm * 100 // 255, pct, pct)
+            self.assertEqual(fans.pwm_to_pct(pwm), pct, pct)
+        self.assertEqual((fans.pct_to_pwm(0), fans.pct_to_pwm(100), fans.pct_to_pwm(12)), (0, 255, 31))
+
     def test_write_curve_rejects_all_zero(self):
         with self.assertRaises(ValueError):
             fans.write_curve("cpu", [30, 40, 50, 60, 61, 62, 63, 64] + [0] * 8)
@@ -209,6 +217,21 @@ class TestHw(Base):
         self.assertEqual(hw.battery_info()["limit"], 80)
         hw.set_charge_limit(20)
         self.assertEqual(get(R + "/sys/class/power_supply/BAT0/charge_control_end_threshold"), "40")
+
+
+class TestPowerSource(Base):
+    def test_usb_c_charger_counts_as_ac(self):
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        self.assertFalse(hw.ac_online())
+        usb = R + "/sys/class/power_supply/ucsi-source-psy-USBC000:001"
+        put(usb + "/type", "USB")
+        put(usb + "/online", 0)
+        self.assertFalse(hw.ac_online())  # a port with nothing charging through it
+        put(usb + "/online", 1)
+        self.assertTrue(hw.ac_online())
+        put(R + "/sys/class/power_supply/BAT0/online", 1)  # a battery never counts
+        put(usb + "/online", 0)
+        self.assertFalse(hw.ac_online())
 
 
 class TestGpu(Base):
@@ -653,6 +676,20 @@ class TestThermalDaemon(Base):
         d.tick()
         self.assertFalse(d.cover_stalled_tick())  # the watcher is back: the fallback steps aside
 
+    def test_shutdown_is_final_for_the_controller(self):
+        d, _, clock = self._daemon(85)
+        d.apply_mode(hw.BALANCED)
+        self.assertEqual(d.cpu.target, 85)
+        d.shutdown()
+        self.assertIsNone(d.cpu.target)
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        clock[0] += 10
+        self.assertFalse(d.cover_stalled_tick())           # the fallback thread
+        d.maintain_cpu_temp()                               # the watcher
+        self.assertFalse(d.apply_cpu_temp(85, d.cfg.mode(hw.BALANCED)))  # a request still in flight
+        self.assertIsNone(d.cpu.target)
+        self.assertEqual(hw.get_attr("ppt_pl1_spl").current, 55)
+
     def test_inactive_edit_and_invalid_values(self):
         d, _, _ = self._daemon(None)
         for value in (50, 100, "85", True, 85.5):
@@ -851,6 +888,15 @@ class TestAura(Base):
 
 
 class TestConfig(Base):
+    def test_save_syncs_the_folder_after_the_rename(self):
+        c = config.Config()
+        synced = []
+        real = os.fsync
+        with patch.object(config.os, "fsync", side_effect=lambda fd: (synced.append(os.fstat(fd).st_mode), real(fd))[1]):
+            c.save()
+        import stat as st
+        self.assertEqual([st.S_ISDIR(m) for m in synced], [False, True])
+
     def test_modes(self):
         c = config.Config()
         self.assertEqual(c.mode_list(), [2, 0, 1])
@@ -1160,6 +1206,57 @@ class TestSocket(Base):
         self.assertEqual(len(created), 3)
         self.assertTrue(all(sock.fileno() == -1 for sock in created))
 
+    def _serve_raw(self, reply, hold=0.0):
+        """A stand-in service on the socket that sends `reply` (bytes) and closes."""
+        import socket
+        path = TMP + "/raw.sock"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+
+        def run():
+            conn, _ = srv.accept()
+            conn.recv(65536)
+            time.sleep(hold)
+            if reply:
+                conn.sendall(reply)
+            conn.close()
+            srv.close()
+        threading.Thread(target=run, daemon=True).start()
+        return path
+
+    def test_broken_answers_are_daemon_errors_not_tracebacks(self):
+        for reply, hold in ((b'{"ok": true, "mo', 0.0), (b"", 0.0), (b"[1, 2]\n", 0.0), (b"", 0.6)):
+            with patch.object(client, "SOCKET", self._serve_raw(reply, hold)):
+                with self.assertRaises(client.DaemonError):
+                    client.call("status", timeout=0.2)
+        with open(os.devnull, "w") as null, patch.object(client, "SOCKET", self._serve_raw(b'{"ok": true, "mo')), \
+                contextlib.redirect_stderr(null):
+            self.assertEqual(client.main(["status"]), 1)
+
+    def test_idle_connection_is_dropped(self):
+        import socket
+        sock = TMP + "/idle.sock"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(sock)
+        with patch.object(daemon.Handler, "timeout", 0.2):
+            srv = daemon.Server(sock, daemon.Handler)
+            srv.daemon_obj = daemon.Daemon(config.Config())
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    s.settimeout(3)
+                    s.connect(sock)
+                    started = time.time()
+                    self.assertEqual(s.recv(16), b"")  # closed by the service, nothing was sent
+                    self.assertLess(time.time() - started, 2.5)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(daemon.Handler.timeout, daemon.IDLE_TIMEOUT)
+
     def test_roundtrip(self):
         d = daemon.Daemon(config.Config())
         sock = daemon.SOCKET
@@ -1284,6 +1381,18 @@ class TestSelfUpdate(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(os.path.dirname(d), "evil.sh")))
             shutil.rmtree(d)
 
+    def test_installer_exit_codes_are_not_mistaken_for_pkexec(self):
+        import subprocess as sp
+        from boreas import update
+        script = os.path.join(TMP, "fails.sh")
+        for code in (126, 127, 3):
+            with open(script, "w") as f:
+                f.write(f"exit {code}\n")
+            self.assertEqual(sp.run(["/bin/sh", "-c", update.INSTALL_WRAPPER, script]).returncode, 1, code)
+        with open(script, "w") as f:
+            f.write("exit 0\n")
+        self.assertEqual(sp.run(["/bin/sh", "-c", update.INSTALL_WRAPPER, script]).returncode, 0)
+
     def test_run_update_uses_pkexec_and_handles_cancel(self):
         import subprocess as sp
         from unittest.mock import patch
@@ -1298,8 +1407,8 @@ class TestSelfUpdate(unittest.TestCase):
                 patch.object(update.subprocess, "run", fake_run):
             self.code = 0
             self.assertEqual(update.run_update("9.0.0"), "9.0.0")
-            self.assertEqual(seen[-1][:2], ["/usr/bin/pkexec", "/bin/sh"])
-            self.assertTrue(seen[-1][2].endswith("install.sh"))
+            self.assertEqual(seen[-1][:4], ["/usr/bin/pkexec", "/bin/sh", "-c", update.INSTALL_WRAPPER])
+            self.assertTrue(seen[-1][4].endswith("install.sh"))
             self.code = 126
             with self.assertRaises(update.UpdateCancelled):
                 update.run_update("9.0.0")
@@ -1322,7 +1431,7 @@ class TestSelfUpdate(unittest.TestCase):
         modes = []
 
         def fake_run(cmd, **kw):
-            folder = os.path.dirname(os.path.dirname(cmd[2]))   # <tmp>/boreas-main/install.sh
+            folder = os.path.dirname(os.path.dirname(cmd[-1]))  # <tmp>/boreas-main/install.sh
             modes.append(stat.S_IMODE(os.stat(folder).st_mode))
             return sp.CompletedProcess(cmd, 0, "", "")
         old = os.umask(0)   # a lax umask must not matter

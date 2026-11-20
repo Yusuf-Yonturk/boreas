@@ -53,7 +53,9 @@ to a tuple of translations in the order given by `ORDER`.
 
 - **Fix a translation:** edit the text in the tuple.
 - **Add a language:** add its code to `ORDER`, append a translation to every entry, and add its native
-  name to `LANGUAGES` in [`boreas/i18n.py`](boreas/i18n.py) and to the list in `install.sh`.
+  name to `LANGUAGES` in [`boreas/i18n.py`](boreas/i18n.py). In `install.sh` it goes in four places: `CODES`, the
+  menu printed under "Interface language", the "Choose 1-N" prompt, and the font hint (`case "$lang"`) when
+  the script needs a font package. `tests/test_i18n.py` checks the first three.
 - Keep placeholders such as `{name}` exactly as they are.
 
 `tests/test_i18n.py` fails if a text is missing in any language or a placeholder is broken.

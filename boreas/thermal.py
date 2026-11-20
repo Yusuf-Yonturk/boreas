@@ -490,8 +490,9 @@ class Controller:
                 self.over_since = None
                 self.cool_since = None
                 self.state = "active"
-        except (OSError, ValueError, AttributeError) as e:
-            self.fail(str(e))
+        except (OSError, ValueError, AttributeError, TypeError) as e:
+            # TypeError: a limit that could not be read back compares as None
+            self.fail(str(e) if not isinstance(e, TypeError) else "Power limit could not be read")
 
     def status(self) -> dict:
         control = self.active_backend or self._backend()

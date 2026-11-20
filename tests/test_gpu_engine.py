@@ -363,6 +363,38 @@ class ResetTests(unittest.TestCase):
         self.assertEqual([c.args[0][1] for c in run.call_args_list], ["start"])
         self.assertFalse(fresh.powerd_stopped)
 
+    def test_reap_collects_a_dead_helper_and_restores_powerd_once(self):
+        gpu_engine.reap()  # no instance: nothing to do
+        engine = gpu_engine._instance = gpu_engine.Engine()
+        self.addCleanup(setattr, engine, "powerd_stopped", False)  # atexit must not reach systemctl
+        gpu_engine.reap()  # no helper started yet
+        engine.process = Mock(**{"poll.return_value": None})
+        engine.powerd_stopped = True
+        with patch.object(gpu_engine.subprocess, "run") as run:
+            gpu_engine.reap()  # alive: left alone
+            run.assert_not_called()
+            engine.process.poll.return_value = 1
+            run.return_value = Mock(returncode=0)
+            gpu_engine.reap()
+            gpu_engine.reap()
+        self.assertEqual([c.args[0][1] for c in run.call_args_list], ["start"])
+        self.assertFalse(engine.powerd_stopped)
+        self.assertGreaterEqual(engine.process.poll.call_count, 3)  # poll() is what collects the zombie
+
+    def test_a_helper_that_ignores_sigkill_does_not_block_forever(self):
+        import subprocess
+        engine = gpu_engine.Engine()
+        stuck = subprocess.TimeoutExpired(["helper"], 2)
+        engine.process = Mock(**{"wait.side_effect": [stuck, stuck]})
+        engine.process.stdin.closed = True
+        engine.process.stdout.closed = True
+        process = engine.process
+        self.addCleanup(setattr, engine, "process", None)  # nothing left for the atexit hook
+        engine._disconnect()
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertIsNotNone(process.wait.call_args.kwargs.get("timeout"))
+
     def test_reset_without_a_pending_restore_leaves_no_instance(self):
         gpu_engine._instance = gpu_engine.Engine()
         gpu_engine.reset()

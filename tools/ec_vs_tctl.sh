@@ -14,8 +14,8 @@ for i in $(seq 1 30); do
     hex=$(echo "$raw" | grep -oE '0x[0-9a-fA-F]+$')
     ec=$(( hex & 0xFFFF ))
     printf "%s  %-11s  %-4s  %-5s  %-6s  %s\n" "$(date +%T)" "$ec" \
-        $(( $(cat $K/temp1_input) / 1000 )) $(( $(cat $K/temp3_input) / 1000 )) \
-        $(( $(cat $A/temp1_input) / 1000 )) "$raw" | tee -a "$OUT"
+        $(( $(cat "$K/temp1_input") / 1000 )) $(( $(cat "$K/temp3_input") / 1000 )) \
+        $(( $(cat "$A/temp1_input") / 1000 )) "$raw" | tee -a "$OUT"
     sleep 1
 done
 chmod 644 "$OUT"

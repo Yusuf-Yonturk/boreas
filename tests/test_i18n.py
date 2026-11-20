@@ -60,6 +60,20 @@ class TestCatalog(unittest.TestCase):
         self.assertEqual(missing, [])
 
 
+class TestInstaller(unittest.TestCase):
+    def test_install_sh_offers_every_language(self):
+        with open(os.path.join(ROOT, "install.sh"), encoding="utf-8") as fh:
+            script = fh.read()
+        codes = re.search(r'^CODES="([^"]+)"', script, re.M).group(1).split()
+        self.assertEqual(sorted(codes), sorted(i18n.LANGUAGES))
+        menu = script[script.index("cat <<'EOF'"):script.index("\nEOF\n")]
+        numbers = sorted(int(n) for n in re.findall(r"(\d+)\) ", menu))
+        self.assertEqual(numbers, list(range(1, len(codes) + 1)))
+        for n, code in enumerate(codes, 1):
+            self.assertRegex(menu, rf"\b{n}\) {re.escape(i18n.LANGUAGES[code])}")
+        self.assertIn(f'"Choose 1-{len(codes)} [%s]: "', script)
+
+
 class TestLookup(unittest.TestCase):
     def tearDown(self):
         i18n.set_language("en")

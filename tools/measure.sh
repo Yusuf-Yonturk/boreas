@@ -5,4 +5,5 @@ n=0; b=0; p=0; t=0; end=$((SECONDS+$2))
 while [ $SECONDS -lt $end ]; do
   b=$((b+$(cat $C/gpu_busy_percent))); p=$((p+$(cat $H/power1_input)/1000000)); t=$((t+$(cat $K/temp1_input)/1000)); n=$((n+1)); sleep 0.25
 done
+[ "$n" -gt 0 ] || { echo "usage: measure.sh LABEL SECONDS (SECONDS must be at least 1)" >&2; exit 2; }
 printf "%-22s iGPU=%3d%%  power=%2dW  Tctl=%d\n" "$1" $((b/n)) $((p/n)) $((t/n))

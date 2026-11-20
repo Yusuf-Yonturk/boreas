@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -80,10 +81,23 @@ class _ThemeBus(QObject):
 bus = _ThemeBus()
 
 
+_fallback_assets: str | None = None
+
+
 def _assets(p: dict) -> tuple[str, str]:
     """Small SVGs used by the QSS through url() (combo box arrow, check mark)."""
     d = os.path.join(os.path.expanduser("~/.cache"), "boreas")
-    os.makedirs(d, exist_ok=True)
+    try:
+        os.makedirs(d, exist_ok=True)
+        for name in (f"chevron-{p['name']}.svg", "check.svg"):
+            with open(os.path.join(d, name), "a"):
+                pass
+    except OSError:
+        # ~/.cache is read-only or the files belong to root (a run with sudo): the app still starts
+        global _fallback_assets
+        if _fallback_assets is None:
+            _fallback_assets = tempfile.mkdtemp(prefix="boreas-assets-")
+        d = _fallback_assets
     chev = os.path.join(d, f"chevron-{p['name']}.svg")
     check = os.path.join(d, "check.svg")
     with open(chev, "w") as f:
