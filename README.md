@@ -16,7 +16,8 @@ supergfxd, rog-control-center) with a single small system service (`boreasd`) an
 
 The window layout is modelled on [G-Helper](https://github.com/seerge/g-helper) on purpose, so it feels
 familiar if you come from Windows. No code is shared: G-Helper is a Windows program, Boreas is written from
-scratch in Python and Qt. Boreas is Linux only; on Windows, use G-Helper.
+scratch in Python and Qt. A few hardware details were learned by reading G-Helper and asusctl; they are
+listed in the [third-party notices](THIRD_PARTY_NOTICES.md). Boreas is Linux only; on Windows, use G-Helper.
 
 ![Boreas: main window in the light theme, fan curves and power limits in the dark theme](docs/screenshots.png)
 
@@ -67,7 +68,8 @@ with the output of `boreasctl status` and `uname -r`, whether everything worked 
 | GPU: Eco / Standard / Optimized / Ultimate | ✓ | `dgpu_disable`, `gpu_mux_mode` |
 | Display 60 Hz / max / Auto | ✓ (KDE) | `kscreen-doctor` |
 | Panel overdrive | ✓ | `panel_overdrive` |
-| Keyboard Aura (static, breathe, cycle, rainbow, strobe) | ✓ | hidraw, report 0x5D (output report) |
+| Keyboard Aura (static, breathe with two colors, cycle, rainbow, strobe; Star, Rain, Highlight, Laser, Ripple, Comet, Flash on per-key keyboards; zone colors on four-zone keyboards) | ✓ | hidraw, report 0x5D (output report) |
+| Keyboard color that follows the CPU temperature, GPU mode or battery | ✓ | hidraw, written by the service |
 | Keyboard brightness | ✓ | `asus::kbd_backlight` |
 | Charge limit | ✓ | `charge_control_end_threshold` |
 | Fn+F5 / KDE power profile | ✓ | the service watches profile changes and re-applies mode settings |
@@ -76,7 +78,7 @@ with the output of `boreasctl status` and `uname -r`, whether everything worked 
 Not yet: AniMe/Slash matrix, M4/ROG key binding (bind `boreasctl mode next` to a KDE shortcut),
 GPU clock offsets, Ryzen undervolt (Curve Optimizer), peripherals (mouse, headset), fan hysteresis,
 keyboard light sleep/shutdown settings (Aura power), separate keyboard brightness for AC/battery,
-one-time 100 % charge, boot sound (`boot_sound`), USB-C charging mode, Aura second color.
+one-time 100 % charge, boot sound (`boot_sound`), USB-C charging mode, per-key colors.
 
 ## Install
 

@@ -102,6 +102,12 @@ def _color(v) -> bool:
     return isinstance(v, list) and len(v) == 3 and all(_int(x) and 0 <= x <= 255 for x in v)
 
 
+def _zones(v, needed: bool) -> bool:
+    if v is None:
+        return not needed
+    return isinstance(v, list) and len(v) == aura.ZONE_COUNT and all(_color(c) for c in v)
+
+
 def sanitize_settings(data: dict) -> None:
     """The settings outside the modes: a value of the wrong shape falls back to its default."""
     for key, value in DEFAULT.items():
@@ -116,11 +122,16 @@ def sanitize_settings(data: dict) -> None:
     for key in ("charge_limit", "kbd_brightness", "overdrive"):
         if not _int(data[key]):
             data[key] = None
+    sanitize_aura(data)
+
+
+def sanitize_aura(data: dict) -> None:
     a = data["aura"]
     # isinstance first: a list or object is not hashable and cannot be looked up in the tables
-    if not (isinstance(a, dict) and isinstance(a.get("mode"), str) and a["mode"] in aura.MODES
+    if not (isinstance(a, dict) and isinstance(a.get("mode"), str) and a["mode"] in aura.ALL_MODES
             and _color(a.get("color")) and (a.get("color2") is None or _color(a["color2"]))
-            and isinstance(a.get("speed", "normal"), str) and a.get("speed", "normal") in aura.SPEEDS):
+            and isinstance(a.get("speed", "normal"), str) and a.get("speed", "normal") in aura.SPEEDS
+            and _zones(a.get("zones"), needed=a["mode"] == aura.ZONES)):
         data["aura"] = None
 
 

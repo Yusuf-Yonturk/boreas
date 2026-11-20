@@ -899,6 +899,153 @@ class TestHeldSelection(unittest.TestCase):
         self.assertIn("mode", w.hold)
 
 
+class TestAuraSecondColor(unittest.TestCase):
+    """The second color button belongs to the effects that fade between two colors."""
+
+    STATUS = {**TestHeldSelection.STATUS, "aura_device": True,
+              "aura": {"mode": "static", "color": [255, 0, 0], "color2": None, "speed": "normal"}}
+
+    def setUp(self):
+        self.w = A.MainWindow()
+        self.w.settings = FakeSettings()
+        self.w.color2 = None             # whatever this machine has saved does not reach the test
+        self.w.status = dict(self.STATUS)
+        self.w.busy = False
+        self.sent = []
+        self.w.action = lambda cmd, **kw: self.sent.append((cmd, kw))
+
+    def tearDown(self):
+        self.w.quitting = True
+        self.w.tray.hide()
+
+    def choose(self, mode):
+        self.w.aura_mode.setCurrentIndex(self.w.aura_mode.findData(mode))
+        self.w.set_aura()
+
+    def test_button_only_with_breathe(self):
+        w = self.w
+        w.render()
+        self.assertTrue(w.aura_color2.isHidden())
+        self.choose("breathe")
+        self.assertFalse(w.aura_color2.isHidden())
+        self.choose("rainbow")
+        self.assertTrue(w.aura_color2.isHidden())
+
+    def test_no_second_color_until_one_is_picked(self):
+        self.choose("breathe")
+        self.assertIsNone(self.sent[-1][1]["color2"])
+
+    def test_picked_color_is_sent_with_breathe_only(self):
+        w = self.w
+        w.render()                       # color and speed come from the status, not from this machine
+        w.aura_mode.setCurrentIndex(w.aura_mode.findData("breathe"))
+        with patch.object(A.QColorDialog, "getColor", return_value=A.QColor(0, 0, 255)):
+            w.pick_color2()
+        self.assertEqual(self.sent[-1], ("set_aura", {"mode": "breathe", "color": [255, 0, 0],
+                                                      "color2": [0, 0, 255], "zones": None,
+                                                      "speed": "normal"}))
+        self.assertEqual(w.settings.values["aura_color2"], "#0000ff")
+        self.choose("static")
+        self.assertIsNone(self.sent[-1][1]["color2"])
+        self.choose("breathe")           # the pick survives a detour through another effect
+        self.assertEqual(self.sent[-1][1]["color2"], [0, 0, 255])
+
+    def test_cancelled_dialog_changes_nothing(self):
+        with patch.object(A.QColorDialog, "getColor", return_value=A.QColor()):
+            self.w.pick_color2()
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(self.w.color2)
+
+    def test_status_restores_the_second_color(self):
+        w = self.w
+        w.status = {**self.STATUS, "aura": {"mode": "breathe", "color": [255, 0, 0], "color2": [0, 255, 0],
+                                            "speed": "slow"}}
+        w.render()
+        self.assertFalse(w.aura_color2.isHidden())
+        self.assertEqual(w.color2.name(), "#00ff00")
+        self.assertIn("#00ff00", w.aura_color2.styleSheet())
+
+
+class TestAuraZonesAndFollowModes(unittest.TestCase):
+    """Zone colors on four-zone keyboards; heatmap, GPU mode and battery need no color button."""
+
+    MODES = ["static", "zones", "breathe", "cycle", "rainbow", "strobe", "heatmap", "gpu", "battery"]
+    STATUS = {**TestAuraSecondColor.STATUS, "aura_modes": MODES}
+
+    def setUp(self):
+        self.w = A.MainWindow()
+        self.w.settings = FakeSettings()
+        self.w.zone_colors = [A.QColor("#ff0000") for _ in range(4)]
+        self.w.status = dict(self.STATUS)
+        self.w.busy = False
+        self.sent = []
+        self.w.action = lambda cmd, **kw: self.sent.append((cmd, kw))
+
+    def tearDown(self):
+        self.w.quitting = True
+        self.w.tray.hide()
+
+    def modes(self):
+        return [self.w.aura_mode.itemData(i) for i in range(self.w.aura_mode.count())]
+
+    def choose(self, mode):
+        self.w.aura_mode.setCurrentIndex(self.w.aura_mode.findData(mode))
+        self.w.set_aura()
+
+    def test_zones_offered_only_on_four_zone_keyboards(self):
+        w = self.w
+        self.assertNotIn("zones", self.modes())          # not before the service has said so
+        w.render()
+        self.assertEqual(self.modes(), self.MODES)
+        self.choose("gpu")
+        w.status = {**self.STATUS, "aura": {**self.STATUS["aura"], "mode": "gpu"},
+                    "aura_modes": ["static", "breathe", "star", "bogus", "gpu"]}
+        w.render()                                       # a per-key keyboard: its own list, the choice kept
+        self.assertEqual(self.modes(), ["static", "breathe", "star", "gpu"])
+        self.assertEqual(w.aura_mode.currentData(), "gpu")
+        self.assertEqual(w.aura_mode.itemText(2), "Yıldız")
+        w.status = {k: v for k, v in self.STATUS.items() if k != "aura_modes"}
+        w.render()                                       # an older service says nothing: the list stays
+        self.assertEqual(self.modes(), ["static", "breathe", "star", "gpu"])
+
+    def test_zone_row_and_what_is_sent(self):
+        w = self.w
+        w.render()
+        self.assertTrue(w.aura_zone_row.isHidden())
+        self.choose("zones")
+        self.assertFalse(w.aura_zone_row.isHidden())
+        self.assertTrue(w.aura_color.isHidden())
+        self.assertEqual(self.sent[-1][1]["zones"], [[255, 0, 0]] * 4)
+        with patch.object(A.QColorDialog, "getColor", return_value=A.QColor(0, 0, 255)):
+            w.pick_zone(2)
+        self.assertEqual(self.sent[-1][1]["zones"], [[255, 0, 0], [255, 0, 0], [0, 0, 255], [255, 0, 0]])
+        self.assertEqual(w.settings.values["aura_zones"], "#ff0000,#ff0000,#0000ff,#ff0000")
+        self.assertIn("#0000ff", w.aura_zone_buttons[2].styleSheet())
+        self.choose("static")
+        self.assertTrue(w.aura_zone_row.isHidden())
+        self.assertFalse(w.aura_color.isHidden())
+        self.assertIsNone(self.sent[-1][1]["zones"])
+
+    def test_follow_modes_have_no_color_button(self):
+        w = self.w
+        w.render()
+        for mode in ("heatmap", "gpu", "battery"):
+            self.choose(mode)
+            self.assertTrue(w.aura_color.isHidden(), mode)
+            self.assertTrue(w.aura_color2.isHidden(), mode)
+            self.assertEqual(self.sent[-1][1]["mode"], mode)
+
+    def test_status_restores_zone_colors(self):
+        w = self.w
+        zones = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [10, 20, 30]]
+        w.status = {**self.STATUS, "aura": {"mode": "zones", "color": [255, 0, 0], "color2": None,
+                                            "speed": "normal", "zones": zones}}
+        w.render()
+        self.assertEqual(w.aura_mode.currentData(), "zones")
+        self.assertFalse(w.aura_zone_row.isHidden())
+        self.assertEqual([c.name() for c in w.zone_colors], ["#ff0000", "#00ff00", "#0000ff", "#0a141e"])
+
+
 class TestScreenRetry(unittest.TestCase):
     def test_screen_row_is_looked_for_again_when_kscreen_is_late(self):
         info = {"name": "eDP-1", "current": 240, "rates": {60: 1, 240: 2}}

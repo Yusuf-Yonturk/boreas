@@ -935,6 +935,167 @@ class TestConfig(Base):
         self.assertIsNone(config.Config().mode(0)["cpu_temp_floor_w"])
 
 
+class TestAuraZonesAndFollow(Base):
+    """Zone colors and the colors that follow the machine (heatmap, GPU mode, battery)."""
+
+    def setUp(self):
+        super().setUp()
+        open(R + "/dev/hidraw1", "w").close()
+
+    def packets(self):
+        """What was sent to the keyboard since the last call (each send starts the fake device file over)."""
+        with open(R + "/dev/hidraw1", "rb") as f:
+            data = f.read()
+        open(R + "/dev/hidraw1", "w").close()
+        return [data[i:i + 13] for i in range(0, len(data), 64)]
+
+    def set_aura(self, d, **kw):
+        return d.handle({"cmd": "set_aura", "color": [255, 0, 0], **kw})
+
+    def test_zone_message(self):
+        self.assertEqual(list(aura.message("static", (1, 2, 3), zone=3))[:7], [0x5D, 0xB3, 3, 0, 1, 2, 3])
+        self.assertEqual(aura.message("static", (0, 0, 0), zone=1)[9], 0)   # off, not a random color
+
+    def test_zone_colors_are_written_left_to_right_and_stored(self):
+        aura.apply_zones([(255, 0, 0), (0, 255, 0), (0, 0, 255), (9, 9, 9)])
+        p = self.packets()
+        self.assertEqual([(x[2], tuple(x[4:7])) for x in p[:4]],
+                         [(1, (255, 0, 0)), (2, (0, 255, 0)), (3, (0, 0, 255)), (4, (9, 9, 9))])
+        self.assertEqual([x[1] for x in p[4:]], [0xB5, 0xB4])
+        with self.assertRaises(ValueError):
+            aura.apply_zones([(1, 1, 1)])
+
+    def test_effects_follow_the_kind_of_keyboard(self):
+        # the answer of a G713PV with a per-key keyboard, as read from the machine
+        answer = bytes.fromhex("5d0520310020030100032305020246031501")
+        self.assertEqual(aura.kind_of(answer), "perkey")
+        self.assertEqual(aura.kind_of(answer[:9] + b"\x02" + answer[10:]), "zones")
+        self.assertEqual(aura.kind_of(answer[:9] + b"\x04" + answer[10:]), "single")
+        self.assertIsNone(aura.kind_of(answer[:9] + b"\x7f" + answer[10:]))
+        self.assertIsNone(aura.kind_of(b"\x5d\x00\x00"))
+        self.assertIsNone(aura.kind_of(bytes(64)))             # no answer: the buffer came back empty
+        perkey, zones, single = (aura.modes_for(k) for k in ("perkey", "zones", "single"))
+        for m in aura.PER_KEY_MODES:
+            self.assertIn(m, perkey)
+            self.assertNotIn(m, zones)
+            self.assertNotIn(m, aura.modes_for(None))
+        self.assertEqual(zones[:2], ["static", "zones"])
+        self.assertNotIn("zones", perkey)
+        self.assertNotIn("rainbow", single)
+        self.assertEqual(aura.modes_for(None)[:5], ["static", "breathe", "cycle", "rainbow", "strobe"])
+        for kind in ("perkey", "zones", "single", None):
+            self.assertEqual(aura.modes_for(kind)[-3:], list(aura.FOLLOW_MODES))
+            self.assertLessEqual(set(aura.modes_for(kind)), set(aura.ALL_MODES))
+
+    def test_keyboard_is_asked_once_and_never_through_a_plain_file(self):
+        self.assertIsNone(aura.probe())                         # the fake device is a file: nothing is sent
+        self.assertEqual(self.packets(), [])
+        d = TestDaemon.make(self)
+        asked = []
+        with patch.object(aura, "probe", side_effect=lambda: asked.append(1) or "perkey"):
+            self.assertIn("star", d.status()["aura_modes"])
+            self.assertIn("star", d.status()["aura_modes"])
+        self.assertEqual(len(asked), 1)
+        d = TestDaemon.make(self)
+        with patch.object(aura, "probe", side_effect=lambda: asked.append(1)):
+            self.assertNotIn("star", d.status()["aura_modes"])
+            d.status()
+        self.assertEqual(len(asked), 2)                         # no answer is not asked again either
+
+    def test_per_key_effect_numbers(self):
+        self.assertEqual([aura.message(m, (1, 2, 3))[3] for m in ("star", "rain", "highlight", "laser", "ripple",
+                                                                 "comet", "flash")], [4, 5, 6, 7, 8, 11, 12])
+        d = TestDaemon.make(self)
+        self.set_aura(d, mode="star")
+        self.assertEqual(self.packets()[0][3], 4)
+
+    def test_color_scales(self):
+        self.assertEqual(aura.scale(aura.HEAT_STOPS, 10), aura.BLUE)
+        self.assertEqual(aura.scale(aura.HEAT_STOPS, 60), aura.GREEN)
+        self.assertEqual(aura.scale(aura.HEAT_STOPS, 82.5), (255, 85, 0))     # halfway from amber to red
+        self.assertEqual(aura.scale(aura.HEAT_STOPS, 104), aura.RED)
+        self.assertEqual(aura.scale(aura.BATTERY_STOPS, 5), aura.RED)
+        self.assertEqual(aura.scale(aura.BATTERY_STOPS, 100), aura.GREEN)
+        self.assertEqual(aura.follow_color("gpu", None, None, "eco"), aura.GREEN)
+        self.assertEqual(aura.follow_color("gpu", None, None, "ultimate"), aura.RED)
+        self.assertEqual(aura.follow_color("gpu", None, None, "unknown"), aura.GPU_COLOR_OTHER)
+        self.assertIsNone(aura.follow_color("heatmap", None, None, None))
+
+    def test_set_zones_through_the_service(self):
+        d = TestDaemon.make(self)
+        zones = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]
+        self.set_aura(d, mode="zones", zones=zones)
+        self.assertEqual(d.cfg["aura"]["zones"], zones)
+        self.assertEqual([x[2] for x in self.packets()[:4]], [1, 2, 3, 4])
+        for bad in (None, zones[:3], [[1, 2]] * 4, "red"):
+            with self.assertRaises(ValueError, msg=bad):
+                self.set_aura(d, mode="zones", zones=bad)
+        self.assertEqual(d.cfg["aura"]["zones"], zones)   # a refused request changes nothing
+        with self.assertRaises(ValueError):
+            self.set_aura(d, mode="disco")
+
+    def test_heatmap_writes_only_when_the_color_moved(self):
+        d = TestDaemon.make(self)
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 60000)
+        self.set_aura(d, mode="heatmap")
+        p = self.packets()
+        self.assertEqual(tuple(p[0][4:7]), aura.GREEN)
+        self.assertEqual([x[1] for x in p], [0xB3, 0xB5])     # shown, not stored in the keyboard
+        d.follow_aura()
+        d.follow_aura()
+        self.assertEqual(self.packets(), [])                    # same temperature: nothing written
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 60400)
+        d.follow_aura()
+        self.assertEqual(self.packets(), [])                    # a change too small to see
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 90000)
+        d.follow_aura()
+        self.assertEqual(tuple(self.packets()[0][4:7]), (255, 0, 0))
+
+    def test_battery_and_gpu_modes(self):
+        d = TestDaemon.make(self)
+        self.set_aura(d, mode="battery")                        # the tree's battery is at 76 %
+        self.assertEqual(tuple(self.packets()[0][4:7]), aura.scale(aura.BATTERY_STOPS, 76))
+        self.set_aura(d, mode="gpu")
+        self.assertEqual(tuple(self.packets()[0][4:7]), aura.BLUE)              # the tree is in Standard
+
+    def test_follow_mode_is_put_back_by_reapply_and_left_by_a_plain_effect(self):
+        d = TestDaemon.make(self)
+        self.set_aura(d, mode="heatmap")
+        self.packets()
+        d.apply_extras()                                        # after sleep the keyboard forgot the color
+        self.assertEqual([x[1] for x in self.packets()], [0xB3, 0xB5])
+        self.set_aura(d, mode="static")
+        self.packets()
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        d.follow_aura()
+        self.assertEqual(self.packets(), [])
+
+    def test_missing_keyboard_does_not_stop_the_tick(self):
+        d = TestDaemon.make(self)
+        self.set_aura(d, mode="heatmap")
+        os.remove(R + "/dev/hidraw1")
+        put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
+        d.tick()
+        d.tick()
+        self.assertTrue(d.aura_follow_error)
+
+    def test_stored_zones_and_follow_modes_survive_a_reload(self):
+        c = config.Config()
+        c["aura"] = {"mode": "zones", "color": [1, 2, 3], "color2": None, "speed": "normal",
+                     "zones": [[1, 2, 3]] * 4}
+        c.save()
+        self.assertEqual(config.Config()["aura"]["mode"], "zones")
+        for broken in ({"mode": "zones", "color": [1, 2, 3]},
+                       {"mode": "zones", "color": [1, 2, 3], "zones": [[1, 2, 3]] * 5},
+                       {"mode": "static", "color": [1, 2, 3], "zones": "x"}):
+            data = {"aura": broken}
+            config.sanitize_aura(data)
+            self.assertIsNone(data["aura"], broken)
+        ok = {"aura": {"mode": "heatmap", "color": [1, 2, 3]}}
+        config.sanitize_aura(ok)
+        self.assertIsNotNone(ok["aura"])
+
+
 class TestDaemon(Base):
     def make(self):
         return daemon.Daemon(config.Config())

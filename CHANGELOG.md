@@ -3,6 +3,15 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## Unreleased
+
+- **Keyboard effects follow the keyboard.** The service asks the keyboard what kind it is (single zone, four zones or per key) and the Effect list shows what that kind has. Per-key keyboards gain Star, Rain, Highlight, Laser, Ripple, Comet and Flash. The same model can ship with either kind of keyboard, so the model name is not used for this (ROG Strix G713PV here: per key)
+- **Heatmap, GPU mode and Battery** effects: the keyboard color follows the CPU temperature (blue when idle, green, amber from the mid 70s, red at 90 °C), the GPU mode (Eco green, Standard blue, Optimized amber, Ultimate red) or the battery charge (red when low, green when full). The service rewrites the color when it has visibly changed and does not store it in the keyboard
+- **Second color** for Breathe: a second color button next to the first. Until one is picked, Breathe behaves as before
+- **Zone colors** on four-zone keyboards: a color for each of the four zones. Not tested on a four-zone keyboard yet; reports are welcome
+- Keyboard lighting values sent to the service are checked before they are stored: an unknown effect or a malformed zone list is refused
+- Third-party notices: the keyboard protocol is credited to asusctl, the question that tells the keyboard kinds apart to G-Helper, and the CPU temperature command of the experimental SMU bridge to RyzenAdj
+
 ## 0.1.7
 
 - **Security:** a mode's power limit tables accepted any name, and the service used that name as part of the path of a file it writes as root. A member of the `wheel` group could reach files outside the attribute folders with `../`, and the stored entry was applied again at every boot. Only the known limit names are accepted now, and unknown names in a stored config are dropped at load
