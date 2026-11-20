@@ -63,7 +63,7 @@ class Daemon:
         # or a hung systemctl can hold self.lock for tens of seconds, and the CPU limit must not
         # go unattended that long (see cover_stalled_tick).
         self.cpu_lock = threading.RLock()
-        self.thermal_tick_at = time.monotonic()
+        self.watch_tick_at = time.monotonic()  # the watcher's last pass, not the controller's
         self.last_profile = hw.get_profile()
         self.last_ac = hw.ac_online()
         self.custom_power = False
@@ -258,7 +258,6 @@ class Daemon:
     def maintain_cpu_temp(self) -> None:
         with self.cpu_lock:
             self.cpu.tick()
-            self.thermal_tick_at = time.monotonic()
             self.log_thermal_events()
             self.report_thermal_error()
 
@@ -266,8 +265,9 @@ class Daemon:
         """One controller step when the watcher has been kept waiting on self.lock.
 
         Runs on its own thread and takes cpu_lock only. While the watcher ticks normally this
-        does nothing, so the controller is never stepped twice in a second."""
-        if time.monotonic() - self.thermal_tick_at < THERMAL_STALL:
+        does nothing. Once the watcher is stalled it steps on every call, at the watcher's own
+        pace, until the watcher is back."""
+        if time.monotonic() - self.watch_tick_at < THERMAL_STALL:
             return False
         self.maintain_cpu_temp()
         return True
@@ -544,6 +544,7 @@ class Daemon:
                 self.cfg.save()
 
             self.maintain_cpu_temp()
+            self.watch_tick_at = time.monotonic()
             self.track_temp()
 
     def cpu_temp_status(self) -> dict | None:

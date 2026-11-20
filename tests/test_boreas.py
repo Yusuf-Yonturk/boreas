@@ -635,15 +635,23 @@ class TestThermalDaemon(Base):
         d.tick()
         self.assertFalse(d.cover_stalled_tick())  # the watcher is ticking: nothing to cover
         put(R + "/sys/class/hwmon/hwmon5/temp1_input", 95000)
-        stepped = []
+        stepped, caps = [], []
+
+        def step():
+            stepped.append(d.cover_stalled_tick())
+            caps.append(hw.get_attr("ppt_pl1_spl").current)
+
         with d.lock:
             clock[0] += 10
-            t = threading.Thread(target=lambda: stepped.append(d.cover_stalled_tick()))
-            t.start()
-            t.join(5)
-        self.assertEqual(stepped, [True])
-        self.assertLess(hw.get_attr("ppt_pl1_spl").current, 55)
-        self.assertFalse(d.cover_stalled_tick())  # one step per stall window, not two
+            for _ in range(3):  # once stalled, every second gets its step
+                clock[0] += 1
+                t = threading.Thread(target=step)
+                t.start()
+                t.join(5)
+        self.assertEqual(stepped, [True, True, True])
+        self.assertTrue(55 > caps[0] > caps[1] > caps[2], caps)
+        d.tick()
+        self.assertFalse(d.cover_stalled_tick())  # the watcher is back: the fallback steps aside
 
     def test_inactive_edit_and_invalid_values(self):
         d, _, _ = self._daemon(None)
