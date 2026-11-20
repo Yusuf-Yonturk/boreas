@@ -36,7 +36,7 @@ jobs:
       - name: Install PySide6
         run: pip install "${{ matrix.pyside }}"
       - name: Shell scripts
-        run: sh -n install.sh && sh -n uninstall.sh && sh -n data/boreas.sleep && sh -n tools/install-reviewed.sh && sh -n tools/rustc-remap.sh && bash -n tools/measure.sh && bash -n tools/ec_vs_tctl.sh
+        run: sh -n install.sh && sh -n uninstall.sh && sh -n data/boreas-setup && sh -n data/boreas.sleep && sh -n tools/install-reviewed.sh && sh -n tools/rustc-remap.sh && bash -n tools/measure.sh && bash -n tools/ec_vs_tctl.sh
       - name: Unit tests
         env:
           QT_QPA_PLATFORM: offscreen

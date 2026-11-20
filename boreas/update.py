@@ -25,6 +25,9 @@ RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 # what install.sh downloads from the release; a release without them cannot be installed yet
 HELPER_ASSETS = {"boreas-gpu-engine", "boreas-gpu-engine.sha256"}
 CHANGELOG_URL = f"https://github.com/{REPO}/blob/main/CHANGELOG.md"
+# Written by a distribution package (install.sh, BOREAS_PACKAGED): the package manager updates
+# that copy, and installing over it from here would overwrite files the package owns.
+PACKAGED_MARK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packaged")
 PKEXEC_CANCEL = 126  # the user closed the password dialog
 PKEXEC_DENIED = 127  # not authorized: no password dialog (polkit agent) or permission denied
 
@@ -38,6 +41,15 @@ class NoAuthorization(Exception):
 
 
 _RX = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.M)
+
+
+def packaged() -> str | None:
+    """The name of the package this copy belongs to; None for a copy installed by install.sh."""
+    try:
+        with open(PACKAGED_MARK) as f:
+            return f.read().strip() or "package"
+    except OSError:
+        return None
 
 
 def parse_version(text: str) -> str | None:
@@ -129,6 +141,9 @@ INSTALL_WRAPPER = '/bin/sh "$0" || exit 1'
 def run_update(expected: str) -> str:
     """Downloads and installs the release `expected` with pkexec; returns the installed version.
     UpdateCancelled if the password dialog is closed."""
+    owner = packaged()
+    if owner:
+        raise RuntimeError(f"Boreas was installed as a package ({owner}); update it with your package manager.")
     pkexec = shutil.which("pkexec")
     if not pkexec:
         raise RuntimeError("pkexec not found. Update manually: git pull && sudo ./install.sh")

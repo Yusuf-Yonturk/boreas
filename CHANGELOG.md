@@ -10,6 +10,9 @@ Newest version first.
 - **Second color** for Breathe: a second color button next to the first. Until one is picked, Breathe behaves as before
 - **Zone colors** on four-zone keyboards: a color for each of the four zones. Not tested on a four-zone keyboard yet; reports are welcome
 - Keyboard lighting values sent to the service are checked before they are stored: an unknown effect or a malformed zone list is refused
+- **Packaging:** `packaging/aur` holds PKGBUILDs for `boreas` and `boreas-git`. A packaged copy does not update itself: the update check, its tray switch and the in-app update are off, and the package manager updates it. The optional eBPF GPU helper is not part of the packages
+- **`boreas-setup`**: handing the laptop controls to Boreas (masking asusd, supergfxd and power-profiles-daemon, starting `boreasd`) and giving them back is its own command now, `sudo boreas-setup enable` / `disable`. `install.sh` and `uninstall.sh` run it as before. After a package install, where nothing is switched on yet, the window asks first: it says what will be masked and how to undo it, and enables Boreas on a yes after the administrator password
+- `install.sh`: `BOREAS_GPU_ENGINE=none` installs without the GPU helper and without a download
 - Third-party notices: the keyboard protocol is credited to asusctl, the question that tells the keyboard kinds apart to G-Helper, and the CPU temperature command of the experimental SMU bridge to RyzenAdj
 
 ## 0.1.7

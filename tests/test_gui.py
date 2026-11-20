@@ -715,6 +715,104 @@ class TestUpdateCheck(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class TestPackagedCopy(unittest.TestCase):
+    """A copy a package owns does not check for updates and does not offer the switch."""
+
+    def has_switch(self, w):
+        w.status = dict(TestHeldSelection.STATUS)
+        w._build_tray_menu()
+        return "Güncellemeleri denetle" in [a.text() for a in w.tray.contextMenu().actions()]
+
+    def test_no_update_check_and_no_tray_switch(self):
+        with patch.dict(os.environ, {"BOREAS_NO_UPDATE_CHECK": ""}):
+            os.environ.pop("BOREAS_NO_UPDATE_CHECK")
+            with patch.object(A.update, "packaged", return_value=None):
+                w = A.MainWindow()
+                w.settings = FakeSettings()
+                self.assertTrue(w._updates_enabled())
+                self.assertTrue(self.has_switch(w))
+                w.quitting = True
+                w.tray.hide()
+            with patch.object(A.update, "packaged", return_value="aur"), \
+                    patch.object(A.update, "fetch_latest") as fetch:
+                w = A.MainWindow()
+                w.settings = FakeSettings()
+                self.assertFalse(w._updates_enabled())
+                w.check_updates()
+                fetch.assert_not_called()
+                self.assertFalse(self.has_switch(w))
+                w.quitting = True
+                w.tray.hide()
+
+
+class TestOfferSetup(unittest.TestCase):
+    """After a package install the window asks before it hands the hardware to Boreas."""
+
+    def setUp(self):
+        self.w = A.MainWindow()
+        self.w.settings = FakeSettings()
+        self.w.busy = False
+        self.jobs = []
+        self.orig = A.run_async
+        A.run_async = lambda fn, cb=None: self.jobs.append((fn, cb))
+
+    def tearDown(self):
+        A.run_async = self.orig
+        self.w.quitting = True
+        self.w.tray.hide()
+
+    def ask(self, answer, needed=True):
+        with patch.object(A.setup, "needed", return_value=needed), \
+                patch.object(A.QMessageBox, "question", return_value=answer) as q:
+            self.w.offer_setup()
+        return q
+
+    def test_nothing_is_asked_when_boreas_is_already_enabled(self):
+        q = self.ask(A.QMessageBox.Yes, needed=False)
+        q.assert_not_called()
+        self.assertEqual(self.jobs, [])
+
+    def test_the_question_says_what_will_be_masked_and_how_to_undo_it(self):
+        q = self.ask(A.QMessageBox.No)
+        text = q.call_args.args[2]
+        for word in ("asusd", "supergfxd", "power-profiles-daemon", "sudo boreas-setup disable"):
+            self.assertIn(word, text)
+        self.assertEqual(self.jobs, [])                  # a no changes nothing
+
+    def test_yes_runs_setup_and_reports_how_it_went(self):
+        w = self.w
+        self.ask(A.QMessageBox.Yes)
+        fn, done = self.jobs.pop(0)
+        self.assertIs(fn, A.setup.enable)
+        done(A.setup.SetupCancelled())
+        self.assertEqual(w.error, "Boreas was not enabled.")
+        done(A.setup.NoAuthorization())
+        self.assertIn("sudo boreas-setup enable", w.error)
+        done(RuntimeError("unit not found"))
+        self.assertEqual(w.error, "Could not enable Boreas: unit not found")
+        self.assertEqual(i18n.tr_msg(w.error), "Boreas etkinleştirilemedi: unit not found")
+        w.status_error = "Could not connect to boreasd"
+        done("")
+        self.assertEqual((w.error, w.status_error), ("", ""))
+        done("Warning: ali is not in the 'wheel' group")
+        self.assertIn("wheel", w.error)
+
+    def test_asked_once_per_start_and_only_with_the_window_open(self):
+        w = self.w
+        timers = []
+        with patch.object(A.QTimer, "singleShot", side_effect=lambda ms, fn: timers.append(fn)):
+            w.refresh()
+            self.jobs.pop(0)[1](A.DaemonError("down"))   # hidden in the tray: no dialog out of nowhere
+            self.assertEqual([t for t in timers if t == w.offer_setup], [])
+            w.show()
+            w.refresh()
+            self.jobs.pop(0)[1](A.DaemonError("down"))
+            w.refresh()
+            self.jobs.pop(0)[1](A.DaemonError("down"))
+            self.assertEqual(len([t for t in timers if t == w.offer_setup]), 1)
+        w.hide()
+
+
 class TestHeldSelection(unittest.TestCase):
     """A clicked choice does not jump back until the service has applied it and a fresh status arrives."""
 

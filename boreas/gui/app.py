@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QMenu, QMessageBox, QPushButton, QSlider, QStackedWidget,
                                QSystemTrayIcon, QVBoxLayout, QWidget)
 
-from .. import __version__, i18n, update
+from .. import __version__, i18n, setup, update
 from ..i18n import _, mode_name, tr_msg
 from ..client import DaemonError, call  # noqa: F401  (the tests use DaemonError as A.DaemonError)
 from . import screen
@@ -162,6 +162,7 @@ class MainWindow(QWidget):
         self._seen_mode = None  # the last mode a status reported, to notice a change made elsewhere
         self.error = ""         # error of the last action (cleared on success)
         self.status_error = ""  # the service cannot be reached
+        self.setup_offered = False  # the question "enable Boreas?" is asked once per start
         self.update_version = ""  # version number if GitHub has a newer version
         self.updating = False     # "Update" was pressed, download/install in progress
         self.quitting = False
@@ -498,6 +499,9 @@ class MainWindow(QWidget):
                     self.status_error = str(r)
                     self.tray.setToolTip(f"Boreas: {tr_msg(str(r))}")
                     self._render_notice(self.status.get("notice") or "")
+                    if not self.setup_offered and self.isVisible():
+                        self.setup_offered = True
+                        QTimer.singleShot(0, self.offer_setup)
             else:
                 self.status_error = ""
                 self.status = r
@@ -515,6 +519,35 @@ class MainWindow(QWidget):
                 cb()
         run_async(lambda: call("status"), done)
         self.timer.setInterval(2000 if self.isVisible() else 5000)
+
+    def offer_setup(self):
+        """After a package install nothing is switched on yet: say what enabling does, and do it on a yes."""
+        if not setup.needed():
+            return
+        r = QMessageBox.question(self, _("Enable Boreas"), _(
+            "Boreas is installed but does not control this laptop yet.\n\n"
+            "Enabling it masks asusd, supergfxd and power-profiles-daemon, because they write to the "
+            "same hardware and only one side can run, and starts the Boreas service. The desktop's own "
+            "power profile menu stops working while Boreas is enabled.\n\n"
+            "To undo this later: sudo boreas-setup disable\n\n"
+            "Enable Boreas now? You will be asked for the administrator password."))
+        if r != QMessageBox.Yes:
+            return
+
+        def done(res):
+            if isinstance(res, setup.SetupCancelled):
+                self.error = "Boreas was not enabled."
+            elif isinstance(res, setup.NoAuthorization):
+                self.error = ("Could not get administrator permission (no password dialog). "
+                              "Run in a terminal: sudo boreas-setup enable")
+            elif isinstance(res, Exception):
+                self.error = f"Could not enable Boreas: {res}"
+            else:
+                self.error = res  # a warning from boreas-setup (the wheel group), or nothing
+                self.status_error = ""
+            self._render_notice(self.status.get("notice") or "")
+            self.refresh()
+        run_async(setup.enable, done)
 
     def _render_notice(self, daemon_notice: str):
         msgs = [m for m in (self.error, self.status_error, daemon_notice) if m]
@@ -581,8 +614,8 @@ class MainWindow(QWidget):
     # ---- update ----
 
     def _updates_enabled(self) -> bool:
-        if os.environ.get("BOREAS_NO_UPDATE_CHECK"):
-            return False
+        if os.environ.get("BOREAS_NO_UPDATE_CHECK") or update.packaged():
+            return False  # a packaged copy is updated by the package manager
         return bool(self.settings.value("update_check", True, type=bool))
 
     def check_updates(self):
@@ -863,9 +896,10 @@ class MainWindow(QWidget):
                 act.triggered.connect(lambda _=False, key=k: self._tray_pick(self.set_gpu, key))
                 m.addAction(act)
         m.addSeparator()
-        upd = QAction(_("Check for updates"), m, checkable=True, checked=self._updates_enabled())
-        upd.toggled.connect(self.set_update_check)
-        m.addAction(upd)
+        if not update.packaged():
+            upd = QAction(_("Check for updates"), m, checkable=True, checked=self._updates_enabled())
+            upd.toggled.connect(self.set_update_check)
+            m.addAction(upd)
         m.addAction(_("Show"), self.show_near_tray)
         m.addAction(_("Quit"), self.quit_app)
 
