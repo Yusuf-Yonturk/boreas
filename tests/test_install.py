@@ -397,9 +397,26 @@ exit 0
         self.assertIn('enable boreasd.service', calls)
         self.assertIn('restart boreasd.service', calls)
 
+    def test_keep_off_starts_again_what_install_stopped(self):
+        # disable, then systemctl enable --now by hand: install.sh stops boreasd before it swaps
+        # the SMU module, and try-restart would leave it stopped
+        self.unit('asusd.service', 'static')
+        self.assertEqual(self.run_setup('enable').returncode, 0)
+        self.assertEqual(self.run_setup('disable').returncode, 0)
+        self.log.unlink()
+        r = self.run_setup('enable', '--keep-off', '--was-running')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls(), ['daemon-reload', 'restart boreasd.service'])
+        self.assertTrue(self.off.exists())          # still switched off: nothing masked or enabled
+
     def test_install_keeps_a_switched_off_boreas_off(self):
-        script = (REPO / 'install.sh').read_text()
-        self.assertIn('/usr/bin/boreas-setup enable --keep-off', script.splitlines())
+        lines = (REPO / 'install.sh').read_text().splitlines()
+        self.assertIn('/usr/bin/boreas-setup enable --keep-off $was_running', lines)
+        # the running state is read before the early stop, and only that stop exists
+        check = lines.index('if systemctl is-active --quiet boreasd.service 2>/dev/null; then')
+        stops = [i for i, line in enumerate(lines) if 'systemctl stop boreasd' in line]
+        self.assertEqual(len(stops), 1)
+        self.assertLess(check, stops[0])
 
     def old_install(self, boreasd='enabled', masked=('asusd.service', 'supergfxd.service',
                                                      'power-profiles-daemon.service')):
@@ -670,7 +687,7 @@ exit 0
         adopt = text.index('sh "$SRC/data/boreas-setup" adopt --previous="$previous"')
         self.assertLess(text.index('/usr/lib/boreas/boreas/__init__.py'), adopt)
         self.assertLess(adopt, text.index('rm -rf "$D/usr/lib/boreas/boreas"'))   # before it is replaced
-        self.assertIn('/usr/bin/boreas-setup enable --keep-off\n', text)
+        self.assertIn('/usr/bin/boreas-setup enable --keep-off $was_running\n', text)
 
     def test_keep_off_restarts_a_boreasd_the_user_turned_back_on(self):
         # switched off with boreas-setup disable, then `systemctl enable --now boreasd` by hand:

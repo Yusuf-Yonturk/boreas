@@ -218,7 +218,12 @@ smu_off() {
     rm -rf "/usr/src/$SMU_PKG-$SMU_VER"
 }
 # The running service gives the CPU its default ceiling back when it stops; it must do that while the
-# module and the opt-in are still here (boreas-setup enable starts it again below).
+# module and the opt-in are still here (boreas-setup enable starts it again below; a switched-off
+# Boreas the user started by hand is started again through --was-running).
+was_running=""
+if systemctl is-active --quiet boreasd.service 2>/dev/null; then
+    was_running="--was-running"
+fi
 systemctl stop boreasd.service 2>/dev/null || true
 case "${BOREAS_SMU:-}" in
     1) install -d /etc/boreas && : > /etc/boreas/smu ;;
@@ -264,5 +269,5 @@ fi
 
 # hand the hardware to Boreas: masks asusd / supergfxd / power-profiles-daemon (undo: uninstall.sh)
 # and starts boreasd, unless the user switched Boreas off with boreas-setup disable
-/usr/bin/boreas-setup enable --keep-off
+/usr/bin/boreas-setup enable --keep-off $was_running
 echo "Installed. UI: boreas   CLI: boreasctl status"

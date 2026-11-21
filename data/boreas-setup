@@ -2,6 +2,7 @@
 # Hands the laptop controls to Boreas, or gives them back.
 #   sudo boreas-setup enable    mask asusd / supergfxd / power-profiles-daemon, start boreasd
 #   sudo boreas-setup enable --keep-off   update files without turning a user-disabled Boreas on
+#        (--was-running: install.sh stopped a running boreasd first, start it again)
 #   sudo boreas-setup adopt --previous=VERSION   install.sh, before it replaces an installed copy:
 #        takes over the masks of a version that kept no (full) record of them (empty VERSION: none)
 #   sudo boreas-setup disable   restore those services and keep Boreas off across updates
@@ -16,7 +17,7 @@ INSTALLED="${BOREAS_INSTALLED_SETUP:-/usr/bin/boreas-setup}"  # the copy being r
 OFF="$(dirname "$MASKED")/switched-off"
 
 usage() {
-    echo "Usage: boreas-setup enable [--keep-off] | disable [--legacy|--removing] | adopt --previous=VERSION" >&2
+    echo "Usage: boreas-setup enable [--keep-off [--was-running]] | disable [--legacy|--removing] | adopt --previous=VERSION" >&2
     exit 2
 }
 
@@ -78,9 +79,11 @@ adopt() {
 
 enable() {
     keep_off=""
+    was_running=""
     for a in "$@"; do
         case "$a" in
             --keep-off) keep_off=1 ;;
+            --was-running) was_running=1 ;;
             *) usage ;;
         esac
     done
@@ -88,8 +91,14 @@ enable() {
     # knows no marker, so a marker alone does not keep a fresh install off.
     if [ -n "$keep_off" ] && [ -f "$OFF" ] && [ -f "$MASKED" ]; then
         systemctl daemon-reload
-        # turned back on by hand (systemctl enable --now): run the new code, change nothing else
-        systemctl try-restart boreasd.service 2>/dev/null || true
+        # turned back on by hand (systemctl enable --now): run the new code, change nothing else.
+        # install.sh stops boreasd before it swaps the SMU module and try-restart does not start a
+        # stopped unit, so it says whether boreasd was running when it began.
+        if [ -n "$was_running" ]; then
+            systemctl restart boreasd.service 2>/dev/null || true
+        else
+            systemctl try-restart boreasd.service 2>/dev/null || true
+        fi
         echo "Boreas is switched off (boreas-setup disable): files updated, services left as they are. Turn it on with: sudo boreas-setup enable"
         exit 0
     fi

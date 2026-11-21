@@ -3,7 +3,7 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
-## 0.1.9
+## Unreleased
 
 - **Experimental: the CPU's own temperature ceiling.** With `sudo BOREAS_SMU=1 ./install.sh`, a small kernel module (`smu/`, built with DKMS) hands a mode's CPU temperature target to the CPU itself, the way G-Helper does on Windows, so short boost bursts no longer run past it. Boreas recognises the Ryzen family by itself (Raven Ridge to Strix Halo; the list is in docs/cpu-smu.md). The BIOS uses the same SMU mailbox, so the module holds the BIOS's own lock (`\_SB.AM00`) for every message and does not load on a BIOS without it. On an unsupported CPU, without the module, or after any SMU error, the target keeps working through the ASUS power limits as before. The earlier opt-in (`BOREAS_SMU_BRIDGE=1`, `enable_hw`) is gone
 
