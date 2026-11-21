@@ -15,7 +15,7 @@ optdepends=('polkit: enable Boreas from its window instead of a terminal'
             'noto-fonts: Hindi and Arabic interface')
 install=boreas.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # replaced by updpkgsums when the version is published
+sha256sums=('467c9d783c65372aeacf879c8402d155436b917d622cc1e74e0c405283780cb1')
 
 check() {
     cd "$pkgname-$pkgver"
