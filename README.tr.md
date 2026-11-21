@@ -1,6 +1,6 @@
 ![Boreas: Linux için ASUS laptop kontrolü](docs/banner.png)
 
-**Linux'ta ASUS ROG ve TUF dizüstüler için G-Helper tarzı kontrol paneli.**
+**Linux'ta ASUS ROG ya da TUF dizüstünüz için tek küçük pencere: her mod kendi fanlarını, güç limitlerini ve sıcaklık hedefini taşır.**
 
 [English](README.md) · **Türkçe**
 
@@ -8,9 +8,9 @@
   <img src="docs/demo.gif" alt="Boreas: açık ve koyu temada ana pencere ile fan ve güç sayfası; mod, GPU modu, klavye efekti ve şarj limiti değişirken">
 </p>
 
-Boreas, Armoury Crate ve G-Helper'ın Windows'ta verdiğini ASUS dizüstünüze Linux'ta verir: performans
-modları, özel fan eğrileri, CPU ve GPU güç limitleri, GPU modları (Eco, Optimized ve Ultimate MUX anahtarı),
-Aura klavye aydınlatması ve pil şarj limiti için tek küçük pencere. Her mod kendi fanlarını, güç
+Boreas, Linux'ta Armoury Crate'in yerini alır: performans modları, özel fan eğrileri, CPU ve GPU güç
+limitleri, GPU modları (Eco, Optimized ve Ultimate MUX anahtarı), Aura klavye aydınlatması ve pil şarj
+limiti için tek küçük pencere. Her mod kendi fanlarını, güç
 limitlerini ve CPU sıcaklık hedefini taşır; tek tıkla bütün makinenin davranışı değişir. Özgür ve açık
 kaynak.
 
@@ -45,12 +45,12 @@ birlikte yazılıdır; `sudo ./uninstall.sh` her şeyi geri alır.
 - **CPU sıcaklık hedefi.** Bir mod için 75-95 °C seçin; Boreas güç limitlerini o hedefe göre yönetir. Güç
   tabanı sayesinde oyun modu firmware'in minimumuna düşmez.
 - **Yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
-- **G-Helper kullananların zaten bildiği düzen**, 11 dilde, açık ve koyu temayla, uygulama içi güncellemeyle.
+- **11 dil, açık ve koyu tema, uygulama içi güncelleme**; Windows'tan gelenlere tanıdık bir düzenle.
 - **Denemesi kolay, geri alması kolay.** İlk açılışta Boreas mevcut ayarlarınızı benimser ve donanıma
   hiçbir şey yazmaz; `sudo ./uninstall.sh` asusd, supergfxd ve power-profiles-daemon'ı geri getirir.
 
-**Boreas mı, asusctl mi?** Linux'ta G-Helper istiyorsanız, yani her modun kendi fanlarını, güç limitlerini
-ve sıcaklık hedefini taşıdığı tek bir pencere, Boreas'ı seçin. AniMe Matrix ya da Slash ekranı gerekiyorsa
+**Boreas mı, asusctl mi?** Her modun kendi fanlarını, güç limitlerini ve sıcaklık hedefini taşıdığı tek
+bir pencere istiyorsanız Boreas'ı seçin. AniMe Matrix ya da Slash ekranı gerekiyorsa
 asus-linux.org projesinin kendi aracı olan [asusctl](https://github.com/OpenGamingCollective/asusctl)'i
 seçin. İkisi aynı çekirdek dosyalarına yazar, aynı anda yalnız biri çalışabilir; kurulum asusd ve
 supergfxd'yi maskeler, kaldırma betiği geri getirir.

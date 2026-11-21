@@ -3,7 +3,7 @@
 pkgname=boreas-git
 pkgver=0.1.7.r0.g0000000
 pkgrel=1
-pkgdesc="G-Helper-style control panel for ASUS ROG and TUF laptops: performance modes, fan curves, power limits, GPU modes, Aura lighting, charge limit"
+pkgdesc="Control panel for ASUS ROG and TUF laptops: performance modes, fan curves, power limits, GPU modes, Aura lighting, charge limit"
 arch=('any')
 url="https://github.com/Yusuf-Yonturk/boreas"
 license=('GPL-3.0-only')

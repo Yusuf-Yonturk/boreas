@@ -1,6 +1,6 @@
 ![Boreas: ASUS laptop control for Linux](docs/banner.png)
 
-**The G-Helper-style control panel for ASUS ROG & TUF laptops on Linux.**
+**One small window for your ASUS ROG or TUF laptop on Linux: every mode carries its own fans, power limits and temperature target.**
 
 **English** · [Türkçe](README.tr.md)
 
@@ -8,7 +8,7 @@
   <img src="docs/demo.gif" alt="Boreas: the main window in the light and the dark theme next to Fans and power, while the mode, the GPU mode, the keyboard effect and the charge limit change">
 </p>
 
-Boreas gives your ASUS laptop on Linux what Armoury Crate and G-Helper give it on Windows: one small
+Boreas takes the place of Armoury Crate on Linux: one small
 window for performance modes, custom fan curves, CPU and GPU power limits, GPU modes (Eco, Optimized and
 the Ultimate MUX switch), Aura keyboard lighting and the battery charge limit. Every mode keeps its own
 fans, power limits and CPU temperature target, so one click changes how the whole machine behaves. Free
@@ -43,12 +43,12 @@ Then open **Boreas** from the application menu, or run `boreas`. The requirement
 - **A CPU temperature target.** Pick 75-95 °C for a mode and Boreas steers the power limits towards it,
   with a power floor so a gaming mode does not fall to the firmware's minimum.
 - **Eco without a reboot**, through the optional eBPF GPU backend (experimental).
-- **The layout G-Helper users already know**, in 11 languages, light and dark, with in-app updates.
+- **11 languages, light and dark, in-app updates**, and a layout that is familiar if you come from Windows.
 - **Easy to try, easy to undo.** On first start Boreas adopts your current settings and writes nothing to
   the hardware; `sudo ./uninstall.sh` brings asusd, supergfxd and power-profiles-daemon back.
 
-**Boreas or asusctl?** If you want G-Helper on Linux, one window where every mode carries its own fans,
-power limits and temperature target, choose Boreas. If you need the AniMe Matrix or Slash display, choose
+**Boreas or asusctl?** If you want one window where every mode carries its own fans, power limits and
+temperature target, choose Boreas. If you need the AniMe Matrix or Slash display, choose
 [asusctl](https://github.com/OpenGamingCollective/asusctl), the asus-linux.org project's own tool. They
 write the same kernel files, so only one can run at a time; the installer masks asusd and supergfxd and the
 uninstaller brings them back.
