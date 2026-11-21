@@ -34,11 +34,17 @@ Reference commit: d7347c075d185a2b500458a2ceb468efa6d18982
 Original author/maintainer: Serge (seerge) and G-Helper contributors.
 License: GNU General Public License, version 3 (GPL-3.0).
 
-No C# source files from G-Helper are vendored in this repository. The single
-5-second reapply after a profile change in `boreas/thermal.py`, used by the
-experimental opt-in SMU bridge client, follows G-Helper's timing
-(`app/Mode/ModeControl.cs`). The CPU temperature command itself is credited to
-RyzenAdj below; G-Helper's `app/Pawn/RyzenSmu.cs` uses the same one.
+No C# source files from G-Helper are vendored in this repository. G-Helper
+re-applies the CPU temperature ceiling once, 5 seconds after a profile change
+(`app/Mode/ModeControl.cs`). Boreas measured the firmware reset itself on a
+G713PV and re-applies on its own schedule instead (see `docs/cpu-smu.md`); the
+30-second reapply on the families G-Helper marks as dropping the ceiling under
+load still follows G-Helper. The kernel module in `smu/`
+takes its per-family facts from G-Helper's `app/Pawn/RyzenSmu.cs` (reference
+commit aa0037c5326d002ecee316873dcf17de61fac228): which CPU families have a
+temperature command, the command number per family (`SetThm`), the MP1 mailbox
+addresses (`GetMp1Addrs`) and the mailbox sequence (`MailboxRaw`). The code is
+written from scratch; no G-Helper code is copied.
 
 The keyboard question in `boreas/aura.py` (`probe`, `kind_of`) was learned from
 G-Helper's `app/USB/AsusHid.cs` and `app/USB/Aura.cs` as of 2026-11-20: the two
@@ -75,6 +81,27 @@ Original author/maintainer: Jiaxun Yang (FlyGoat) and RyzenAdj contributors.
 License: GNU Lesser General Public License, version 3 (LGPL-3.0).
 
 No source files from RyzenAdj are vendored in this repository. The CPU
-temperature command of the experimental opt-in SMU bridge client in
-`boreas/ryzen.py` (MP1 `0x3F` on Dragon Range and Fire Range) is the one
-RyzenAdj's `set_tctl_temp` uses for those families (`lib/api.c`).
+temperature commands and MP1 mailbox addresses in `smu/boreas_smu.c` were
+checked against RyzenAdj's `set_tctl_temp` (`lib/api.c`), `lib/nb_smu_ops.c` and
+the CPU family detection in `lib/cpuid.c`.
+
+## PawnIO.Modules (CPU family detection reference)
+
+Source: https://github.com/namazso/PawnIO.Modules
+Reference commit: 40a95f0c812b09f78e05b2d5aa4614cbcef67b0a
+Original author/maintainer: namazso and contributors.
+License: GNU Lesser General Public License, version 2.1 (LGPL-2.1).
+
+No source files are vendored. The CPU family and model numbers per code name in
+`smu/boreas_smu.c` and `boreas/ryzen.py` were checked against `RyzenSMU.p`
+(`get_code_name`), the module G-Helper uses for SMU access.
+
+## ryzen_smu (cross-check)
+
+Source: https://github.com/amkillam/ryzen_smu
+Reference commit: d2983668300dd2a598e5a7dc40e71ce0678cc270
+Original author/maintainer: leogx9r (original driver), amkillam (this fork) and contributors.
+License: GNU General Public License, version 2 (GPL-2.0).
+
+No source files are vendored. Its CPU detection (`smu.c`) and MP1 mailbox
+addresses were used as an independent check of the table in `smu/boreas_smu.c`.

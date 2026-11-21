@@ -151,7 +151,7 @@ class Daemon:
             profile = hw.PROFILE_BY_BASE[m["base"]]
 
             running_target = self.cpu.target
-            self.cpu.stop(restore=not external_profile)
+            self.cpu.stop(restore=not external_profile, handover=True)
             restore_error = self.cpu.error
             # the profile is written every time; even the same value makes the firmware
             # rerun the throttle policy and reset the custom power limits
@@ -224,6 +224,7 @@ class Daemon:
             if thermal_ready:
                 self.apply_cpu_temp(target, m)
             elif thermal_on:
+                self.cpu.release_handover()
                 self.report_thermal_error()
             floor = m.get("cpu_temp_floor_w")
 

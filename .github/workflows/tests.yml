@@ -42,6 +42,33 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
 
+  smu-module:
+    # the optional CPU temperature ceiling module (smu/): it must build without warnings against
+    # a kernel that declares the SMN helpers in <asm/amd/node.h> (6.16 and later, the HWE kernel)
+    # and against the runner's own older kernel (<asm/amd_nb.h>)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Kernel headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential linux-headers-generic-hwe-24.04 "linux-headers-$(uname -r)"
+      - name: Build against every installed kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          for k in /usr/lib/modules/*/build; do
+            [ -d "$k" ] || continue
+            echo "== $k"
+            make -C smu KDIR="$k" 2>&1 | tee build.log
+            if grep -E 'boreas_smu\.c.*(warning|error)' build.log; then
+              echo "boreas_smu.c has compiler warnings for $k" >&2
+              exit 1
+            fi
+            modinfo smu/boreas_smu.ko | grep -E '^license: +GPL$'
+            make -C smu KDIR="$k" clean
+          done
+
   gpu-engine:
     runs-on: ubuntu-latest
     steps:

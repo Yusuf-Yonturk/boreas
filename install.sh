@@ -203,7 +203,71 @@ if [ -n "$fl" ] && command -v fc-list >/dev/null && [ -z "$(fc-list :lang="$fl" 
     echo "Warning: no font found for '$lang' (sudo pacman -S $pkg)"
 fi
 
+# Optional: the CPU's own temperature ceiling through the boreas_smu kernel module (smu/, DKMS).
+# BOREAS_SMU=1 switches it on, BOREAS_SMU=0 off; the choice is the file /etc/boreas/smu, so later
+# installs and the in-app update (which has no environment) keep it. A failed build or a CPU the
+# module does not support is only a warning: the service then keeps using power-feedback.
+SMU_PKG=boreas-smu
+SMU_VER=1
+smu_off() {
+    rm -f /etc/modules-load.d/boreas-smu.conf
+    modprobe -r boreas_smu 2>/dev/null || true
+    if command -v dkms >/dev/null 2>&1; then
+        dkms remove "$SMU_PKG/$SMU_VER" --all >/dev/null 2>&1 || true
+    fi
+    rm -rf "/usr/src/$SMU_PKG-$SMU_VER"
+}
+# The running service gives the CPU its default ceiling back when it stops; it must do that while the
+# module and the opt-in are still here (boreas-setup enable starts it again below; a switched-off
+# Boreas the user started by hand is started again through --was-running).
+was_running=""
+if systemctl is-active --quiet boreasd.service 2>/dev/null; then
+    was_running="--was-running"
+fi
+systemctl stop boreasd.service 2>/dev/null || true
+case "${BOREAS_SMU:-}" in
+    1) install -d /etc/boreas && : > /etc/boreas/smu ;;
+    0) rm -f /etc/boreas/smu ;;
+esac
+if [ -f /etc/boreas/smu ]; then
+    smu_off  # a rebuild from these sources, also after an update of the module
+    if ! command -v dkms >/dev/null 2>&1; then
+        echo "Warning: the CPU temperature ceiling needs dkms and the kernel headers" \
+            "(Arch/CachyOS: sudo pacman -S dkms linux-headers); using power-feedback"
+    else
+        install -d "/usr/src/$SMU_PKG-$SMU_VER"
+        install -m644 "$SRC/smu/boreas_smu.c" "$SRC/smu/Makefile" "$SRC/smu/dkms.conf" "/usr/src/$SMU_PKG-$SMU_VER/"
+        smu_built=""
+        if dkms add "$SMU_PKG/$SMU_VER" >/dev/null 2>&1; then
+            # every installed kernel with headers, not only the running one
+            for k in /usr/lib/modules/*; do
+                [ -d "$k/build" ] || continue
+                kv=${k##*/}
+                if dkms install "$SMU_PKG/$SMU_VER" -k "$kv" >/dev/null 2>&1; then
+                    smu_built="$smu_built $kv"
+                else
+                    echo "Warning: the CPU temperature ceiling module did not build for kernel $kv" \
+                        "(see /var/lib/dkms/$SMU_PKG/$SMU_VER/build/make.log)"
+                fi
+            done
+        fi
+        if [ -z "$smu_built" ]; then
+            echo "Warning: the CPU temperature ceiling module could not be built; using power-feedback"
+        else
+            printf 'boreas_smu\n' > /etc/modules-load.d/boreas-smu.conf
+            if modprobe boreas_smu 2>/dev/null; then
+                echo "CPU temperature ceiling: on (kernel module boreas_smu)"
+            else
+                echo "Warning: boreas_smu did not load (unsupported CPU or BIOS, see: journalctl -k -g boreas_smu);" \
+                    "using power-feedback"
+            fi
+        fi
+    fi
+else
+    smu_off
+fi
+
 # hand the hardware to Boreas: masks asusd / supergfxd / power-profiles-daemon (undo: uninstall.sh)
 # and starts boreasd, unless the user switched Boreas off with boreas-setup disable
-/usr/bin/boreas-setup enable --keep-off
+/usr/bin/boreas-setup enable --keep-off $was_running
 echo "Installed. UI: boreas   CLI: boreasctl status"

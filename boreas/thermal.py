@@ -2,15 +2,16 @@
 
 Default backend: bounded ASUS power-attribute feedback (power-feedback) with an
 escalation ladder below the mode's own CPU policy (EPP, cpufreq boost, governor).
-Experimental backend: G713PV/G713PV.336 kernel SMU bridge (/dev/boreas-smu-probe,
-smu-bridge), selected only when BOREAS_SMU_BRIDGE=1 and sysfs enable_hw=Y/1 are
-both present; applies MP1 0x3F and a single 5 s post-profile reapply (never raw
-PCI 0xB8/0xBC).
+Optional backend (smu-bridge): the CPU's own temperature ceiling through the boreas_smu
+kernel module (/dev/boreas-smu), selected when the user opted in (/etc/boreas/smu), the CPU
+family is in ryzen.FAMILIES and the module is loaded. It writes the ceiling, re-applies it
+5 s after the profile write (and every 30 s on families that drop it), and on any fault falls
+back to power-feedback for the rest of the service's life. Never raw PCI 0xB8/0xBC.
 Neither backend claims verified physical thermal ceiling enforcement.
 """
 from __future__ import annotations
 
-import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -18,7 +19,19 @@ from . import hw, ryzen
 
 MIN_TEMP, DEFAULT_TEMP = hw.TEMP_MIN, hw.TEMP_OFF  # 96 is the UI's Off/Default sentinel
 POWER_ATTRS = ("ppt_pl1_spl", "ppt_pl2_sppt", "ppt_pl3_fppt")
-REAPPLY_DELAY = 5.0
+# After a mode is applied the firmware puts its own SMU ceiling back: measured on a G713PV
+# (Dragon Range, BIOS 336) 3.5-4.2 s after Boreas wrote it, and a single re-write at 5 s left
+# the CPU uncapped long enough to reach 93 °C with an 82 °C target. So the ceiling is written
+# again every second for the first REAPPLY_WINDOW seconds.
+REAPPLY_STEP = 1.0
+REAPPLY_WINDOW = 10.0
+# The reset is brief: measured on the same machine, the cores ran at 4.1 GHz instead of 3.5 GHz
+# for about half a second and Tctl went from 82 to 90 °C, then took 7 s to cool back. A guard
+# thread therefore re-writes the ceiling every 0.1 s for the first GUARD_WINDOW seconds, so the
+# CPU is never uncapped for longer than one step.
+GUARD_STEP = 0.1
+GUARD_WINDOW = 8.0
+REAPPLY_PERIOD = 30.0  # families that drop the ceiling under load (ryzen.Family.reapply)
 
 # power-feedback bands and rates; e = temperature - target (integer Tctl)
 HOLD_BAND = 2                 # -2 <= e <= 0: hold
@@ -111,6 +124,8 @@ class Controller:
         self.over_since: float | None = None
         self.last_recover = float("-inf")
         self.reapply_at: float | None = None
+        self.reapply_until = float("-inf")
+        self.smu_left: int | None = None  # SMU ceiling that could not be taken back (until reboot)
         self.release_dwell = RELEASE_DWELL
         self.released_at = float("-inf")
         self.escalated_at = float("-inf")
@@ -126,13 +141,24 @@ class Controller:
         self.effective: dict = self.baseline.policy()
         self.stage_changed_at = float("-inf")
         self.events: list[str] = []
+        self.guard_step: float | None = GUARD_STEP  # None switches the guard thread off (tests)
+        self.guard_window = GUARD_WINDOW
+        self._guard_gen = 0
+        # held across the guard's check and write and across every bump of _guard_gen, so a
+        # stop() or a new target never lands before a guard write that was already under way
+        self._guard_lock = threading.Lock()
 
     def opt_in_warning(self) -> str | None:
-        """Startup line when BOREAS_SMU_BRIDGE=1 is set but the bridge cannot be used."""
-        if os.environ.get(ryzen.BRIDGE_OPT_IN_ENV) != "1" or self.bridge.available():
+        """Startup line when the SMU path is switched on but cannot be used."""
+        if not self.bridge.requested() or self.bridge.available():
             return None
-        reason = self.bridge.error or "module not loaded or enable_hw is off"
-        return f"SMU bridge requested ({ryzen.BRIDGE_OPT_IN_ENV}=1) but not usable: {reason}; using power-feedback"
+        if self.bridge.error:
+            reason = self.bridge.error
+        elif ryzen.detect() is None:
+            reason = "this CPU is not in the supported list"
+        else:
+            reason = f"the boreas_smu module is not loaded ({ryzen.DEVICE} missing)"
+        return f"SMU temperature ceiling switched on ({ryzen.OPT_IN_FILE}) but not usable: {reason}; using power-feedback"
 
     @staticmethod
     def attributes() -> dict:
@@ -154,8 +180,6 @@ class Controller:
         return "power-feedback"
 
     def supported(self) -> bool:
-        if self.bridge.error and self.active_backend == "smu-bridge":
-            return False
         return bool(self.bridge.available() or self.attributes())
 
     def event(self, text: str) -> None:
@@ -248,19 +272,32 @@ class Controller:
 
     # ---- lifecycle ---------------------------------------------------------------
 
-    def stop(self, restore: bool = True) -> None:
+    def stop(self, restore: bool = True, handover: bool = False) -> None:
+        """handover: a mode change is under way and the next mode decides. An SMU ceiling then
+        stays in place instead of going back to the default for the moment in between (measured
+        on a G713PV: that gap let the CPU jump from 82 to 92 °C, and cooling back took 8-10 s).
+        The next start() writes the new ceiling directly; start(None), stop() or
+        release_handover() gives the default back."""
         # Restore only values we still own; leave external changes alone.
+        with self._guard_lock:
+            self._guard_gen += 1
         errors = []
+        keep_smu = False
         if self.active_backend == "smu-bridge":
             self.reapply_at = None
             if self.bridge.error:
                 errors.append(self.error or f"SMU bridge disabled: {self.bridge.error}")
+            elif handover and self.applied is not None and self.applied != DEFAULT_TEMP:
+                keep_smu = True
             elif restore and self.applied is not None and self.applied != DEFAULT_TEMP:
                 try:
                     self.bridge.set(DEFAULT_TEMP)
                 except (OSError, ValueError, ryzen.SmuError) as e:
                     errors.append(str(e))
-            self.applied = None
+            if errors:
+                self._note_left_ceiling()
+            if not keep_smu:
+                self.applied = None
         elif restore:
             for name, value in list(self.written.items()):
                 try:
@@ -296,10 +333,30 @@ class Controller:
         self.last_recover = float("-inf")
         self.error = "; ".join(errors)
         self.state = "error" if errors else "off"
+        if self.bridge.error and self.active_backend == "smu-bridge":
+            # reported once above; the next start takes power-feedback instead of
+            # re-reporting the latched bridge on every stop
+            self.active_backend = None
         if not self.written and not self.error:
             self.ceilings.clear()
             self.floor_min = None
+            if not keep_smu:
+                self.active_backend = None
+
+    def release_handover(self) -> None:
+        """The mode change ended without a new target: give the CPU its default ceiling back.
+        Leaves an error the mode change reported in place."""
+        if self.active_backend != "smu-bridge" or self.target is not None or self.applied is None:
+            return
+        try:
+            self.bridge.set(DEFAULT_TEMP)
+            self.applied = None
             self.active_backend = None
+        except (OSError, ValueError, ryzen.SmuError) as e:
+            self._note_left_ceiling()
+            self.applied = None
+            self.active_backend = None
+            self.event(f"cpu target: could not give the default SMU ceiling back ({e})")
 
     def start(self, target: int | None, floor_w: int | None = None, user_caps: dict | None = None) -> None:
         if target is None or target == DEFAULT_TEMP:
@@ -307,8 +364,6 @@ class Controller:
             return
         if type(target) is not int or not MIN_TEMP <= target < DEFAULT_TEMP:
             raise ValueError(f"CPU temperature limit must be {MIN_TEMP}..{DEFAULT_TEMP}")
-        if self.error and self.active_backend == "smu-bridge":
-            return  # a bridge fault needs an explicit mode reapply/Default
         backend = self.active_backend or self._backend()
         self.active_backend = backend
         if target != self.target or floor_w != self.floor_w:
@@ -333,11 +388,57 @@ class Controller:
             self.state = "active"
             now = time.monotonic()
             self.last_tick = now
-            self.reapply_at = now + REAPPLY_DELAY
+            self.reapply_at = now + REAPPLY_STEP
+            self.reapply_until = now + REAPPLY_WINDOW
+            self._guard(target)
         except (OSError, ValueError, ryzen.SmuError) as e:
-            self.applied = None
-            self.reapply_at = None
-            self.fail(str(e))
+            self._fall_back(target, str(e))
+
+    def _guard(self, target: int) -> None:
+        """Re-write the SMU ceiling every guard_step seconds for guard_window seconds on a thread
+        of its own (see GUARD_STEP). It stops at once when the target, the backend or the bridge
+        changes; a write error ends it quietly and the next tick() handles the fault. Uses
+        perf_counter and Event.wait, so a patched clock or sleep cannot make it spin."""
+        with self._guard_lock:
+            self._guard_gen += 1
+        if not self.guard_step:
+            return
+        gen, step, end = self._guard_gen, self.guard_step, time.perf_counter() + self.guard_window
+        wake = threading.Event()
+
+        def run():
+            while time.perf_counter() < end:
+                wake.wait(step)
+                with self._guard_lock:
+                    if (gen != self._guard_gen or self.active_backend != "smu-bridge"
+                            or self.target != target or self.bridge.error):
+                        return
+                    try:
+                        self.bridge.set(target)
+                    except (OSError, ValueError, ryzen.SmuError):
+                        return
+        threading.Thread(target=run, name="smu-guard", daemon=True).start()
+
+    def _fall_back(self, target: int, reason: str) -> None:
+        """The SMU path failed: the bridge stays latched off and power-feedback takes over, so the
+        target keeps working. A ceiling the SMU acknowledged earlier stays in the firmware until
+        it is overwritten or the machine restarts; it is only ever lower than the default."""
+        self.event(f"cpu target: SMU ceiling unavailable ({reason}); using power-feedback")
+        self._note_left_ceiling()
+        self.applied = None
+        self.reapply_at = None
+        self.active_backend = "power-feedback"
+        self.target = None
+        self.error = ""
+        self.state = "off"
+        self._start_power_feedback(target)
+
+    def _note_left_ceiling(self) -> None:
+        """An SMU ceiling that could not be taken back stays in the firmware until a restart;
+        status() shows it so "off" is not read as "no ceiling"."""
+        if self.applied is not None and self.applied != DEFAULT_TEMP:
+            self.smu_left = self.applied
+            self.event(f"cpu target: the SMU ceiling of {self.applied}°C stays in the firmware until a restart")
 
     def _start_power_feedback(self, target: int) -> None:
         if not self.ceilings:
@@ -440,9 +541,12 @@ class Controller:
                     self.bridge.set(self.target)
                     self.applied = self.target
                     self.state = "active"
+                    if now + REAPPLY_STEP <= self.reapply_until:
+                        self.reapply_at = now + REAPPLY_STEP
+                    elif self.bridge.f is not None and self.bridge.f.reapply:
+                        self.reapply_at = now + REAPPLY_PERIOD
                 except (OSError, ValueError, ryzen.SmuError) as e:
-                    self.applied = None
-                    self.fail(str(e))
+                    self._fall_back(self.target, str(e))
             return
         if now - self.last_tick < 1:
             return
@@ -511,6 +615,7 @@ class Controller:
                 "target": self.target, "applied": self.applied, "state": self.state,
                 "error": self.error, "ceilings_w": dict(self.ceilings),
                 "requested_w": dict(self.written), "hard_limit": False,
+                "smu_left": self.smu_left,
                 "floor_w": self.effective_floor_w(),
                 "stage": self.stage, "stage_max": len(self.ladder),
                 "release_dwell_s": int(self.release_dwell),

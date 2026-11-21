@@ -12,6 +12,14 @@ fi
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # stops boreasd and brings back the services the installer masked, in the state they had
 sh "$SRC/data/boreas-setup" disable --legacy
+# the optional CPU temperature ceiling module (install.sh, BOREAS_SMU=1); the choice in
+# /etc/boreas/smu stays with the other settings
+rm -f /etc/modules-load.d/boreas-smu.conf
+modprobe -r boreas_smu 2>/dev/null || true
+if command -v dkms >/dev/null 2>&1; then
+    dkms remove boreas-smu/1 --all >/dev/null 2>&1 || true
+fi
+rm -rf /usr/src/boreas-smu-1
 rm -rf /usr/lib/boreas /usr/share/doc/boreas
 rm -f /usr/bin/boreas /usr/bin/boreasd /usr/bin/boreasctl /usr/bin/boreas-setup \
       /usr/lib/systemd/system/boreasd.service /usr/lib/systemd/system-sleep/boreas \

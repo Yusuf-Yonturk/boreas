@@ -13,20 +13,15 @@ There is no BIOS modification, raw PCI 0xB8/0xBC write or raw-access fallback.
   for endpoint `0x0012009E` (and `DSTS(0x0012009E)` returns `ENODEV` on the
   tested G713PV / G713PV.336), so no unverified sysfs temperature attribute
   names are probed.
-- Experimental (`smu-bridge`): Research prototype `/dev/boreas-smu-probe`
-  (`ryzen.BridgeSmu`), currently restricted in kernel code to `ROG Strix
-  G713PV_G713PV` / BIOS `G713PV.336` / family 19h model 61h. It is not a
-  general ASUS SMU backend. Limited device probes are recorded below; they do
-  not establish general hardware compatibility or physical thermal enforcement.
-  Selection requires all of: `BOREAS_SMU_BRIDGE=1`, `/dev/boreas-smu-probe`, and sysfs
-  `/sys/module/boreas_smu_probe/parameters/enable_hw` explicitly reading
-  `Y` or `1` (missing `enable_hw` returns unavailable). When active, it sends
-  `GET_SMU_VERSION` (0x02), `0x3F` (75..96 C), and a single 5 s post-profile
-  reapply, restoring 96 C
-  on internal stop. Acknowledged SMU replies do not prove conflict-free
-  firmware synchronization or physical thermal enforcement (`hard_limit` stays
-  `false`). Any bridge error latches for the service lifetime without falling
-  back to raw PCI or power caps.
+- Experimental (`smu-bridge`): the CPU's own temperature ceiling through the
+  `boreas_smu` kernel module (`/dev/boreas-smu`, `ryzen.BridgeSmu`). Selected when
+  `/etc/boreas/smu` exists, the CPU family is supported and the module is loaded;
+  how it is installed, the supported families and the BIOS analysis are in
+  [cpu-smu.md](cpu-smu.md). On a mode change the ceiling is handed over directly
+  (no default in between), re-written every 0.1 s for 8 s and every second for
+  10 s, because the firmware puts its own ceiling back about 4 s after a mode is
+  applied. Any bridge error falls back to power-feedback for the rest of the
+  service's life (`hard_limit` stays `false`).
 
 ## Power-feedback capability and bounds
 

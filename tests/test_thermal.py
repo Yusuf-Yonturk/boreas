@@ -637,60 +637,140 @@ class TestSmuBridgeBackend(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.dev = os.path.join(self.tmp.name, "boreas-smu-probe")
-        self.enable_file = os.path.join(self.tmp.name, "enable_hw")
+        self.dev = os.path.join(self.tmp.name, "boreas-smu")
+        self.opt_in = os.path.join(self.tmp.name, "smu")
         open(self.dev, "wb").close()
-        with open(self.enable_file, "w", encoding="utf-8") as f:
-            f.write("Y\n")
+        open(self.opt_in, "w").close()
         self.family = ryzen.FAMILIES[(0x19, 0x61)]
         self.calls = []
-        self.responses = {ryzen.GET_SMU_VERSION: (ryzen.OK, 0x546900), 0x3F: (ryzen.OK, 0)}
+        self.responses = {ryzen.OP_VERSION: (ryzen.OK, 0x546900), ryzen.OP_SET_TCTL: (ryzen.OK, 0)}
         self.ioctl_err = None
         self.now = 10.0
 
         def fake_ioctl(fd, buf):
-            abi, cmd, arg, st, res, r0, r1, r2 = struct.unpack("<8I", buf)
-            self.assertEqual((abi, st, res, r0, r1, r2), (1, 0, 0, 0, 0, 0))
-            self.calls.append((cmd, arg))
+            abi, op, arg, st, res, r0, r1, r2 = struct.unpack("<8I", buf)
+            self.assertEqual((abi, st, res, r0, r1, r2), (ryzen.ABI, 0, 0, 0, 0, 0))
+            self.calls.append((op, arg))
             if self.ioctl_err is not None:
                 raise self.ioctl_err
-            status, result = self.responses.get(cmd, (ryzen.OK, 0))
-            buf[:] = struct.pack("<8I", abi, cmd, arg, status, result, 0, 0, 0)
+            status, result = self.responses.get(op, (ryzen.OK, 0))
+            buf[:] = struct.pack("<8I", abi, op, arg, status, result, 0, 0, 0)
 
-        self.bridge = ryzen.BridgeSmu(
-            family=self.family, path=self.dev, enable_path=self.enable_file
-        )
+        self.bridge = ryzen.BridgeSmu(family=self.family, path=self.dev, opt_in_path=self.opt_in)
         self.bridge._ioctl = fake_ioctl
-        env = patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "1"})
-        env.start()
-        self.addCleanup(env.stop)
         p = patch("boreas.thermal.time.monotonic", side_effect=lambda: self.now)
         p.start()
         self.addCleanup(p.stop)
-        p2 = patch("boreas.thermal.hw.get_attr", return_value=None)
-        p2.start()
-        self.addCleanup(p2.stop)
+        self.attrs = {}
+        # the hardware power-feedback falls back to: a cool CPU, so no limit has to move
+        for target, kwargs in (
+            ("boreas.thermal.hw.get_attr", {"side_effect": lambda n: self.attrs.get(n)}),
+            ("boreas.thermal.hw.set_attr", {"side_effect": lambda n, v: None}),
+            ("boreas.thermal.hw.temps", {"side_effect": lambda: {"cpu": 70}}),
+            ("boreas.thermal.hw.cpu_epp_files", {"return_value": []}),
+            ("boreas.thermal.hw.cpu_boost_paths", {"return_value": []}),
+            ("boreas.thermal.hw.cpu_governor_choices", {"return_value": []}),
+        ):
+            p2 = patch(target, **kwargs)
+            p2.start()
+            self.addCleanup(p2.stop)
         self.c = thermal.Controller(bridge=self.bridge)
+        self.c.guard_step = None  # the guard thread has its own test below
 
-    def test_smu_bridge_selected_and_reapplied_once_after_5s(self):
+    def _power_limits(self):
+        # the ASUS limits power-feedback falls back to
+        self.attrs = {"ppt_pl1_spl": hw.Attr("ppt_pl1_spl", 55, 30, 130, None, None)}
+
+    def test_smu_bridge_selected_and_reapplied_every_second_for_10s(self):
+        # the firmware puts its own ceiling back 3.5-4.2 s after a mode apply (G713PV): one
+        # write per second for 10 s keeps the CPU from running uncapped for more than a second
         self.assertEqual(self.c.status()["control"], "smu-bridge")
         self.assertFalse(self.c.status()["hard_limit"])
         self.c.start(83)
-        self.assertEqual(self.calls, [(0x02, 0), (0x3F, 83)])
+        V, T = ryzen.OP_VERSION, ryzen.OP_SET_TCTL
+        self.assertEqual(self.calls, [(V, 0), (T, 83)])
         self.assertEqual(self.c.applied, 83)
-        for _ in range(4):
+        steps = int(thermal.REAPPLY_WINDOW / thermal.REAPPLY_STEP)
+        for _ in range(steps):
+            self.now += thermal.REAPPLY_STEP
+            self.c.tick()
+        self.assertEqual(self.calls, [(V, 0)] + [(T, 83)] * (1 + steps))
+        for _ in range(60):
             self.now += 1.0
             self.c.tick()
-        self.assertEqual(self.calls, [(0x02, 0), (0x3F, 83)])
-        self.now += 1.0
-        self.c.tick()
-        self.assertEqual(self.calls, [(0x02, 0), (0x3F, 83), (0x3F, 83)])
-        self.now += 10.0
-        self.c.tick()
-        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(self.calls), 2 + steps)  # Dragon Range keeps it after that: no periodic write
         self.c.stop(restore=True)
-        self.assertEqual(self.calls[-1], (0x3F, 96))
+        self.assertEqual(self.calls[-1], (T, 96))
         self.assertEqual(self.c.state, "off")
+
+    def test_families_that_drop_the_ceiling_get_it_every_30s(self):
+        self.bridge.f = ryzen.FAMILIES[(0x19, 0x74)]  # Phoenix
+        self.assertTrue(self.bridge.f.reapply)
+        self.c.start(80)
+        for _ in range(int(thermal.REAPPLY_WINDOW / thermal.REAPPLY_STEP)):
+            self.now += thermal.REAPPLY_STEP
+            self.c.tick()
+        n = len(self.calls)
+        for _ in range(3):
+            self.now += thermal.REAPPLY_PERIOD - 1
+            self.c.tick()
+            self.now += 1
+            self.c.tick()
+        self.assertEqual(len(self.calls), n + 3)
+        self.assertEqual(self.calls[-1], (ryzen.OP_SET_TCTL, 80))
+
+    def test_guard_rewrites_every_step_then_stops(self):
+        import threading
+        T = ryzen.OP_SET_TCTL
+        self.c.guard_step, self.c.guard_window = 0.02, 0.3
+        self.c.start(82)
+        deadline = threading.Event()
+        deadline.wait(0.6)
+        writes = [c for c in self.calls if c == (T, 82)]
+        self.assertGreaterEqual(len(writes), 6)  # the start, then the guard every step
+        n = len(self.calls)
+        deadline.wait(0.2)
+        self.assertEqual(len(self.calls), n)  # the window is over
+
+    def test_stop_ends_the_guard_before_the_default_is_written(self):
+        import threading
+        T = ryzen.OP_SET_TCTL
+        self.c.guard_step, self.c.guard_window = 0.01, 5.0
+        self.c.start(82)
+        threading.Event().wait(0.05)
+        self.c.stop(restore=True)
+        n = len(self.calls)
+        threading.Event().wait(0.1)
+        self.assertEqual(self.calls[n - 1], (T, 96))  # nothing of the guard came after it
+        self.assertEqual(len(self.calls), n)
+
+    def test_mode_change_hands_the_ceiling_over_without_a_gap(self):
+        # measured on a G713PV: writing 96 between two modes let the CPU jump from 82 to 92 °C
+        T = ryzen.OP_SET_TCTL
+        self.c.start(82)
+        self.c.stop(restore=True, handover=True)
+        self.assertNotIn((T, 96), self.calls)
+        self.c.start(80)  # the next mode's target, written directly
+        self.assertEqual(self.calls[-1], (T, 80))
+        self.assertNotIn((T, 96), self.calls)
+        self.assertEqual(self.c.status()["control"], "smu-bridge")
+
+    def test_next_mode_without_a_target_gets_the_default_back(self):
+        T = ryzen.OP_SET_TCTL
+        self.c.start(82)
+        self.c.stop(restore=True, handover=True)
+        self.c.start(None)
+        self.assertEqual(self.calls[-1], (T, 96))
+        self.assertIsNone(self.c.applied)
+        # a mode change that fails before its target starts gives it back as well
+        self.c.start(82)
+        self.c.stop(restore=True, handover=True)
+        self.c.release_handover()
+        self.assertEqual(self.calls[-1], (T, 96))
+        n = len(self.calls)
+        self.c.release_handover()  # nothing left to give back
+        self.c.stop(restore=True)
+        self.assertEqual(len(self.calls), n)
 
     def test_smu_bridge_external_profile_stop_skips_restore_write(self):
         self.c.start(83)
@@ -698,39 +778,104 @@ class TestSmuBridgeBackend(unittest.TestCase):
         self.c.stop(restore=False)
         self.assertEqual(len(self.calls), n)
 
-    def test_smu_bridge_fault_latches_without_retry_or_fallback(self):
-        self.responses[0x3F] = (ryzen.FAILED, 0)
+    def test_rejected_command_falls_back_to_power_feedback(self):
+        # the target keeps working: power-feedback takes over and the SMU is not asked again
+        self._power_limits()
+        self.responses[ryzen.OP_SET_TCTL] = (ryzen.UNKNOWN_CMD, 0)
         self.c.start(83)
-        self.assertEqual(self.c.state, "error")
+        self.assertEqual(self.c.status()["control"], "power-feedback")
+        self.assertEqual(self.c.state, "active")
+        self.assertEqual(self.c.target, 83)
         self.assertIsNone(self.c.applied)
-        self.assertFalse(self.c.supported())
+        self.assertTrue(any("using power-feedback" in e for e in self.c.drain_events()))
         n = len(self.calls)
         self.c.stop(restore=True)
-        self.assertEqual(len(self.calls), n)
-        self.assertEqual(self.c.state, "error")
         self.c.start(80)
         self.assertEqual(len(self.calls), n)
+        self.assertEqual(self.c.status()["control"], "power-feedback")
 
-    def test_missing_enable_hw_or_opt_in_disables_bridge(self):
-        os.unlink(self.enable_file)
+    def test_fault_on_reapply_falls_back_too(self):
+        self._power_limits()
+        self.c.start(83)
+        self.ioctl_err = OSError(110, "Connection timed out")
+        self.now += thermal.REAPPLY_STEP
+        self.c.tick()
+        self.assertEqual(self.c.status()["control"], "power-feedback")
+        self.assertEqual(self.c.state, "active")
+        self.assertIn("timed out", self.bridge.error)
+
+    def test_failed_restore_is_reported_once_then_power_feedback(self):
+        # a mode change after the SMU stopped answering: one error, then the target works again
+        self._power_limits()
+        self.c.start(83)
+        self.ioctl_err = OSError(110, "Connection timed out")
+        self.c.stop(restore=True)
+        self.assertEqual(self.c.state, "error")
+        self.assertEqual(self.c.status()["smu_left"], 83)
+        self.c.stop(restore=True)
+        self.assertEqual(self.c.state, "off")  # not re-reported on every later stop
+        self.c.start(80)
+        self.assertEqual(self.c.status()["control"], "power-feedback")
+        self.assertEqual(self.c.state, "active")
+        self.assertEqual(self.c.error, "")
+
+    def test_fallback_shows_the_ceiling_left_in_the_firmware(self):
+        self._power_limits()
+        self.c.start(83)
+        self.assertIsNone(self.c.status()["smu_left"])
+        self.ioctl_err = OSError(16, "Device or resource busy")
+        self.now += thermal.REAPPLY_STEP
+        self.c.tick()
+        st = self.c.status()
+        self.assertEqual((st["control"], st["state"], st["smu_left"]), ("power-feedback", "active", 83))
+        self.assertTrue(any("stays in the firmware" in e for e in self.c.drain_events()))
+        self.c.stop(restore=True)
+        self.assertEqual(self.c.status()["smu_left"], 83)  # off is not "no ceiling"
+
+    def test_no_power_limits_either_reports_the_error(self):
+        self.responses[ryzen.OP_VERSION] = (ryzen.FAILED, 0)
+        self.c.start(83)
+        self.assertEqual(self.c.state, "error")
+        self.assertFalse(self.c.supported())
+
+    def test_without_opt_in_or_module_the_bridge_is_not_used(self):
+        os.unlink(self.opt_in)
         self.assertFalse(self.bridge.available())
         with self.assertRaises(ryzen.SmuAccessError):
             self.bridge.set(83)
         self.assertEqual(self.calls, [])
+        open(self.opt_in, "w").close()
+        os.unlink(self.dev)
+        self.assertFalse(self.bridge.available())
+        self.assertEqual(self.c.status()["control"], "power-feedback")
+
+    def test_unsupported_cpu_is_never_asked(self):
+        with patch.object(ryzen, "detect", return_value=None):
+            bridge = ryzen.BridgeSmu(path=self.dev, opt_in_path=self.opt_in)
+            self.assertFalse(bridge.available())
+            with self.assertRaises(ryzen.SmuError):
+                bridge.set(83)
 
 
 class TestBridgeOptInWarning(unittest.TestCase):
     def test_requested_but_unusable_bridge_is_reported(self):
         c = thermal.Controller()
-        with patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "1"}), \
-                patch.object(c.bridge, "available", return_value=False):
+        with patch.object(c.bridge, "requested", return_value=True), \
+                patch.object(c.bridge, "available", return_value=False), \
+                patch.object(ryzen, "detect", return_value=None):
             msg = c.opt_in_warning()
-        self.assertIn("BOREAS_SMU_BRIDGE=1", msg)
+        self.assertIn("not in the supported list", msg)
         self.assertIn("power-feedback", msg)
+        with patch.object(c.bridge, "requested", return_value=True), \
+                patch.object(c.bridge, "available", return_value=False), \
+                patch.object(ryzen, "detect", return_value=ryzen.FAMILIES[(0x19, 0x61)]):
+            self.assertIn("not loaded", c.opt_in_warning())
 
     def test_no_warning_without_opt_in_or_when_usable(self):
         c = thermal.Controller()
-        with patch.dict(os.environ, {}, clear=True), patch.object(c.bridge, "available", return_value=False):
+        with patch.object(c.bridge, "requested", return_value=False), \
+                patch.object(c.bridge, "available", return_value=False):
             self.assertIsNone(c.opt_in_warning())
-        with patch.dict(os.environ, {ryzen.BRIDGE_OPT_IN_ENV: "1"}), patch.object(c.bridge, "available", return_value=True):
+        with patch.object(c.bridge, "requested", return_value=True), \
+                patch.object(c.bridge, "available", return_value=True):
             self.assertIsNone(c.opt_in_warning())

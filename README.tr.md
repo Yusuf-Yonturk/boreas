@@ -77,7 +77,7 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | Güç profili (mod başına) | ✓ (`Varsayılan` / `Güç tasarrufu` / `Performans`): Boreas power-profiles-daemon'ı maskelemeden önce masaüstünün güç menüsünün ayarladığı CPU frekans governor'ı | `cpufreq/scaling_governor` |
 | Güç limitleri (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / sıcaklık hedefi | ✓ | asus-armoury `nv_*` |
-| CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol |
+| CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol; isteğe bağlı olarak CPU'nun kendi tavanı (Ryzen, deneysel çekirdek modülü) |
 | Pil/prize göre otomatik mod | ✓ | `power_supply` |
 | GPU: Eco / Standart / Optimized / Ultimate | ✓ (Eco ve Optimized NVIDIA dGPU ile) | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran 60 Hz / maks / Otomatik | ✓ (KDE) | `kscreen-doctor` |
@@ -215,6 +215,19 @@ GPU ile paylaşılan soğutma ve servis gecikmeleri bu aşımlara yol açabilir;
 kontrollerini sunduğu yerde görünür. Başka bir güç ayarlama servisiyle birlikte çalıştırmayın.
 Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
+
+**Deneysel: CPU'nun kendi tavanı.** Birçok AMD Ryzen dizüstünde hedef, G-Helper'ın Windows'ta yaptığı
+gibi doğrudan CPU'ya verilebilir; CPU onu milisaniyeler içinde kendisi tutar. Bunun için DKMS ile
+derlenen küçük bir çekirdek modülü gerekir (`dkms` ve çekirdeğinizin başlık dosyaları kurulu olmalı):
+
+```bash
+sudo BOREAS_SMU=1 ./install.sh   # açar (BOREAS_SMU=0 yeniden kapatır)
+```
+
+Boreas CPU ailesini kendisi tanır (Ryzen 2000-3000, 4000-5000, 6000-8000 mobil, 7045HX-9055HX,
+Ryzen AI 300 / AI Max). Modül başka bir CPU'da ve BIOS ile paylaştığı kilidi (`\_SB.AM00`) sunmayan bir
+BIOS'ta yüklenmez. Modül yoksa, yüklenmezse ya da hata bildirirse Boreas yukarıdaki yazılımsal hedefle
+devam eder. Ayrıntılar ve aile listesi [docs/cpu-smu.md](docs/cpu-smu.md) dosyasında.
 
 ## GPU modları hakkında
 
