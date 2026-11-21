@@ -11,6 +11,15 @@ if [ -z "$D" ] && [ "$(id -u)" != 0 ]; then
     echo "Run as root: sudo ./install.sh" >&2
     exit 1
 fi
+# A copy a package owns is updated by the package manager only: installing over it from here
+# would take files the package owns and clear the mark that keeps the in-app update off.
+# Only a package build (--files-only into DESTDIR) may replace it.
+# DESTDIR=/ is this machine too, so only the slashes are left out of the check.
+if [ -f "$D/usr/lib/boreas/packaged" ] && { [ "$1" != "--files-only" ] || [ -z "$(printf %s "$D" | tr -d /)" ]; }; then
+    echo "Boreas is installed as a package ($(cat "$D/usr/lib/boreas/packaged")). Update it with your" \
+        "package manager, or remove the package before installing from source." >&2
+    exit 1
+fi
 # DESTDIR stages files for a package. Without --files-only the steps after the copy (language
 # file, masking, service restart) would run against this machine while the files went elsewhere.
 if [ -n "$D" ] && [ "$1" != "--files-only" ]; then

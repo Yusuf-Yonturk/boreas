@@ -70,6 +70,8 @@ class Daemon:
         self.stopping = False
         self.last_profile = hw.get_profile()
         self.last_ac = hw.ac_online()
+        # the mode for the power source could not be written at the last plug or unplug
+        self.source_mode_pending = False
         self.custom_power = False
         self.eco_stuck = False  # the driver did not let go: retry only on request or at boot
         self.notice = ""
@@ -113,6 +115,24 @@ class Daemon:
     def source_key(self, ac: bool | None = None) -> str:
         return "mode_ac" if (self.last_ac if ac is None else ac) else "mode_battery"
 
+    def switch_source_mode(self) -> None:
+        """Apply the mode stored for the current power source. If the firmware refuses the profile
+        write (EBUSY right at the plug or unplug), the switch is tried again every
+        ECO_RETRY_TICKS ticks, with one log line, until it lands or another mode is applied."""
+        try:
+            self.apply_mode(self.cfg[self.source_key()])
+        except OSError as e:
+            if not self.source_mode_pending:
+                log(f"could not switch the mode for the power source, will retry: {e}")
+            self.source_mode_pending = True
+            # Some firmware changes the profile itself at the plug or unplug. Take that as the
+            # baseline, or the next tick reads it as Fn+F5 and stores it over the source's mode.
+            self.last_profile = hw.get_profile()
+            return
+        if self.source_mode_pending:
+            log("mode for the power source applied on a retry")
+        self.source_mode_pending = False
+
     def set_notice(self, msg: str) -> None:
         self.notice = msg
         log(msg)
@@ -145,6 +165,7 @@ class Daemon:
                 time.sleep(0.1)
             self.last_profile = hw.get_profile()
             self.cfg["mode"] = mode_id
+            self.source_mode_pending = False  # a mode landed: nothing older is left to retry
             self.custom_power = False
             target = m.get("cpu_temp")
             thermal_on = target is not None and target < thermal.DEFAULT_TEMP
@@ -553,14 +574,14 @@ class Daemon:
                 return
         with self.lock:
             if ac != self.last_ac:
-                self.last_ac = ac
                 log(f"power source: {'AC' if ac else 'battery'}")
                 if ac and self.cfg["charge_limit"] is not None:
                     try:
                         hw.set_charge_limit(self.cfg["charge_limit"])
                     except (OSError, ValueError) as e:
                         log(f"could not reapply charge_limit on AC: {e}")
-                self.apply_mode(self.cfg[self.source_key(ac)])
+                self.last_ac = ac
+                self.switch_source_mode()
                 if self.cfg["gpu_target"] == gpu.OPTIMIZED:
                     self.apply_gpu_target(gpu.OPTIMIZED)
                 self.cfg.save()
@@ -589,6 +610,11 @@ class Daemon:
                 self.cfg[self.source_key()] = mode_id
                 self.apply_mode(mode_id, write_profile=False, external_profile=True)
                 self.cfg.save()
+            # after the Fn+F5 check: a key press in the same second is the newer choice
+            if self.source_mode_pending and self.ticks % ECO_RETRY_TICKS == 0:
+                self.switch_source_mode()
+                if not self.source_mode_pending:
+                    self.cfg.save()
 
             self.maintain_cpu_temp()
             self.watch_tick_at = time.monotonic()

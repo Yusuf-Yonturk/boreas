@@ -182,8 +182,21 @@ class PackagingTests(InstallTestCase):
         self.assertFalse(mark.exists())
         self.install(BOREAS_PACKAGED='aur')
         self.assertEqual(mark.read_text(), 'aur\n')
-        self.install()                      # a later plain install takes the copy back
+        self.install()                      # a later package build without the mark takes it off
         self.assertFalse(mark.exists())
+
+    def test_plain_install_refuses_a_packaged_copy(self):
+        # sudo ./install.sh over an AUR install would take files pacman owns and clear the mark,
+        # after which the in-app update writes over the package too
+        self.install(BOREAS_PACKAGED='aur')
+        mark = self.stage / 'usr/lib/boreas/packaged'
+        before = {p: p.stat().st_mtime_ns for p in self.stage.rglob('*')}
+        result = subprocess.run(['sh', str(REPO / 'install.sh')], env=self.env(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('package (aur)', result.stderr)
+        self.assertEqual(mark.read_text(), 'aur\n')
+        self.assertEqual({p: p.stat().st_mtime_ns for p in self.stage.rglob('*')}, before)
 
 
 class SetupTests(unittest.TestCase):
