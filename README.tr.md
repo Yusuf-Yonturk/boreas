@@ -122,6 +122,23 @@ Kurulum arayüz dilini sorar (Enter = English). Sormadan kurmak için: `sudo BOR
 Her kullanıcı dili sonradan penceredeki küre düğmesinden değiştirebilir. Çince ve Japonca için
 `noto-fonts-cjk`, Hintçe ve Arapça için `noto-fonts` gerekir.
 
+### Arch / CachyOS: paket olarak kurmak
+
+Depoda bir PKGBUILD var; böylece dosyalar pacman'e ait olur ve pacman onları geri kaldırabilir.
+`main` dalındaki son kodu derler:
+
+```bash
+git clone https://github.com/Yusuf-Yonturk/boreas.git
+cd boreas/packaging/aur/boreas-git
+makepkg -si
+sudo boreas-setup enable
+```
+
+Paket yalnız dosyaları yerine koyar; `sudo boreas-setup enable` dizüstünü Boreas'a devreder (kurulum
+betiğiyle aynı servis değişiklikleri, aşağıda listeli), `sudo boreas-setup disable` geri verir.
+`sudo pacman -R boreas-git` bu geri verme adımını kendisi çalıştırır. Pakette uygulama içi güncelleme
+ve eBPF GPU yardımcısı yoktur. Güncellemek için depoda `git pull`, aynı klasörde yeniden `makepkg -si`.
+
 ### Kurulum sisteminizde neyi değiştirir
 
 - `asusd`, `asus-shutdown`, `supergfxd` ve `power-profiles-daemon`'ı maskeler, `boreasd`'yi açar.
@@ -174,8 +191,8 @@ boreasctl cputemp default   # kapat
 boreasctl cpufloor 45       # sürekli güç tabanı; `cpufloor min` = firmware minimumu
 ```
 
-**Bu yazılımsal bir hedeftir, kesin sıcaklık tavanı değildir.** Boost, firmware, GPU ile paylaşılan
-soğutma ve servis gecikmeleri hedefin aşılmasına yol açabilir; özellik yalnız dizüstünün CPU güç
+**Boreas bu hedefi yazılımla tutar, bu yüzden CPU bir süre hedefin üstüne çıkabilir.** Boost, firmware,
+GPU ile paylaşılan soğutma ve servis gecikmeleri bu aşımlara yol açabilir; özellik yalnız dizüstünün CPU güç
 kontrollerini sunduğu yerde görünür. Başka bir güç ayarlama servisiyle birlikte çalıştırmayın.
 Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
