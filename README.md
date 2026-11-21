@@ -5,7 +5,7 @@
 **English** · [Türkçe](README.tr.md)
 
 <p align="center">
-  <img src="docs/demo.gif" width="440" alt="Boreas: switching the performance mode and the GPU mode, keyboard effects, fan curves and the charge limit">
+  <img src="docs/demo.gif" alt="Boreas: switching the performance mode and the GPU mode, keyboard effects, fan curves and the charge limit">
 </p>
 
 Boreas gives your ASUS laptop on Linux what Armoury Crate and G-Helper give it on Windows: one small
