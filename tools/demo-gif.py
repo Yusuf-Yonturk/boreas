@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renders docs/demo.gif: the real window three times, drawn off screen side by side, stepping through a short tour.
+"""Renders docs/demo.gif: the real window three times (main page light and dark, Fans and power), drawn off screen side by side, stepping through a short tour.
 
     python3 tools/demo-gif.py [output.gif]
 
@@ -34,10 +34,12 @@ from boreas import client, i18n  # noqa: E402
 from boreas.gui import app as A  # noqa: E402
 from boreas.gui.common import apply_theme  # noqa: E402
 
-WINDOW = (570, 900)       # logical size of each window
-CANVAS = (1500, 634)      # size of a frame: the proportions of docs/banner.jpg, which sits above it
-MARGIN, GAP = 28, 36
-RADIUS = 16
+WINDOW = (570, 950)       # logical size of each window
+CANVAS = (1500, 847)      # size of a frame: the proportions of docs/screenshots.png
+MARGIN, GAP = 50, 38      # above and below the windows, and between them
+RADIUS = 16               # corners of a window
+CORNER = 30               # corners of the frame itself; outside them the GIF is transparent
+KEY = (0, 255, 0)         # painted outside those corners, then marked as the transparent color
 READS = {"status", "get_mode"}
 
 
@@ -49,17 +51,15 @@ class Tour:
         self.state = client.call("status")
         self.modes = {m["id"]: client.call("get_mode", mode=m["id"]) for m in self.state["modes"]}
         A.call = self.answer                   # from here on the service is not asked again
-        self.main = self.window()              # left: the main page
-        self.side = self.window()              # middle: Fans and power, following the same status
-        self.more = self.window()              # right: the same page scrolled to its end
+        self.main = self.window()              # left: the main page, light
+        self.side = self.window()              # middle: the main page, dark
+        self.more = self.window()              # right: Fans and power, dark, following the same status
         self.windows = (self.main, self.side, self.more)
         self.frames: list[tuple[QImage, int]] = []
         self.pump(1.0)
-        for w in (self.side, self.more):
-            w.status = copy.deepcopy(self.state)   # the page opens only once a status has arrived
-            w.open_fans()
+        self.more.status = copy.deepcopy(self.state)   # the page opens only once a status has arrived
+        self.more.open_fans()
         self.pump(1.2)
-        self.to_end()
 
     def window(self):
         w = A.MainWindow()
@@ -67,11 +67,6 @@ class Tour:
         w.show()
         w.resize(*WINDOW)
         return w
-
-    def to_end(self):
-        bar = self.more.fans_window.findChild(QScrollArea).verticalScrollBar()
-        bar.setValue(bar.maximum())
-        self.pump(0.05)
 
     def answer(self, cmd, **kw):
         if cmd == "status":
@@ -100,10 +95,17 @@ class Tour:
             w.status = copy.deepcopy(self.state)
             w.render()
         self.pump(0.8)
-        self.to_end()
 
     def frame(self, ms: int, tap=None):
-        """One frame: the windows side by side on the banner's gradient. tap = (window, point)."""
+        """One frame: the windows side by side on a gradient with rounded corners. tap = (window, point)."""
+        # the theme belongs to the whole application, so the main page is drawn while it is light
+        apply_theme(self.qa, "light")
+        self.pump(0.1)
+        shots = {self.main: self.main.grab().toImage()}
+        apply_theme(self.qa, "dark")
+        self.pump(0.1)
+        for win in (self.side, self.more):
+            shots[win] = win.grab().toImage()
         w, h = CANVAS
         out = QImage(w * 2, h * 2, QImage.Format_RGB32)
         p = QPainter(out)
@@ -111,7 +113,7 @@ class Tour:
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.scale(2, 2)
         g = QLinearGradient(0, 0, w, h)
-        for at, color in ((0.0, "#0a1f6e"), (0.3, "#2456e6"), (0.6, "#6a52ee"), (0.82, "#a04fe6"), (1.0, "#f04fb4")):
+        for at, color in ((0.0, "#22b5ee"), (0.45, "#6f6fe8"), (0.75, "#9a4fe0"), (1.0, "#e0468f")):
             g.setColorAt(at, QColor(color))
         p.fillRect(0, 0, w, h, g)
         scale = (h - 2 * MARGIN) / WINDOW[1]
@@ -123,16 +125,26 @@ class Tour:
             clip.addRoundedRect(box, RADIUS, RADIUS)
             p.save()
             p.setClipPath(clip)
-            p.drawImage(box, win.grab().toImage())
+            p.drawImage(box, shots[win])
             p.restore()
             if tap is not None and tap[0] is win:    # where the next click lands
                 c = QPointF(x + tap[1].x() * scale, MARGIN + tap[1].y() * scale)
-                p.setBrush(QColor(255, 255, 255, 70))
-                p.setPen(QPen(QColor(255, 255, 255, 220), 2))
+                light = win is self.main             # a dark ring on the light page, a light one on the dark
+                p.setBrush(QColor(20, 30, 60, 50) if light else QColor(255, 255, 255, 70))
+                p.setPen(QPen(QColor(20, 30, 60, 200) if light else QColor(255, 255, 255, 220), 2))
                 p.drawEllipse(c, 12, 12)
             x += ww + GAP
         p.end()
-        self.frames.append((out.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation), ms))
+        out = out.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        # the corners, cut after scaling and without smoothing: a GIF pixel is either there or not
+        outside = QPainterPath()
+        outside.addRect(QRectF(0, 0, w, h))
+        frame = QPainterPath()
+        frame.addRoundedRect(QRectF(0, 0, w, h), CORNER, CORNER)
+        p = QPainter(out)
+        p.fillPath(outside.subtracted(frame), QColor(*KEY))
+        p.end()
+        self.frames.append((out, ms))
 
     def at(self, widget):
         win = widget.window()
@@ -172,7 +184,12 @@ class Tour:
                             ("heatmap", {"color2": None})):
             if mode in (self.state.get("aura_modes") or ()):
                 self.click(w.aura_mode, 900, aura={**aura, "mode": mode, **extra})
-        # the charge limit, at the end of the page on the right
+        # down the page on the right, to the power limits and the charge limit at its end
+        bar = more.fans_window.findChild(QScrollArea).verticalScrollBar()
+        for step in range(1, 7):
+            bar.setValue(round(bar.maximum() * step / 6))
+            self.pump(0.05)
+            self.frame(90 if step < 6 else 1000)
         self.frame(350, tap=self.at(more.charge))
         for limit in (75, 70, 65, 60):
             self.state["battery"]["limit"] = limit
@@ -193,11 +210,33 @@ class Tour:
             lines.append(f"file {len(self.frames) - 1:03}.png")   # the last duration needs a closing entry
             with open(os.path.join(d, "frames.txt"), "w") as f:
                 f.write("\n".join(lines) + "\n")
-            palette = "split[a][b];[a]palettegen=max_colors=256:stats_mode=full[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+            palette = "split[a][b];[a]palettegen=max_colors=256:stats_mode=full:reserve_transparent=0[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
             subprocess.run([ffmpeg, "-loglevel", "error", "-y", "-f", "concat", "-i", "frames.txt",
                             "-vf", palette, "-fps_mode", "vfr", os.path.abspath(path)], cwd=d, check=True)
+        transparent_key(path)
         total = sum(ms for _, ms in self.frames) / 1000
         print(f"{path}: {len(self.frames)} frames, {total:.1f} s, {os.path.getsize(path) / 1e6:.2f} MB")
+
+
+def transparent_key(path: str):
+    """Marks KEY as transparent in the first frame of the GIF.
+
+    Written with real transparency, every frame would be stored whole (about 3 MB instead of 0.2):
+    the encoder then cannot use transparency for "same as the frame before". The corners never
+    change after the first frame, so it is enough to make them transparent there.
+    """
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    if not data[10] & 0x80:
+        raise SystemExit("the GIF has no global palette")
+    size = 2 << (data[10] & 7)
+    colors = [tuple(data[13 + 3 * i:16 + 3 * i]) for i in range(size)]
+    index = colors.index(KEY)                    # ValueError if the palette did not keep the key color
+    gce = data.index(b"\x21\xf9\x04", 13 + 3 * size)   # graphic control extension of the first frame
+    data[gce + 3] |= 1
+    data[gce + 6] = index
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def main() -> int:
