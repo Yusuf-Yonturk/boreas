@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renders docs/demo.gif: two real windows, drawn off screen side by side, stepping through a short tour.
+"""Renders docs/demo.gif: the real window three times, drawn off screen side by side, stepping through a short tour.
 
     python3 tools/demo-gif.py [output.gif]
 
@@ -35,8 +35,8 @@ from boreas.gui import app as A  # noqa: E402
 from boreas.gui.common import apply_theme  # noqa: E402
 
 WINDOW = (570, 900)       # logical size of each window
-CANVAS = (1000, 700)      # size of a frame: landscape, like the banner above it in the README
-MARGIN, GAP = 36, 36
+CANVAS = (1500, 634)      # size of a frame: the proportions of docs/banner.jpg, which sits above it
+MARGIN, GAP = 28, 36
 RADIUS = 16
 READS = {"status", "get_mode"}
 
@@ -50,12 +50,16 @@ class Tour:
         self.modes = {m["id"]: client.call("get_mode", mode=m["id"]) for m in self.state["modes"]}
         A.call = self.answer                   # from here on the service is not asked again
         self.main = self.window()              # left: the main page
-        self.side = self.window()              # right: Fans and power, following the same status
+        self.side = self.window()              # middle: Fans and power, following the same status
+        self.more = self.window()              # right: the same page scrolled to its end
+        self.windows = (self.main, self.side, self.more)
         self.frames: list[tuple[QImage, int]] = []
         self.pump(1.0)
-        self.side.status = copy.deepcopy(self.state)   # the page opens only once a status has arrived
-        self.side.open_fans()
+        for w in (self.side, self.more):
+            w.status = copy.deepcopy(self.state)   # the page opens only once a status has arrived
+            w.open_fans()
         self.pump(1.2)
+        self.to_end()
 
     def window(self):
         w = A.MainWindow()
@@ -63,6 +67,11 @@ class Tour:
         w.show()
         w.resize(*WINDOW)
         return w
+
+    def to_end(self):
+        bar = self.more.fans_window.findChild(QScrollArea).verticalScrollBar()
+        bar.setValue(bar.maximum())
+        self.pump(0.05)
 
     def answer(self, cmd, **kw):
         if cmd == "status":
@@ -80,20 +89,21 @@ class Tour:
             time.sleep(0.01)
 
     def show(self, **changes):
-        """Puts the changed status on both windows, the way a status from the service would arrive."""
+        """Puts the changed status on every window, the way a status from the service would arrive."""
         for path, value in changes.items():
             d = self.state
             *parents, last = path.split("__")
             for key in parents:
                 d = d[key]
             d[last] = value
-        for w in (self.main, self.side):
+        for w in self.windows:
             w.status = copy.deepcopy(self.state)
             w.render()
         self.pump(0.8)
+        self.to_end()
 
     def frame(self, ms: int, tap=None):
-        """One frame: both windows side by side on the banner's gradient. tap = (window, point)."""
+        """One frame: the windows side by side on the banner's gradient. tap = (window, point)."""
         w, h = CANVAS
         out = QImage(w * 2, h * 2, QImage.Format_RGB32)
         p = QPainter(out)
@@ -106,8 +116,8 @@ class Tour:
         p.fillRect(0, 0, w, h, g)
         scale = (h - 2 * MARGIN) / WINDOW[1]
         ww, wh = WINDOW[0] * scale, WINDOW[1] * scale
-        x = (w - 2 * ww - GAP) / 2
-        for win in (self.main, self.side):
+        x = (w - len(self.windows) * (ww + GAP) + GAP) / 2
+        for win in self.windows:
             box = QRectF(x, MARGIN, ww, wh)
             clip = QPainterPath()
             clip.addRoundedRect(box, RADIUS, RADIUS)
@@ -139,7 +149,7 @@ class Tour:
     # ---- the tour ----------------------------------------------------------------
 
     def run(self):
-        w, side = self.main, self.side
+        w, more = self.main, self.more
         base = copy.deepcopy(self.state)
         self.show(mode=0, mode_ac=0, temps__cpu=58, fans={"cpu": 2300, "gpu": 2700},
                   kbd={"brightness": 2, "max": 3}, profile="balanced")
@@ -162,16 +172,11 @@ class Tour:
                             ("heatmap", {"color2": None})):
             if mode in (self.state.get("aura_modes") or ()):
                 self.click(w.aura_mode, 900, aura={**aura, "mode": mode, **extra})
-        # down the page on the right: power limits, then the charge limit
-        bar = side.fans_window.findChild(QScrollArea).verticalScrollBar()
-        for step in range(1, 7):
-            bar.setValue(round(bar.maximum() * step / 6))
-            self.pump(0.05)
-            self.frame(90 if step < 6 else 1000)
-        self.frame(350, tap=self.at(side.charge))
+        # the charge limit, at the end of the page on the right
+        self.frame(350, tap=self.at(more.charge))
         for limit in (75, 70, 65, 60):
             self.state["battery"]["limit"] = limit
-            side.charge.setValue(limit)
+            more.charge.setValue(limit)
             self.pump(0.05)
             self.frame(110 if limit > 60 else 1700)
         self.state = base
@@ -201,7 +206,8 @@ def main() -> int:
     tour = Tour()
     tour.run()
     tour.save(out)
-    tour.main.quitting = tour.side.quitting = True
+    for w in tour.windows:
+        w.quitting = True
     return 0
 
 
