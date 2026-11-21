@@ -233,6 +233,113 @@ class TestPowerSource(Base):
         put(usb + "/online", 0)
         self.assertFalse(hw.ac_online())
 
+    def test_failed_switch_on_unplug_is_retried(self):
+        # the firmware may refuse the profile write right at the unplug (EBUSY): the battery mode
+        # must still land on a later tick, not wait for the next plug or unplug
+        d = daemon.Daemon(config.Config())
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        real = hw.set_profile
+        refused = []
+
+        def set_profile(name):
+            if not refused:
+                refused.append(name)
+                raise OSError(errno.EBUSY, "Device or resource busy")
+            return real(name)
+        with patch.object(daemon.hw, "set_profile", set_profile):
+            d.tick()
+            self.assertEqual(refused, ["quiet"])
+            self.assertEqual(hw.get_profile(), "balanced")  # nothing of the battery mode ran yet
+            for _ in range(daemon.ECO_RETRY_TICKS):
+                d.tick()
+        self.assertEqual(hw.get_profile(), "quiet")
+        self.assertEqual(d.cfg["mode"], hw.SILENT)
+        self.assertFalse(d.source_mode_pending)
+        self.assertEqual(config.Config()["mode"], hw.SILENT)  # stored, not only in memory
+
+    def test_refused_switch_is_quiet_and_keeps_the_rest_of_the_tick(self):
+        # a firmware that never takes the write: one log line, a retry every ECO_RETRY_TICKS,
+        # and the Optimized GPU switch and the rest of the tick still run
+        d = daemon.Daemon(config.Config())
+        d.cfg["gpu_target"] = gpu.OPTIMIZED
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        tries, lines, gpu_targets = [], [], []
+
+        def set_profile(name):
+            tries.append(name)
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        with patch.object(daemon.hw, "set_profile", set_profile), \
+                patch.object(daemon, "log", lines.append), \
+                patch.object(d, "apply_gpu_target", lambda t, **k: gpu_targets.append(t) or {}), \
+                patch.object(d, "maintain_cpu_temp") as maintain:
+            for _ in range(1 + 3 * daemon.ECO_RETRY_TICKS):
+                d.tick()
+        self.assertEqual(len(tries), 4)  # the unplug, then one try per ECO_RETRY_TICKS
+        self.assertEqual(len([l for l in lines if "will retry" in l]), 1)
+        self.assertEqual(gpu_targets, [gpu.OPTIMIZED])
+        self.assertEqual(maintain.call_count, 3 * daemon.ECO_RETRY_TICKS)
+        self.assertTrue(d.source_mode_pending)
+
+    def _turbo_on_ac(self):
+        put(R + hw.PLATFORM_PROFILE, "performance")
+        d = daemon.Daemon(config.Config())
+        d.cfg["mode_ac"] = d.cfg["mode"] = hw.TURBO
+        return d
+
+    def test_firmware_profile_change_at_unplug_is_not_taken_as_fn_f5(self):
+        # the firmware drops the profile itself and refuses our write in the same moment:
+        # the stored battery mode must survive and land on the retry
+        d = self._turbo_on_ac()
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        real = hw.set_profile
+        refused = []
+
+        def set_profile(name):
+            if not refused:
+                refused.append(name)
+                put(R + hw.PLATFORM_PROFILE, "balanced")
+                raise OSError(errno.EBUSY, "Device or resource busy")
+            return real(name)
+        with patch.object(daemon.hw, "set_profile", set_profile):
+            for _ in range(1 + daemon.ECO_RETRY_TICKS):
+                d.tick()
+        self.assertEqual(d.cfg["mode_battery"], hw.SILENT)
+        self.assertEqual(hw.get_profile(), "quiet")
+        self.assertFalse(d.source_mode_pending)
+
+    def test_fn_f5_on_the_retry_tick_wins(self):
+        d = self._turbo_on_ac()
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        real = hw.set_profile
+        with patch.object(daemon.hw, "set_profile",
+                          lambda n: (_ for _ in ()).throw(OSError(errno.EBUSY, "busy"))):
+            for _ in range(daemon.ECO_RETRY_TICKS):
+                d.tick()  # the unplug, then up to the tick before the retry
+        self.assertTrue(d.source_mode_pending)
+        put(R + hw.PLATFORM_PROFILE, "balanced")  # Fn+F5, in the same second as the retry
+        with patch.object(daemon.hw, "set_profile", real):
+            d.tick()
+        self.assertEqual(d.cfg["mode"], hw.BALANCED)
+        self.assertEqual(d.cfg["mode_battery"], hw.BALANCED)
+        self.assertEqual(hw.get_profile(), "balanced")
+        self.assertFalse(d.source_mode_pending)
+
+    def test_a_chosen_mode_replaces_the_pending_switch(self):
+        d = daemon.Daemon(config.Config())
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        real = hw.set_profile
+        with patch.object(daemon.hw, "set_profile",
+                          lambda n: (_ for _ in ()).throw(OSError(errno.EBUSY, "busy"))):
+            d.tick()
+        self.assertTrue(d.source_mode_pending)
+        with patch.object(daemon.hw, "set_profile", real):
+            d.set_mode(hw.TURBO)  # chosen on battery: stored for battery, not for AC
+            for _ in range(daemon.ECO_RETRY_TICKS):
+                d.tick()
+        self.assertEqual(d.cfg["mode_battery"], hw.TURBO)
+        self.assertEqual(d.cfg["mode"], hw.TURBO)  # the retry did not put Silent back
+        self.assertFalse(d.source_mode_pending)
+
 
 class TestGpu(Base):
     def test_state(self):
@@ -465,6 +572,54 @@ class TestGpu(Base):
         self.assertIn(("modprobe", "nvidia_drm"), calls[unload:])  # the driver was reloaded
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
+    def test_leaving_eco_reports_a_dgpu_that_did_not_come_back(self):
+        # dgpu_disable=0 was written but the dGPU never shows up on the bus: that is not Standard
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        calls = self._gpu_calls()
+        with self.assertRaises(OSError):
+            gpu.set_eco(False)
+        self.assertIn(("modprobe", "nvidia_drm"), calls)  # still loaded, binds when the dGPU appears late
+
+    def test_leaving_eco_without_the_nvidia_driver_is_not_an_error(self):
+        # an AMD dGPU: dgpu_present() cannot see it, so there is nothing to wait for
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        self._gpu_calls(lambda cmd: cmd[:1] != ("modprobe",))
+        gpu.set_eco(False)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def test_ultimate_from_eco_with_a_slow_dgpu_still_writes_the_mux(self):
+        # the dGPU comes up at the reboot Ultimate needs anyway
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        self._gpu_calls()
+        gpu.set_mux(True)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
+
+    def test_ultimate_stops_on_any_other_error_leaving_eco(self):
+        # only a slow dGPU is let through; a refusal (eBPF helper, firmware) still reaches the user
+        with patch.object(gpu, "set_eco", side_effect=OSError("GPU engine rejected request")):
+            with self.assertRaises(OSError):
+                gpu.set_mux(True)
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "1")
+
+    def test_leaving_eco_attaches_the_dgpu(self):
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        calls = self._gpu_calls()
+        real_write = hw.write
+
+        def write(path, value):
+            real_write(path, value)
+            if path.endswith("/sys/bus/pci/rescan"):
+                self._fake_dgpu()  # the firmware brought the dGPU back
+        with patch.object(gpu.hw, "write", write):
+            gpu.set_eco(False)
+        self.assertIn(("modprobe", "nvidia_drm"), calls)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
     def _bridge(self, name, child=False, control="auto"):
         d = R + f"/sys/bus/pci/devices/{name}"
         put(d + "/secondary_bus_number", 1)
@@ -490,6 +645,7 @@ class TestGpu(Base):
             if name == "dgpu_disable":
                 seen["port"] = get(port + "/power/control")
                 seen["busy"] = get(busy + "/power/control")
+                self._fake_dgpu()  # with the port awake the dGPU comes back
             return real_set(name, value)
         with patch.object(gpu.hw, "set_attr", set_attr):
             gpu.set_eco(False)

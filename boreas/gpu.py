@@ -40,6 +40,10 @@ class GpuBusy(Exception):
         self.hard = hard
 
 
+class DgpuSlow(OSError):
+    """dgpu_disable=0 was written, but the dGPU has not appeared on the PCI bus yet."""
+
+
 def supported() -> bool:
     return hw.get_attr("dgpu_disable") is not None or hw.get_attr("gpu_mux_mode") is not None
 
@@ -207,15 +211,22 @@ def _detach_dgpu() -> None:
 
 def _attach_dgpu(tries: int = 5) -> None:
     # after dgpu_disable=0 the GPU may not show up on the bus right away
+    present = False
     for _ in range(tries):
         hw.write("/sys/bus/pci/rescan", 1)
-        if dgpu_present():
+        present = dgpu_present()
+        if present:
             break
         time.sleep(1)
-    _run("modprobe", "nvidia_drm")
+    # the driver is loaded either way: it binds on its own if the dGPU shows up late
+    nvidia = _run("modprobe", "nvidia_drm")
     for svc in NV_SERVICES:
         if subprocess.run(["systemctl", "is-enabled", svc], capture_output=True).returncode == 0:
             _run("systemctl", "start", svc)
+    # dgpu_present() only knows NVIDIA cards: without the NVIDIA driver (an AMD dGPU) there is
+    # nothing to check, and leaving Eco stays as it was
+    if nvidia and not present:
+        raise DgpuSlow(f"the dGPU did not appear on the PCI bus within {tries} s")
 
 
 def _empty_bridges() -> list[str]:
@@ -274,9 +285,12 @@ def set_eco(enabled: bool) -> None:
         _detach_dgpu()
         try:
             hw.set_attr("dgpu_disable", 1)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
             # the device was removed but Eco could not be written: bring the dGPU and the driver back
-            _attach_dgpu()
+            try:
+                _attach_dgpu()
+            except OSError as attach_error:
+                raise OSError(f"{e}; {attach_error}") from e
             raise
     else:
         saved = _wake_bridges()
@@ -292,7 +306,10 @@ def set_mux(ultimate: bool) -> None:
         raise ValueError("MUX is not supported")
     if ultimate:
         # Eco has to be off first; if it is not, do not touch the MUX
-        set_eco(False)
+        try:
+            set_eco(False)
+        except DgpuSlow:
+            pass  # dgpu_disable=0 is written; the dGPU comes up at the reboot Ultimate needs anyway
         eco = hw.get_attr("dgpu_disable")
         if eco is not None and eco.current == 1:
             raise ValueError("Could not turn off Eco, did not switch to Ultimate")
