@@ -119,6 +119,23 @@ The installer asks for the interface language (Enter = English). To skip the que
 `sudo BOREAS_LANG=de ./install.sh`. Each user can change the language later with the globe button in
 the window. Chinese and Japanese need `noto-fonts-cjk`; Hindi and Arabic need `noto-fonts`.
 
+### Arch / CachyOS: install as a package
+
+The repository carries a PKGBUILD, so pacman can own the files and remove them again. It builds
+the latest code on `main`:
+
+```bash
+git clone https://github.com/Yusuf-Yonturk/boreas.git
+cd boreas/packaging/aur/boreas-git
+makepkg -si
+sudo boreas-setup enable
+```
+
+The package only puts the files in place; `sudo boreas-setup enable` hands the laptop to Boreas (the
+same service changes as the installer, listed below) and `sudo boreas-setup disable` gives it back.
+`sudo pacman -R boreas-git` runs the disable step for you. The package has no in-app update and no eBPF
+GPU helper. To update, run `git pull` in the repository and `makepkg -si` in the same folder again.
+
 ### What the installer changes on your system
 
 - It masks `asusd`, `asus-shutdown`, `supergfxd` and `power-profiles-daemon` and enables `boreasd`.
@@ -191,8 +208,8 @@ boreasctl cputemp default   # turn it off
 boreasctl cpufloor 45       # sustained power floor; `cpufloor min` = firmware minimum
 ```
 
-**This is a software target, not a hard temperature ceiling.** Boost, firmware, shared GPU cooling and
-service delays can cause overshoots, and it is offered only where the laptop exposes the CPU power
+**Boreas holds this target in software, so the CPU can go above it for a while.** Boost, firmware,
+shared GPU cooling and service delays can cause such overshoots, and it is offered only where the laptop exposes the CPU power
 controls. Do not run another power tuning service at the same time. How the controller steps, what it
 does on errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
 
