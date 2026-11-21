@@ -76,7 +76,7 @@ whether everything worked or not.
 | Power profile (per mode) | ✓ (`Default` / `Power saver` / `Performance`): the CPU frequency governor the desktop's power menu set before Boreas masked power-profiles-daemon | `cpufreq/scaling_governor` |
 | Power limits (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / temp target | ✓ | asus-armoury `nv_*` |
-| CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury |
+| CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury; optionally the CPU's own ceiling (Ryzen, experimental kernel module) |
 | Auto mode on battery / AC | ✓ | `power_supply` |
 | GPU: Eco / Standard / Optimized / Ultimate | ✓ (Eco and Optimized with an NVIDIA dGPU) | `dgpu_disable`, `gpu_mux_mode` |
 | Display 60 Hz / max / Auto | ✓ (KDE) | `kscreen-doctor` |
@@ -212,7 +212,21 @@ boreasctl cpufloor 45       # sustained power floor; `cpufloor min` = firmware m
 
 **Boreas holds this target in software, so the CPU can go above it for a while.** Boost, firmware,
 shared GPU cooling and service delays can cause such overshoots, and it is offered only where the laptop exposes the CPU power
-controls. Do not run another power tuning service at the same time. How the controller steps, what it
+controls.
+
+**Experimental: the CPU's own ceiling.** On many AMD Ryzen laptops the target can instead be handed to
+the CPU itself, the way G-Helper does on Windows; the CPU then holds it within milliseconds. This needs a
+small kernel module that is built with DKMS (`dkms` and your kernel's headers must be installed):
+
+```bash
+sudo BOREAS_SMU=1 ./install.sh   # switch it on (BOREAS_SMU=0 switches it off again)
+```
+
+Boreas recognises the CPU family by itself (Ryzen 2000-3000, 4000-5000, 6000-8000 mobile, 7045HX-9055HX,
+Ryzen AI 300 / AI Max). The module refuses to load on any other CPU, and on a BIOS that does not offer the
+lock it shares with the BIOS (`\_SB.AM00`). When the module is missing, refuses, or reports an error,
+Boreas keeps the software target above. Details and the list of families are in
+[docs/cpu-smu.md](docs/cpu-smu.md). Do not run another power tuning service at the same time. How the controller steps, what it
 does on errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
 
 ## GPU modes

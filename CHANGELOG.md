@@ -3,6 +3,10 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## 0.1.9
+
+- **Experimental: the CPU's own temperature ceiling.** With `sudo BOREAS_SMU=1 ./install.sh`, a small kernel module (`smu/`, built with DKMS) hands a mode's CPU temperature target to the CPU itself, the way G-Helper does on Windows, so short boost bursts no longer run past it. Boreas recognises the Ryzen family by itself (Raven Ridge to Strix Halo; the list is in docs/cpu-smu.md). The BIOS uses the same SMU mailbox, so the module holds the BIOS's own lock (`\_SB.AM00`) for every message and does not load on a BIOS without it. On an unsupported CPU, without the module, or after any SMU error, the target keeps working through the ASUS power limits as before. The earlier opt-in (`BOREAS_SMU_BRIDGE=1`, `enable_hw`) is gone
+
 ## 0.1.8
 
 - **Eco and Optimized only with an NVIDIA dGPU.** Before it writes `dgpu_disable`, Eco stops the NVIDIA services, unloads the NVIDIA driver and removes the dGPU from the PCI bus. On a laptop with a Radeon dGPU (2022 ROG Zephyrus G14, GA402R) none of that applies, so Eco wrote `dgpu_disable=1` with `amdgpu` still bound, which can freeze the system. Eco and Optimized are now offered only when an NVIDIA display device is on the PCI bus, or when the laptop is already in Eco (an NVIDIA dGPU is off the bus then, and leaving Eco stays possible). Elsewhere their buttons and tray entries are hidden, the service and `boreasctl gpu` refuse them, a saved Eco or Optimized mode falls back to Standard with a notice, and the eBPF engine cannot be switched on. An NVIDIA eGPU does not count. Standard and Ultimate work as before, and so does Eco on NVIDIA laptops; if the NVIDIA dGPU has not come back on the bus after leaving Eco, Eco and Optimized are hidden until it does and a saved Optimized is kept. On a laptop without `dgpu_disable` the two buttons are now hidden instead of greyed out, and a saved Eco or Optimized mode falls back to Standard there too

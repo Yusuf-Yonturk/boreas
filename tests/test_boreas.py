@@ -1436,11 +1436,20 @@ class TestEcoNeedsNvidia(Base):
 
 class TestCpuDetect(Base):
     def test_detect_dragon_range(self):
-        self.assertEqual(ryzen.detect().name, "Dragon Range")
+        self.assertEqual(ryzen.detect().name, "Dragon Range / Raphael")
         put(R + ryzen.CPUINFO, "vendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 183\n")
-        self.assertIsNone(ryzen.detect())
+        self.assertIsNone(ryzen.detect())  # Intel: no SMU
         put(R + ryzen.CPUINFO, "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 116\n")
-        self.assertIsNone(ryzen.detect())  # Phoenix: another command set, not supported
+        self.assertTrue(ryzen.detect().reapply)  # Phoenix: supported, drops the ceiling under load
+        put(R + ryzen.CPUINFO, "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 33\n")
+        self.assertIsNone(ryzen.detect())  # Vermeer: its command has a single source, left out
+
+    def test_family_table_matches_the_kernel_module(self):
+        # the module picks the command; both tables must list the same (family, model) pairs
+        import re
+        src = open(os.path.join(os.path.dirname(__file__), "..", "smu", "boreas_smu.c")).read()
+        pairs = {(int(f, 16), int(m, 16)) for f, m in re.findall(r"\{\s*0x([0-9A-Fa-f]+)\s*,\s*0x([0-9A-Fa-f]+)\s*,", src)}
+        self.assertEqual(pairs, set(ryzen.FAMILIES))
 
     def test_no_userspace_smu_transport(self):
         """The service reaches the SMU through the kernel bridge only; nothing opens PCI config space."""
