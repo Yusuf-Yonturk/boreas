@@ -4,6 +4,10 @@
 
 [English](README.md) · **Türkçe**
 
+<p align="center">
+  <img src="docs/demo.gif" width="440" alt="Boreas: performans modu ve GPU modu değiştirme, klavye efektleri, fan eğrileri ve şarj limiti">
+</p>
+
 Boreas, Armoury Crate ve G-Helper'ın Windows'ta verdiğini ASUS dizüstünüze Linux'ta verir: performans
 modları, özel fan eğrileri, CPU ve GPU güç limitleri, GPU modları (Eco, Optimized ve Ultimate MUX anahtarı),
 Aura klavye aydınlatması ve pil şarj limiti için tek küçük pencere. Her mod kendi fanlarını, güç
@@ -20,6 +24,17 @@ gelenlere tanıdık gelsin diye. Ortak kod yoktur: G-Helper bir Windows program�
 sıfırdan yazıldı. Birkaç donanım ayrıntısı G-Helper ve asusctl okunarak öğrenildi; bunlar
 [üçüncü taraf bildirimlerinde](THIRD_PARTY_NOTICES.md) yazılıdır. Boreas yalnız Linux içindir; Windows'ta
 G-Helper kullanın.
+
+## Hızlı başlangıç
+
+```bash
+git clone https://github.com/Yusuf-Yonturk/boreas.git && cd boreas && sudo ./install.sh
+```
+
+Sonra uygulama menüsünden **Boreas**'ı açın ya da `boreas` çalıştırın. Python 3.11+ ve PySide6 gerekir
+(Arch / CachyOS: `sudo pacman -S --needed python pyside6 qt6-wayland`). İlk açılışta mevcut ayarlarınızı
+benimser ve donanıma hiçbir şey yazmaz; `sudo ./uninstall.sh` her şeyi geri alır.
+[Kurulumun neyi değiştirdiği](#kurulum-sisteminizde-neyi-değiştirir) aşağıda yazılıdır.
 
 ![Boreas: açık temada ana pencere, koyu temada fan eğrileri ve güç limitleri](docs/screenshots.png)
 
@@ -51,9 +66,8 @@ supergfxd'yi maskeler, kaldırma betiği geri getirir.
 
 Boreas çekirdeğin standart asus-wmi / asus-armoury arayüzleri üzerine kuruludur, tek bir model için
 yazılmadı. Bulamadığı donanımın kartları (GPU modları, panel overdrive, yenileme hızı) gizli kalır.
-Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her şey çalışsa da çalışmasa da
-`boreasctl status` ve `uname -r` çıktısıyla
-[bir issue açın](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose).
+Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her şey çalışsa da çalışmasa da bir
+[donanım raporu](https://github.com/Yusuf-Yonturk/boreas/issues/new?template=hardware_report.yml) gönderin.
 
 ## Özellikler
 
@@ -152,12 +166,10 @@ güç limitleri ve pil sayfasını açar; tekrar basınca ana sayfaya döner.
 ## CPU sıcaklık hedefi
 
 Her moda 75-95 °C arasında bir hedef verilebilir. Hedefin üstünde Boreas, ASUS'un CPU güç limitlerini
-(SPL ve varsa SPPT/FPPT) `asus-armoury` üzerinden düşürür; CPU soğuyunca yeniden yükseltir ve modun ve
-sizin güç limitlerinizin belirlediği değerin üstüne hiç çıkmaz. Limitler tabana inip CPU hâlâ sıcaksa
-modun kendi CPU politikasının altına kademe kademe iner (EPP kademe kademe, sonra cpufreq boost kapalı;
-Performans güç profilinde: önce boost kapalı, sonra varsayılan governor, sonra EPP), soğuyunca ters sırayla
-geri alır. Mod başına **sürekli güç tabanı** SPL'nin
-seçilen wattın altına çekilmesini önler; oyun modunda firmware'in 30 W minimumu yerine 45 W tutulabilir.
+`asus-armoury` üzerinden düşürür, CPU soğuyunca yeniden yükseltir; modun ve sizin limitlerinizin
+belirlediği değerin üstüne hiç çıkmaz. Limitler tabana inip CPU hâlâ sıcaksa modun CPU politikasını
+kademe kademe düşürür (EPP, sonra boost kapalı), soğuyunca ters sırayla geri alır. Mod başına **sürekli
+güç tabanı** sayesinde bir oyun modu firmware'in 30 W minimumu yerine örneğin 45 W'ta tutulabilir.
 
 ```bash
 boreasctl cputemp 85        # etkin modun hedefi
@@ -166,13 +178,10 @@ boreasctl cpufloor 45       # sürekli güç tabanı; `cpufloor min` = firmware 
 ```
 
 **Bu yazılımsal bir hedeftir, kesin sıcaklık tavanı değildir.** Boost, firmware, GPU ile paylaşılan
-soğutma ve servis gecikmeleri hedefin aşılmasına yol açabilir. En düşük güçte bile sıcaklık hedefin
-üstündeyse durum `limited` olur. CPU sıcaklık sensörü ve SPL dahil sunulan güç kontrolleri için geçerli
-aralıklar gerekir; her ASUS dizüstü destekleniyor demek değildir. Varsayılan yol BIOS sürüm listesi ya da özel
-çekirdek modülü istemez; SMU'ya ham PCI erişimi hiçbir yerde yoktur. Başka bir güç ayarlama servisiyle birlikte çalıştırmayın.
-
-Denetleyicinin adımları, hata durumunda ne yaptığı, durum alanları ve deneysel `smu-bridge`
-(yalnız G713PV / G713PV.336) [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
+soğutma ve servis gecikmeleri hedefin aşılmasına yol açabilir; özellik yalnız dizüstünün CPU güç
+kontrollerini sunduğu yerde görünür. Başka bir güç ayarlama servisiyle birlikte çalıştırmayın.
+Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
+[docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
 
 ## Güncelleme
 
@@ -203,33 +212,21 @@ Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol 
   tuttuğu için Eco orada bir sonraki açılışta uygulanır. NVIDIA modülü hiç bırakılmıyorsa yeniden
   başlatmaya kadar tekrar denemez.
 
-## Deneysel gömülü GPU motoru
+## Deneysel eBPF GPU motoru
 
-Cardwire kodundan uyarlanmış isteğe bağlı bir eBPF arka ucu (`boreas-gpu-engine`) vardır.
-`sudo ./install.sh` bu sürüm için CI'ın derlediği x86_64 yardımcısını GitHub Release'ten indirip
-sha256 denetiminden sonra kurar; `BOREAS_GPU_ENGINE` ile verilen dosya öncelik alır (varsayılan
-olarak kapalı kalır).
-Arayüzdeki **GPU modu** kartında bulunan **eBPF motoru (yeniden başlatmadan Eco) · Deneysel** anahtarıyla
-veya komut satırından geçiş yapabilirsiniz:
+Cardwire kodundan uyarlanmış isteğe bağlı bir arka uç: harici GPU'yu kaldırmak yerine ona erişimi
+engeller, böylece Eco yeniden başlatma istemez. Yardımcı programı kurulum betiği yerleştirir
+([Kurulum](#kurulum) bölümüne bakın); **GPU modu** kartındaki **eBPF motoru (yeniden başlatmadan Eco) ·
+Deneysel** anahtarıyla ya da şu komutla açana kadar kapalı kalır:
 
 ```bash
 boreasctl gpu-backend ebpf       # eBPF GPU motorunu etkinleştir
 boreasctl gpu-backend firmware   # varsayılan ASUS firmware yöntemine dön
 ```
 
-Özel/yamalı motorunuzu güncellemelerden korumak için `/etc/boreas/boreas-gpu-engine`
-konumuna kurun; Boreas bu dosyaya öncelik verir ve protokol uyumunu denetler.
-Kurulum, kaydettiği sağlama toplamına göre değiştirilmiş motorları da korur;
-sağlama toplamı bilinmeyen eski dosyaları otomatik etkinleştirmeden yedekler.
-Eski systemd ortam değişkeni varsa UI seçimini kullanmadan önce kaldırılmalıdır.
-Firmware’e dönüş **Standart** modunu seçer; Ultimate ve bekleyen MUX isteği korunur.
-
-Eco politikası tek başına GPU’nun uyuduğunu göstermez. 2 Kasım 2026 tarihli G713PV
-canlı testinde Linux `7.3.0-5-cachyos` üzerinde erişim engelleme ve geri açma başarılı
-oldu; ancak GPU 60 saniye sonra `D0 / active` kaldı ve RTD3 `Not supported` bildirdi.
-Bu sonuç güç tasarrufu veya tüm cihazlarda uyumluluk garantisi değildir.
-
-[Derleme, sınırlamalar ve doğrulama adımları](docs/gpu-engine.md).
+Erişimi engellemek GPU'nun uyuduğunu göstermez ve bu bir güç tasarrufu iddiası değildir: G713PV'de GPU
+bir çekirdekle D3cold'a indi, bir başkasıyla uyanık kaldı. Derleme, yamalı yardımcıyı güncellemelerde
+koruma, sınırlar ve test kaydı [docs/gpu-engine.md](docs/gpu-engine.md) dosyasında.
 
 ## Geliştirme
 

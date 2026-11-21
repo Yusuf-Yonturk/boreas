@@ -1,0 +1,77 @@
+name: Hardware report
+description: Tell us how Boreas runs on your laptop, whether everything works or not
+title: "Hardware report: "
+labels: [hardware report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A report from one more model is the most useful thing you can give this project, and a report
+        that says "everything works" counts as much as one that lists what does not. It becomes a row in
+        the tested hardware table of the README.
+  - type: input
+    id: model
+    attributes:
+      label: Laptop model
+      description: Output of `cat /sys/class/dmi/id/product_name`
+      placeholder: ROG Strix G713PV_G713PV
+    validations:
+      required: true
+  - type: input
+    id: bios
+    attributes:
+      label: BIOS version
+      description: Output of `cat /sys/class/dmi/id/bios_version`
+      placeholder: G713PV.336
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and kernel
+      description: Your distribution name and the output of `uname -r`
+      placeholder: CachyOS, 7.3.1-cachyos
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Boreas version
+      description: Shown at the bottom of the window, or the release or commit you installed
+      placeholder: 0.1.7
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works
+      description: Tick what you tried and saw working. Leave the rest empty and describe it below.
+      options:
+        - label: Performance modes (Silent, Balanced, Turbo)
+        - label: Fan speeds are shown
+        - label: Custom fan curves
+        - label: CPU power limits
+        - label: CPU temperature target
+        - label: GPU modes (Eco, Standard, Optimized)
+        - label: Ultimate (MUX switch)
+        - label: Keyboard brightness
+        - label: Keyboard effects and colors
+        - label: Battery charge limit
+        - label: Refresh rate and panel overdrive
+  - type: textarea
+    id: missing
+    attributes:
+      label: What does not work, or is missing from the window
+      description: A card that is not shown means Boreas did not find that hardware. Say which one you expected.
+  - type: textarea
+    id: status
+    attributes:
+      label: boreasctl status
+      description: Output of `boreasctl status`. It holds what the laptop reports and your Boreas settings, including the names you gave your own modes.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Service logs (only if something failed)
+      description: Output of `journalctl -u boreasd -b --no-pager | tail -n 100`
+      render: text
