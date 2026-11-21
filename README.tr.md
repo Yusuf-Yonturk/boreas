@@ -5,7 +5,7 @@
 [English](README.md) · **Türkçe**
 
 <p align="center">
-  <img src="docs/demo.gif" width="440" alt="Boreas: performans modu ve GPU modu değiştirme, klavye efektleri, fan eğrileri ve şarj limiti">
+  <img src="docs/demo.gif" alt="Boreas: performans modu ve GPU modu değiştirme, klavye efektleri, fan eğrileri ve şarj limiti">
 </p>
 
 Boreas, Armoury Crate ve G-Helper'ın Windows'ta verdiğini ASUS dizüstünüze Linux'ta verir: performans
