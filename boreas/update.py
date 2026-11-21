@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import urllib.parse
 import urllib.request
 
 from . import __version__
@@ -139,7 +140,10 @@ def source_version(root: str) -> str | None:
 # user account can write runs as root; it downloads the release itself into root's own folder.
 HELPER = "/usr/lib/boreas/boreas-update"
 PYTHON = "/usr/bin/python3"
-PROXY_RX = re.compile(r"https?://[A-Za-z0-9._:@%-]+(:\d+)?/?", re.ASCII)
+# userinfo: RFC 3986 unreserved, percent-encoded and sub-delims characters (the value travels on
+# the helper's stdin, never through a shell or a command line)
+PROXY_RX = re.compile(r"https?://(?:[A-Za-z0-9._~!$&'()*+,;=:%-]+@)?"
+                      r"(?:[A-Za-z0-9._%-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?/?", re.ASCII)
 
 
 def _root_only(path: str) -> bool:
@@ -173,11 +177,24 @@ def _root_tree(folder: str) -> bool:
     return True
 
 
-def _proxy_args() -> list[str]:
-    """pkexec clears the environment, so the user's HTTPS proxy is handed over as an argument.
+def normalize_proxy(url: str) -> str:
+    """Accept HTTP(S) proxies with an optional scheme, credentials and bracketed IPv6 host."""
+    scheme, separator, address = url.partition("://")
+    url = scheme.lower() + separator + address if separator else "http://" + url
+    try:
+        if not PROXY_RX.fullmatch(url):
+            raise ValueError("Invalid proxy syntax")
+        urllib.parse.urlsplit(url).port  # validate the IPv6 address and port range too
+    except ValueError:
+        raise RuntimeError("Invalid HTTPS proxy address. Use an HTTP or HTTPS proxy.") from None
+    return url
+
+
+def _proxy_url() -> str:
+    """pkexec clears the environment, so the user's HTTPS proxy is handed over on stdin.
     It only carries the download: the archive still comes over TLS from GitHub."""
     url = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY") or ""
-    return ["--proxy", url] if PROXY_RX.fullmatch(url) else []
+    return normalize_proxy(url) if url else ""
 
 
 def run_update(expected: str) -> str:
@@ -199,8 +216,10 @@ def run_update(expected: str) -> str:
     # the helper folds its own failures into 1.
     # No timeout here: once the password is given the process is root's and cannot be killed from
     # this side, and the download and install.sh carry their own time limits.
-    r = subprocess.run([pkexec, PYTHON, "-I", HELPER, *_proxy_args(), expected],
-                       stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    proxy = _proxy_url()
+    proxy_args = ["--proxy-stdin"] if proxy else []
+    r = subprocess.run([pkexec, PYTHON, "-I", HELPER, *proxy_args, expected],
+                       input=proxy + "\n" if proxy else "", capture_output=True, text=True)
     if r.returncode == PKEXEC_CANCEL:
         raise UpdateCancelled()
     if r.returncode == PKEXEC_DENIED:

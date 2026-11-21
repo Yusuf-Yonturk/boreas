@@ -12,6 +12,8 @@ import shutil
 import subprocess
 
 SETUP = "/usr/bin/boreas-setup"
+SWITCHED_OFF = "/etc/boreas/switched-off"  # boreas-setup disable: the user gave the controls back
+MASKED = "/etc/boreas/masked-units"        # boreas-setup's record: it counts the mark only next to it
 PKEXEC_CANCEL = 126  # the user closed the password dialog
 PKEXEC_DENIED = 127  # not authorized: no password dialog (polkit agent) or permission denied
 
@@ -25,8 +27,9 @@ class NoAuthorization(Exception):
 
 
 def needed() -> bool:
-    """Whether Boreas is installed but was never switched on: the service is not enabled."""
-    if not os.path.isfile(SETUP):
+    """Whether Boreas is installed but was never switched on: the service is not enabled, and
+    the user did not switch it off on purpose (boreas-setup disable)."""
+    if not os.path.isfile(SETUP) or (os.path.exists(SWITCHED_OFF) and os.path.exists(MASKED)):
         return False
     try:
         r = subprocess.run(["systemctl", "is-enabled", "boreasd.service"],
@@ -41,8 +44,9 @@ def enable() -> str:
     pkexec = shutil.which("pkexec")
     if not pkexec:
         raise RuntimeError("pkexec not found. Run in a terminal: sudo boreas-setup enable")
+    # Authentication can take any amount of time; the root child cannot be killed by this user.
     r = subprocess.run([pkexec, SETUP, "enable"], stdin=subprocess.DEVNULL,
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True)
     if r.returncode == PKEXEC_CANCEL:
         raise SetupCancelled()
     if r.returncode == PKEXEC_DENIED:

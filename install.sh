@@ -3,6 +3,8 @@
 # A package also sets BOREAS_GPU_ENGINE=none (no download while building) and BOREAS_PACKAGED=<name>
 # (the in-app update is switched off: the package manager updates Boreas).
 set -e
+# sudo can keep a private user umask (077): every file installed here must stay world-readable
+umask 022
 D="${DESTDIR:-}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
@@ -85,6 +87,14 @@ else
     fi
 fi
 
+# The version being replaced, read before its files go (empty on a fresh install): boreas-setup
+# takes over the masks of a version that kept no record of them, before anything is replaced,
+# so a run stopped halfway and started again does not lose them.
+previous=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$D/usr/lib/boreas/boreas/__init__.py" 2>/dev/null || true)
+# Also for --files-only on this machine (tools/install-reviewed.sh): the old copy's files are replaced here too.
+if [ -z "$D" ]; then
+    sh "$SRC/data/boreas-setup" adopt --previous="$previous"
+fi
 # clear the code folder so modules left over from an older version do not linger
 rm -rf "$D/usr/lib/boreas/boreas"
 install -d "$D/usr/lib/boreas/boreas/gui"
@@ -172,11 +182,16 @@ lang="${lang:-${cur:-en}}"
 case " $CODES " in *" $lang "*) ;; *) echo "Unknown language '$lang', using English"; lang=en ;; esac
 install -d /etc/xdg/boreas
 printf '[General]\nlanguage=%s\n' "$lang" > "$CONF"
+# every user's GUI reads the language: a file kept from an older run under umask 077 is opened up too
+chmod 644 "$CONF"
 echo "Language: $lang (each user can change it from the globe button in the window)"
 
 # UI dependencies (the service only needs python3)
-python3 -c "import PySide6.QtSvg" 2>/dev/null ||
+if ! python3 -c "import PySide6" 2>/dev/null; then
     echo "Warning: the UI needs PySide6 (Arch/CachyOS: sudo pacman -S pyside6)"
+elif ! python3 -c "import PySide6.QtSvg" 2>/dev/null; then
+    echo "Warning: the UI needs QtSvg (Arch/CachyOS: sudo pacman -S qt6-svg)"
+fi
 [ -d /usr/lib/qt6/plugins/platforms ] && ! ls /usr/lib/qt6/plugins/platforms/*wayland* >/dev/null 2>&1 &&
     echo "Warning: qt6-wayland is recommended for a sharp UI on Wayland (sudo pacman -S qt6-wayland)"
 case "$lang" in
@@ -189,6 +204,6 @@ if [ -n "$fl" ] && command -v fc-list >/dev/null && [ -z "$(fc-list :lang="$fl" 
 fi
 
 # hand the hardware to Boreas: masks asusd / supergfxd / power-profiles-daemon (undo: uninstall.sh)
-# and starts boreasd
-/usr/bin/boreas-setup enable
+# and starts boreasd, unless the user switched Boreas off with boreas-setup disable
+/usr/bin/boreas-setup enable --keep-off
 echo "Installed. UI: boreas   CLI: boreasctl status"

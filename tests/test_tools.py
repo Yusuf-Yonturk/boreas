@@ -2,11 +2,14 @@
 
 import importlib.util
 import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, ROOT)  # run from tests/ too
 SCRIPT = os.path.join(ROOT, "tools", "release-notes.py")
 
 spec = importlib.util.spec_from_file_location("release_notes", SCRIPT)
@@ -52,6 +55,32 @@ class TestReleaseNotes(unittest.TestCase):
         with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as fh:
             text = fh.read()
         self.assertTrue(release_notes.section(text, __version__), __version__)
+
+
+class TestReviewedInstall(unittest.TestCase):
+    def test_packaged_copy_is_refused_before_staging_or_live_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            commands = root / 'bin'
+            commands.mkdir()
+            log = root / 'calls'
+            # Stop at the first side effect if the guard regresses; never run the live installer.
+            for name in ('mktemp', 'sh', 'systemctl', 'rm', 'install', 'cp', 'python3', 'boreasctl'):
+                command = commands / name
+                command.write_text('#!/bin/sh\necho "${0##*/} $*" >> "$CALL_LOG"\nexit 97\n')
+                command.chmod(0o755)
+            (commands / 'id').write_text('#!/bin/sh\necho 0\n')
+            (commands / 'id').chmod(0o755)
+            mark = root / 'packaged'
+            mark.write_text('aur\n')
+            env = dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}",
+                       CALL_LOG=str(log), BOREAS_PACKAGED_MARK=str(mark))
+            result = subprocess.run(['/bin/sh', os.path.join(ROOT, 'tools', 'install-reviewed.sh')],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('package manager', result.stderr)
+            self.assertFalse(log.exists(), log.read_text() if log.exists() else '')
+            self.assertEqual(mark.read_text(), 'aur\n')
 
 
 if __name__ == "__main__":

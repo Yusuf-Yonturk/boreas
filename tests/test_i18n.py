@@ -60,6 +60,39 @@ class TestCatalog(unittest.TestCase):
         self.assertEqual(missing, [])
 
 
+def runtime_error_texts(path: str) -> set:
+    """The messages raised as RuntimeError("...") in a module; f-string parts become sample values."""
+    def texts(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.value
+        elif isinstance(node, ast.JoinedStr):
+            yield "".join(v.value if isinstance(v, ast.Constant) else "x1" for v in node.values)
+        elif isinstance(node, ast.IfExp):
+            yield from texts(node.body)
+            yield from texts(node.orelse)
+    with open(os.path.join(ROOT, path), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "RuntimeError" and n.args:
+            found |= set(texts(n.args[0]))
+    return found
+
+
+class TestSetupAndUpdateErrors(unittest.TestCase):
+    """setup.py and update.py errors are shown in the window, inside an already translated sentence."""
+
+    def tearDown(self):
+        i18n.set_language("en")
+
+    def test_every_runtime_error_message_is_in_the_catalog(self):
+        i18n.set_language("tr")
+        texts = runtime_error_texts("boreas/setup.py") | runtime_error_texts("boreas/update.py")
+        self.assertIn("pkexec not found. Run in a terminal: sudo boreas-setup enable", texts)
+        missing = sorted(t for t in texts if i18n.tr_msg(t) == t)
+        self.assertEqual(missing, [])
+
+
 class TestInstaller(unittest.TestCase):
     def test_install_sh_offers_every_language(self):
         with open(os.path.join(ROOT, "install.sh"), encoding="utf-8") as fh:

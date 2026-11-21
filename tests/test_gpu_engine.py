@@ -2,6 +2,9 @@
 import os
 import unittest
 from unittest.mock import Mock, patch
+import os as _os  # noqa: E402
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))  # run from tests/ too
 from boreas import gpu, gpu_engine, hw
 
 

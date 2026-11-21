@@ -116,10 +116,11 @@ class Daemon:
     def source_key(self, ac: bool | None = None) -> str:
         return "mode_ac" if (self.last_ac if ac is None else ac) else "mode_battery"
 
-    def switch_source_mode(self) -> None:
+    def switch_source_mode(self) -> OSError | None:
         """Apply the mode stored for the current power source. If the firmware refuses the profile
         write (EBUSY right at the plug or unplug), the switch is tried again every
-        ECO_RETRY_TICKS ticks, with one log line, until it lands or another mode is applied."""
+        ECO_RETRY_TICKS ticks, with one log line, until it lands or another mode is applied.
+        Return the write error so startup can report it while the retry is pending."""
         try:
             self.apply_mode(self.cfg[self.source_key()])
         except OSError as e:
@@ -129,7 +130,7 @@ class Daemon:
             # Some firmware changes the profile itself at the plug or unplug. Take that as the
             # baseline, or the next tick reads it as Fn+F5 and stores it over the source's mode.
             self.last_profile = hw.get_profile()
-            return
+            return e
         if self.source_mode_pending:
             log("mode for the power source applied on a retry")
         self.source_mode_pending = False
@@ -166,7 +167,12 @@ class Daemon:
                 time.sleep(0.1)
             self.last_profile = hw.get_profile()
             self.cfg["mode"] = mode_id
-            self.source_mode_pending = False  # a mode landed: nothing older is left to retry
+            if (write_profile or external_profile) and mode_id == self.cfg[self.source_key()]:
+                # Only the source's stored mode landing completes its pending switch. Reapplying
+                # the old running mode after an edit or a fan curve read does not replace it.
+                self.source_mode_pending = False
+                if self.notice.startswith("Could not apply the startup performance mode"):
+                    self.notice = ""
             self.custom_power = False
             target = m.get("cpu_temp")
             thermal_on = target is not None and target < thermal.DEFAULT_TEMP
@@ -409,7 +415,7 @@ class Daemon:
             if reason:
                 if explicit:
                     raise ValueError(reason)
-                if reason == gpu.NEEDS_NVIDIA and gpu.nvidia_driver_loaded():
+                if reason == gpu.NEEDS_NVIDIA and st["mux"] != 0 and gpu.nvidia_dgpu_expected():
                     # an NVIDIA dGPU that has not come back on the bus yet (after leaving Eco):
                     # keep the saved choice, but write nothing until the dGPU is seen again
                     log(f"GPU mode {target} not applied now: {reason}")
@@ -518,15 +524,9 @@ class Daemon:
         with self.lock:
             self.last_ac = hw.ac_online()
             self.apply_extras()
-            try:
-                self.apply_mode(self.cfg[self.source_key()])
-            except OSError as e:
-                if not at_boot:
-                    raise
-                # A kernel may expose platform_profile but reject its writes.
-                # Keep the socket and independent controls available; do not
-                # continue the failed mode's fan/power writes or claim success.
-                self.set_notice(f"Could not apply the startup performance mode: {e}")
+            error = self.switch_source_mode()
+            if at_boot and self.source_mode_pending:
+                self.set_notice(f"Could not apply the startup performance mode: {error}")
             if at_boot:
                 self.apply_gpu_target(self.cfg["gpu_target"])
             elif self.cfg["gpu_target"] == gpu.OPTIMIZED:
@@ -786,7 +786,8 @@ class Daemon:
                         self.apply_mode(mode_id)
                     else:
                         if changed & {"cpu_boost", "cpu_governor"}:
-                            self.apply_cpu_policy(entry)
+                            with self.cpu_lock:
+                                self.apply_cpu_policy(entry)
                         if changed & {"cpu_temp", "cpu_temp_floor_w"} or not changed:
                             target = entry.get("cpu_temp")
                             enabled = target is not None and target < thermal.DEFAULT_TEMP

@@ -2,6 +2,10 @@
 # Install reviewed files with a backup, leaving the GPU in Standard for live tests.
 set -eu
 [ "$(id -u)" = 0 ] || { echo "Run with sudo: sudo sh tools/install-reviewed.sh" >&2; exit 1; }
+if [ -f "${BOREAS_PACKAGED_MARK:-/usr/lib/boreas/packaged}" ]; then
+    echo "Boreas is installed as a package. Update it with your package manager." >&2
+    exit 1
+fi
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 STAGE=$(mktemp -d /tmp/boreas-reviewed.XXXXXX)
 trap 'rm -rf "$STAGE"' EXIT

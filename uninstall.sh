@@ -5,6 +5,10 @@ if [ "$(id -u)" != 0 ]; then
     echo "Run as root: sudo ./uninstall.sh" >&2
     exit 1
 fi
+if [ -f "${BOREAS_PACKAGED_MARK:-/usr/lib/boreas/packaged}" ]; then
+    echo "Boreas is installed as a package. Remove it with your package manager (pacman -R boreas or boreas-git)." >&2
+    exit 1
+fi
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # stops boreasd and brings back the services the installer masked, in the state they had
 sh "$SRC/data/boreas-setup" disable --legacy

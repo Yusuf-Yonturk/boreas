@@ -44,7 +44,7 @@ birlikte yazılıdır; `sudo ./uninstall.sh` her şeyi geri alır.
   değişince hepsi birlikte değişir: pencereden, tepsiden, Fn+F5 ile ya da pil / prize göre otomatik.
 - **CPU sıcaklık hedefi.** Bir mod için 75-95 °C seçin; Boreas güç limitlerini o hedefe göre yönetir. Güç
   tabanı sayesinde oyun modu firmware'in minimumuna düşmez.
-- **Yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
+- NVIDIA dGPU'lu dizüstülerde **yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
 - **11 dil, açık ve koyu tema, uygulama içi güncelleme**; Windows'tan gelenlere tanıdık bir düzenle.
 - **Denemesi kolay, geri alması kolay.** İlk açılışta Boreas mevcut ayarlarınızı benimser ve donanıma
   hiçbir şey yazmaz; `sudo ./uninstall.sh` asusd, supergfxd ve power-profiles-daemon'ı geri getirir.
@@ -79,7 +79,7 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | NVIDIA Dynamic Boost / sıcaklık hedefi | ✓ | asus-armoury `nv_*` |
 | CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol |
 | Pil/prize göre otomatik mod | ✓ | `power_supply` |
-| GPU: Eco / Standart / Optimized / Ultimate | ✓ | `dgpu_disable`, `gpu_mux_mode` |
+| GPU: Eco / Standart / Optimized / Ultimate | ✓ (Eco ve Optimized NVIDIA dGPU ile) | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran 60 Hz / maks / Otomatik | ✓ (KDE) | `kscreen-doctor` |
 | Panel overdrive | ✓ | `panel_overdrive` |
 | Klavye Aura (statik, iki renkli nefes, döngü, gökkuşağı, strobe; tuş başına RGB klavyelerde Star, Rain, Highlight, Laser, Ripple, Comet, Flash; 4 bölgeli klavyelerde bölge renkleri) | ✓ | hidraw, rapor 0x5D (output rapor) |
@@ -136,6 +136,7 @@ sudo boreas-setup enable
 
 Paket yalnız dosyaları yerine koyar; `sudo boreas-setup enable` dizüstünü Boreas'a devreder (kurulum
 betiğiyle aynı servis değişiklikleri, aşağıda listeli), `sudo boreas-setup disable` geri verir.
+`disable` sonrasında Boreas, `sudo boreas-setup enable` denene kadar güncellemelerde de kapalı kalır.
 `sudo pacman -R boreas-git` bu geri verme adımını kendisi çalıştırır. Pakette uygulama içi güncelleme
 ve eBPF GPU yardımcısı yoktur. Güncellemek için depoda `git pull`, aynı klasörde yeniden `makepkg -si`.
 
@@ -177,6 +178,24 @@ Zorlamak için `BOREAS_THEME=light boreas` ya da `dark`. `BOREAS_SCALE=1` arayü
 (varsayılan `0.78`), `BOREAS_LANG=tr boreas` dili zorlar. Sağ üstteki **Fanlar ve güç** düğmesi aynı pencerede fan eğrileri,
 güç limitleri ve pil sayfasını açar; tekrar basınca ana sayfaya döner.
 
+## Güncelleme
+
+Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca yayımlanmış
+son sürümü sorar. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
+Gizle** görünür. **Güncelle** önce yönetici şifrenizi sorar (pkexec), ardından Boreas ile kurulan bir yardımcı o
+sürümün kaynağını GitHub'dan root olarak indirip kurar ve uygulama yeniden başlar. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
+
+Elle güncellemek için:
+
+```bash
+cd boreas
+git pull
+sudo ./install.sh
+```
+
+Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol tepsi menüsünden
+(**Güncellemeleri denetle**) ya da `BOREAS_NO_UPDATE_CHECK=1` ile kapatılabilir.
+
 ## CPU sıcaklık hedefi
 
 Her moda 75-95 °C arasında bir hedef verilebilir. Hedefin üstünde Boreas, ASUS'un CPU güç limitlerini
@@ -197,24 +216,6 @@ kontrollerini sunduğu yerde görünür. Başka bir güç ayarlama servisiyle bi
 Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
 
-## Güncelleme
-
-Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca yayımlanmış
-son sürümü sorar. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
-Gizle** görünür. **Güncelle** önce yönetici şifrenizi sorar (pkexec), ardından Boreas ile kurulan bir yardımcı o
-sürümün kaynağını GitHub'dan root olarak indirip kurar ve uygulama yeniden başlar. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
-
-Elle güncellemek için:
-
-```bash
-cd boreas
-git pull
-sudo ./install.sh
-```
-
-Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol tepsi menüsünden
-(**Güncellemeleri denetle**) ya da `BOREAS_NO_UPDATE_CHECK=1` ile kapatılabilir.
-
 ## GPU modları hakkında
 
 - **Ultimate** ↔ diğerleri MUX'u değiştirir, yeniden başlatma gerekir.
@@ -232,8 +233,8 @@ Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol 
 
 ## Deneysel eBPF GPU motoru
 
-Cardwire kodundan uyarlanmış isteğe bağlı bir arka uç: harici GPU'yu kaldırmak yerine ona erişimi
-engeller, böylece Eco yeniden başlatma istemez. Yardımcı programı kurulum betiği yerleştirir
+Cardwire kodundan uyarlanmış isteğe bağlı bir arka uç: ayrık GPU'yu (dGPU) kaldırmak yerine ona erişimi
+engeller, böylece Eco yeniden başlatma istemez. Eco gibi bu da NVIDIA dGPU ister. Yardımcı programı kurulum betiği yerleştirir
 ([Kurulum](#kurulum) bölümüne bakın); **GPU modu** kartındaki **eBPF motoru (yeniden başlatmadan Eco) ·
 Deneysel** anahtarıyla ya da şu komutla açana kadar kapalı kalır:
 

@@ -446,6 +446,7 @@ class MainWindow(QWidget):
         self._theme_icon()
         self._fit_header()
         self._screen_tries = 0
+        self.screen_rates = []  # filled when kscreen-doctor answers
         self._build_screen_buttons()
         self.refresh()
 
@@ -909,7 +910,12 @@ class MainWindow(QWidget):
     # ---- display ----
 
     def _build_screen_buttons(self):
-        info = screen.internal()
+        # kscreen-doctor can take seconds while KScreen starts: read it off the UI thread
+        run_async(screen.internal, self._screen_read)
+
+    def _screen_read(self, info):
+        if not isinstance(info, dict):  # an exception from the worker, or nothing found
+            info = None
         if info is None and self._screen_tries < SCREEN_TRIES:
             # started with the session: KScreen may not answer yet. Without another look the
             # refresh-rate row would stay hidden until the app is restarted.
@@ -927,11 +933,15 @@ class MainWindow(QWidget):
         for k, label in items:
             self.screen_seg.add(k, label)
         self.screen_row.setVisible(bool(items))  # the row is hidden without kscreen-doctor
+        first = rates and not self.screen_rates
         self.screen_rates = rates
         if info:
             self.screen_current = info["current"]
             self.settings.setValue("screen_rate", info["current"])
         self._render_screen(info)
+        if first and self.last_ac is not None:
+            # the first status came before the display answered: apply the automatic setting now
+            self._auto_screen(self.last_ac)
 
     def _render_screen(self, info=None):
         if not self.screen_rates:

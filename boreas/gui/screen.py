@@ -18,8 +18,16 @@ def _outputs() -> list[dict]:
 
 
 def internal() -> dict | None:
-    """{'name', 'current': Hz, 'rates': {Hz: mode_id}}: the rates at the current resolution."""
-    for o in _outputs():
+    """{'name', 'current': Hz, 'rates': {Hz: mode_id}}: the rates at the current resolution.
+    None without an internal panel, and also when kscreen-doctor's JSON has an unexpected shape."""
+    try:
+        return _internal(_outputs())
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _internal(outputs) -> dict | None:
+    for o in outputs:
         if not (o.get("enabled") and o["name"].startswith(("eDP", "LVDS"))):
             continue
         modes = {m["id"]: m for m in o.get("modes", [])}

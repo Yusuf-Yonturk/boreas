@@ -44,6 +44,26 @@ def enter_eco():
     shutil.rmtree(R + DGPU, ignore_errors=True)
 
 
+def remember_dgpu():
+    """What entering Eco through Boreas leaves behind: a built-in NVIDIA dGPU was seen here."""
+    put(R + gpu.DGPU_SEEN, "seen")
+
+
+def pci_bridge(name, child=False, control="auto"):
+    """A PCIe port. Without a child it is what the dGPU's port looks like while the dGPU is
+    off the bus (Eco, or a dGPU that has not come back yet)."""
+    d = R + f"/sys/bus/pci/devices/{name}"
+    put(d + "/secondary_bus_number", 1)
+    put(d + "/power/control", control)
+    # real ports always have these, even with no device (G713PV: pcie002, pcie010)
+    for svc in ("pcie002", "pcie010"):
+        os.makedirs(f"{d}/{name}:{svc}", exist_ok=True)
+    os.makedirs(d + "/pci_bus/0000:01", exist_ok=True)
+    if child:
+        os.makedirs(d + "/0000:02:00.0", exist_ok=True)
+    return d
+
+
 def build_tree():
     """The real layout, taken from a G713PV."""
     shutil.rmtree(R, ignore_errors=True)
@@ -337,6 +357,21 @@ class TestPowerSource(Base):
         self.assertEqual(hw.get_profile(), "balanced")
         self.assertFalse(d.source_mode_pending)
 
+    def test_editing_running_turbo_keeps_the_pending_battery_switch(self):
+        d = self._turbo_on_ac()
+        d.cfg["mode_battery"] = hw.SILENT
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        with patch.object(hw, "set_profile", side_effect=OSError(errno.EBUSY, "busy")):
+            d.tick()
+        self.assertTrue(d.source_mode_pending)
+        d.handle({"cmd": "update_mode", "mode": hw.TURBO,
+                  "data": {"fan_cpu": list(fans.DEFAULTS[hw.TURBO]["cpu"])}})
+        for _ in range(daemon.ECO_RETRY_TICKS):
+            d.tick()
+        self.assertEqual(hw.get_profile(), "quiet")
+        self.assertEqual(d.cfg["mode"], hw.SILENT)
+        self.assertFalse(d.source_mode_pending)
+
     def test_a_chosen_mode_replaces_the_pending_switch(self):
         d = daemon.Daemon(config.Config())
         put(R + "/sys/class/power_supply/ADP0/online", 0)
@@ -353,8 +388,111 @@ class TestPowerSource(Base):
         self.assertEqual(d.cfg["mode"], hw.TURBO)  # the retry did not put Silent back
         self.assertFalse(d.source_mode_pending)
 
+    def test_failed_reapply_on_resume_is_retried(self):
+        d = self._turbo_on_ac()
+        d.cfg["mode_battery"] = hw.SILENT
+        d.cfg["gpu_target"] = gpu.OPTIMIZED
+        put(R + "/sys/class/power_supply/ADP0/online", 0)  # unplugged during sleep
+        real = hw.set_profile
+        refused = []
+
+        def set_profile(name):
+            if not refused:
+                refused.append(name)
+                raise OSError(errno.EBUSY, "Device or resource busy")
+            return real(name)
+        with patch.object(hw, "set_profile", set_profile), \
+                patch.object(d, "apply_gpu_target") as target, \
+                patch.object(d, "eco_pending", return_value=False):
+            d.reapply()
+            self.assertEqual(refused, ["quiet"])
+            self.assertEqual(hw.get_profile(), "performance")
+            self.assertTrue(d.source_mode_pending)
+            target.assert_called_once_with(gpu.OPTIMIZED)
+            for _ in range(daemon.ECO_RETRY_TICKS):
+                d.tick()
+        self.assertEqual(hw.get_profile(), "quiet")
+        self.assertEqual(d.cfg["mode"], hw.SILENT)
+        self.assertEqual(d.cfg["mode_battery"], hw.SILENT)
+        self.assertFalse(d.source_mode_pending)
+        self.assertEqual(config.Config()["mode"], hw.SILENT)
+
+    def test_firmware_profile_change_at_resume_is_not_taken_for_fn_f5(self):
+        d = self._turbo_on_ac()
+        d.cfg["mode_battery"] = hw.SILENT
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        real = hw.set_profile
+        refused = []
+
+        def set_profile(name):
+            if not refused:
+                refused.append(name)
+                put(R + hw.PLATFORM_PROFILE, "balanced")  # the firmware changed it at resume
+                raise OSError(errno.EBUSY, "Device or resource busy")
+            return real(name)
+        with patch.object(hw, "set_profile", set_profile):
+            d.reapply()
+            for _ in range(daemon.ECO_RETRY_TICKS):
+                d.tick()
+        self.assertEqual(d.cfg["mode_battery"], hw.SILENT)
+        self.assertEqual(d.cfg["mode"], hw.SILENT)
+        self.assertEqual(hw.get_profile(), "quiet")
+        self.assertFalse(d.source_mode_pending)
+
 
 class TestGpu(Base):
+    def test_other_dgpu_present_counts_only_builtin_display_devices(self):
+        cases = (
+            ('0x10de', '0x030000', 'fixed', False),
+            ('0x1002', '0x030000', 'fixed', True),
+            ('0x1002', '0x040300', 'fixed', False),
+            ('0x1002', '0x030200', 'removable', False),
+            ('0x1002', '0x030200', 'fixed', True),
+        )
+        for vendor, cls, removable, expected in cases:
+            with self.subTest(vendor=vendor, cls=cls, removable=removable):
+                put(R + DGPU + '/vendor', vendor)
+                put(R + DGPU + '/class', cls)
+                put(R + DGPU + '/removable', removable)
+                self.assertEqual(gpu.other_dgpu_present(), expected)
+        egpu = R + '/sys/bus/pci/devices/0000:64:00.0'
+        put(egpu + '/vendor', '0x10de')
+        put(egpu + '/class', '0x030000')
+        put(egpu + '/removable', 'removable')
+        self.assertTrue(gpu.other_dgpu_present())
+        put(egpu + '/removable', 'fixed')
+        self.assertFalse(gpu.other_dgpu_present())
+
+    def test_other_dgpu_present_ignores_a_device_whose_vendor_cannot_be_read(self):
+        put(R + DGPU + '/vendor', '0x1002')
+        put(R + DGPU + '/class', '0x030000')
+        put(R + DGPU + '/removable', 'fixed')
+        self.assertTrue(gpu.other_dgpu_present())
+        os.unlink(R + DGPU + '/vendor')        # a read racing a rescan returns None
+        self.assertFalse(gpu.other_dgpu_present())
+
+    def test_nvidia_driver_installed_handles_missing_modinfo(self):
+        self.assertFalse(gpu.nvidia_driver_loaded())
+        with patch.object(gpu, '_run', side_effect=FileNotFoundError(errno.ENOENT, 'modinfo')) as run:
+            self.assertFalse(gpu.nvidia_driver_installed())
+        run.assert_called_once_with('modinfo', '-F', 'filename', 'nvidia')
+
+    def test_nvidia_driver_installed_finds_the_module_of_another_kernel(self):
+        # after a kernel upgrade without a reboot the running kernel's module directory is gone,
+        # so modinfo fails although the driver is installed for the new kernel
+        dep = R + "/usr/lib/modules/6.18.61-1-cachyos-lts/modules.dep"
+        put(dep, "kernel/drivers/net/ethernet/intel/e1000e/e1000e.ko.zst:\n"
+                 "kernel/drivers/gpu/drm/nouveau/nouveau.ko.zst: kernel/drivers/video/video.ko.zst\n")
+        for failure in ({"return_value": False}, {"side_effect": FileNotFoundError(errno.ENOENT, "modinfo")}):
+            with self.subTest(failure=failure), patch.object(gpu, "_run", **failure) as run:
+                self.assertFalse(gpu.nvidia_driver_installed())
+                with open(dep, "a") as f:
+                    f.write("updates/dkms/nvidia.ko.zst: kernel/drivers/video/video.ko.zst\n"
+                            "updates/dkms/nvidia-drm.ko.zst: updates/dkms/nvidia-modeset.ko.zst\n")
+                self.assertTrue(gpu.nvidia_driver_installed())
+                run.assert_called_with("modinfo", "-F", "filename", "nvidia")
+                put(dep, "")
+
     def test_state(self):
         self.assertEqual(gpu.state()["mode"], gpu.STANDARD)
         put(f"{ARM}/dgpu_disable/current_value", 1)
@@ -530,6 +668,18 @@ class TestGpu(Base):
                              ["Xwayland(1651)", "firefox(900)", "kwin_wayland(1510)"])
             self.assertIn("nvidia-powerd(883)", gpu._nvidia_users())
 
+    def test_eco_reports_busy_for_a_non_utf8_process_name(self):
+        self._fake_dgpu()
+        with self._fake_proc({1510: ("placeholder", ["/dev/nvidia0"])}), \
+                patch.object(gpu, "_run") as run:
+            with open(f"{gpu.PROC}/1510/comm", "wb") as f:
+                f.write(b"\xff\xfe")
+            with self.assertRaises(gpu.GpuBusy) as raised:
+                gpu.set_eco(True)
+        self.assertEqual(raised.exception.users, ["\ufffd\ufffd(1510)"])
+        run.assert_not_called()
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
     def test_busy_message_names_kwin(self):
         # if KWin holds the dGPU, postpone without touching the driver and retry every 15 s
         self._fake_dgpu()
@@ -587,22 +737,38 @@ class TestGpu(Base):
 
     def test_leaving_eco_reports_a_dgpu_that_did_not_come_back(self):
         # dgpu_disable=0 was written but the dGPU never shows up on the bus: that is not Standard
+        remember_dgpu()  # Boreas took this dGPU off the bus for Eco before
         enter_eco()
+        pci_bridge("0000:00:01.1")  # the dGPU's port, empty while the dGPU is off the bus
         calls = self._gpu_calls()
         with self.assertRaises(OSError):
             gpu.set_eco(False)
         self.assertIn(("modprobe", "nvidia_drm"), calls)  # still loaded, binds when the dGPU appears late
 
+    def test_leaving_eco_reports_a_slow_dgpu_when_the_driver_refuses_to_load(self):
+        remember_dgpu()  # Boreas took this dGPU off the bus for Eco before
+        enter_eco()
+        pci_bridge("0000:00:01.1")  # the dGPU's port, empty while the dGPU is off the bus
+        calls = self._gpu_calls(lambda cmd: cmd == ("modinfo", "-F", "filename", "nvidia"))
+        with patch.object(gpu.subprocess, "run", return_value=Mock(returncode=1)):
+            with self.assertRaises(gpu.DgpuSlow):
+                gpu.set_eco(False)
+        self.assertIn(("modprobe", "nvidia_drm"), calls)
+        self.assertIn(("modinfo", "-F", "filename", "nvidia"), calls)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
     def test_leaving_eco_without_the_nvidia_driver_is_not_an_error(self):
         # an AMD dGPU: dgpu_present() cannot see it, so there is nothing to wait for
         enter_eco()
-        self._gpu_calls(lambda cmd: cmd[:1] != ("modprobe",))
-        gpu.set_eco(False)
+        self._gpu_calls(lambda cmd: cmd[0] not in ("modprobe", "modinfo"))
+        with patch.object(gpu.subprocess, "run", return_value=Mock(returncode=1)):  # not the host's systemctl
+            gpu.set_eco(False)
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
     def test_ultimate_from_eco_with_a_slow_dgpu_still_writes_the_mux(self):
         # the dGPU comes up at the reboot Ultimate needs anyway
         enter_eco()
+        pci_bridge("0000:00:01.1")  # the dGPU's port, empty while the dGPU is off the bus
         self._gpu_calls()
         gpu.set_mux(True)
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
@@ -629,17 +795,81 @@ class TestGpu(Base):
         self.assertIn(("modprobe", "nvidia_drm"), calls)
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
-    def _bridge(self, name, child=False, control="auto"):
-        d = R + f"/sys/bus/pci/devices/{name}"
-        put(d + "/secondary_bus_number", 1)
-        put(d + "/power/control", control)
-        # real ports always have these, even with no device (G713PV: pcie002, pcie010)
-        for svc in ("pcie002", "pcie010"):
-            os.makedirs(f"{d}/{name}:{svc}", exist_ok=True)
-        os.makedirs(d + "/pci_bus/0000:01", exist_ok=True)
-        if child:
-            os.makedirs(d + "/0000:02:00.0", exist_ok=True)
+    def test_standard_again_looks_for_a_dgpu_that_did_not_come_back(self):
+        # dgpu_disable is 0 already, but the dGPU never showed up (DgpuSlow earlier): choosing
+        # Standard again rescans instead of returning early
+        remember_dgpu()  # Boreas took this dGPU off the bus for Eco before
+        shutil.rmtree(R + DGPU)
+        pci_bridge("0000:00:01.1")  # the dGPU's port, empty
+        calls = self._gpu_calls()
+        with patch.object(gpu.subprocess, "run", return_value=Mock(returncode=1)):
+            with self.assertRaises(gpu.DgpuSlow):
+                gpu.set_eco(False)
+            self.assertTrue(os.path.exists(R + "/sys/bus/pci/rescan"))
+            self.assertIn(("modprobe", "nvidia_drm"), calls)
+            self.assertFalse(gpu.state()["has_eco"])
+            real_write = hw.write
+
+            def write(path, value):
+                real_write(path, value)
+                if path.endswith("/sys/bus/pci/rescan"):
+                    self._fake_dgpu()  # this time it comes up
+            with patch.object(gpu.hw, "write", write):
+                gpu.set_eco(False)
+            self.assertTrue(gpu.state()["has_eco"])  # Eco and Optimized are offered again
+            os.remove(R + "/sys/bus/pci/rescan")
+            calls.clear()
+            gpu.set_eco(False)  # with the dGPU on the bus Standard stays a no-op
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(R + "/sys/bus/pci/rescan"))
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    EGPU = "/sys/bus/pci/devices/0000:64:00.0"
+
+    def _egpu(self):
+        """An NVIDIA card on USB4/Thunderbolt: the kernel marks it removable."""
+        d = R + self.EGPU
+        put(d + "/vendor", "0x10de")
+        put(d + "/class", "0x030000")
+        put(d + "/removable", "removable")
+        put(d + "/power/runtime_status", "active")
         return d
+
+    def test_eco_leaves_an_nvidia_egpu_on_the_bus(self):
+        for m in gpu.NV_MODULES:
+            put(R + f"/sys/module/{m}/refcnt", 0)
+        egpu = self._egpu()
+        put(R + DGPU + "/removable", "fixed")
+        self._gpu_calls()
+        removed = []
+        real_write = hw.write
+
+        def write(path, value):
+            if path.endswith("/remove"):
+                removed.append(path)
+            real_write(path, value)
+        with patch.object(gpu, "_nvidia_users", lambda ignore=(): []), patch.object(gpu.hw, "write", write):
+            gpu.set_eco(True)
+        self.assertEqual(removed, [DGPU + "/remove"])
+        self.assertFalse(os.path.exists(egpu + "/remove"))
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+
+    def test_leaving_eco_with_an_egpu_reports_the_missing_builtin_dgpu(self):
+        # the eGPU is not the dGPU dgpu_disable brings back: it must not hide a dGPU that is late
+        remember_dgpu()  # Boreas took this dGPU off the bus for Eco before
+        enter_eco()
+        pci_bridge("0000:00:01.1")
+        self._egpu()
+        self._gpu_calls()
+        self.assertFalse(gpu.dgpu_present())
+        self.assertIsNone(gpu.dgpu_runtime_status())
+        with patch.object(gpu.subprocess, "run", return_value=Mock(returncode=1)):
+            with self.assertRaises(gpu.DgpuSlow):
+                gpu.set_eco(False)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def _bridge(self, name, child=False, control="auto"):
+        return pci_bridge(name, child, control)
 
     def test_leaving_eco_wakes_sleeping_port(self):
         # G713PV: with the port asleep, dgpu_disable=0 waited 30 s in the firmware and failed with EIO
@@ -787,7 +1017,7 @@ class TestEcoNeedsNvidia(Base):
 
     def calls(self):
         calls = []
-        gpu._run = lambda *cmd: (calls.append(cmd), cmd[:1] != ("modprobe",))[1]  # no NVIDIA driver
+        gpu._run = lambda *cmd: (calls.append(cmd), cmd[0] not in ("modprobe", "modinfo"))[1]  # no NVIDIA driver
         return calls
 
     def saved_target(self):
@@ -863,7 +1093,7 @@ class TestEcoNeedsNvidia(Base):
             self.assertEqual(d.notice, "Eco and Optimized need an NVIDIA dGPU. The GPU mode was set to Standard.")
             self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
             self.assertFalse(d.eco_pending())
-        self.assertEqual(calls, [])
+        self.assertEqual(calls, [])  # a visible Radeon dGPU answers it: no modinfo needed
 
     def test_radeon_saved_optimized_on_unplug_falls_back(self):
         # the plug/unplug path applies Optimized without the user asking: same fallback, no crash
@@ -876,6 +1106,85 @@ class TestEcoNeedsNvidia(Base):
         self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
         self.assertIn("NVIDIA", d.notice)
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def test_radeon_saved_eco_with_nvidia_driver_installed_falls_back_at_boot(self):
+        self.radeon()
+        with patch.object(gpu, '_run', side_effect=lambda *cmd: cmd == ('modinfo', '-F', 'filename', 'nvidia')):
+            self.assertTrue(gpu.nvidia_driver_installed())
+            for saved in (gpu.ECO, gpu.OPTIMIZED):
+                with self.subTest(saved=saved):
+                    c = config.Config()
+                    c['gpu_target'] = saved
+                    c.save()
+                    d = daemon.Daemon(config.Config())
+                    d.reapply(at_boot=True)
+                    self.assertEqual(d.cfg['gpu_target'], gpu.STANDARD)
+                    self.assertEqual(self.saved_target(), gpu.STANDARD)
+                    self.assertEqual(d.notice, 'Eco and Optimized need an NVIDIA dGPU. '
+                                               'The GPU mode was set to Standard.')
+                    self.assertEqual(get(f'{ARM}/dgpu_disable/current_value'), '0')
+
+    def test_igpu_only_saved_eco_with_nvidia_driver_installed_falls_back_at_boot(self):
+        # no built-in dGPU (no empty port where one would sit), but the NVIDIA module is on disk,
+        # or an NVIDIA eGPU is attached: the saved choice must not be kept waiting forever
+        shutil.rmtree(R + DGPU)
+        egpu = R + "/sys/bus/pci/devices/0000:64:00.0"
+        for with_egpu in (False, True):
+            if with_egpu:
+                put(egpu + "/vendor", "0x10de")
+                put(egpu + "/class", "0x030000")
+                put(egpu + "/removable", "removable")
+            with patch.object(gpu, "_run", side_effect=lambda *cmd: cmd == ("modinfo", "-F", "filename", "nvidia")):
+                self.assertTrue(gpu.nvidia_driver_installed())
+                for saved in (gpu.ECO, gpu.OPTIMIZED):
+                    with self.subTest(with_egpu=with_egpu, saved=saved):
+                        c = config.Config()
+                        c["gpu_target"] = saved
+                        c.save()
+                        d = daemon.Daemon(config.Config())
+                        d.reapply(at_boot=True)
+                        self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+                        self.assertEqual(self.saved_target(), gpu.STANDARD)
+                        self.assertEqual(d.notice, "Eco and Optimized need an NVIDIA dGPU. "
+                                                   "The GPU mode was set to Standard.")
+                        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertFalse(os.path.exists(egpu + "/remove"))
+
+    def test_missing_nvidia_in_ultimate_with_installed_driver_adopts_mux(self):
+        shutil.rmtree(R + DGPU)
+        put(f'{ARM}/gpu_mux_mode/current_value', 0)
+        c = config.Config()
+        c['gpu_target'] = gpu.ECO
+        c.save()
+        d = daemon.Daemon(config.Config())
+        with patch.object(gpu, '_run', return_value=True), \
+                patch.object(gpu, 'set_eco') as eco, patch.object(gpu, 'set_mux') as mux:
+            d.reapply(at_boot=True)
+        self.assertEqual(d.cfg['gpu_target'], gpu.ULTIMATE)
+        self.assertEqual(self.saved_target(), gpu.ULTIMATE)
+        self.assertEqual(d.notice, '')
+        eco.assert_not_called()
+        mux.assert_not_called()
+
+    def test_radeon_leaving_eco_with_nvidia_driver_installed_is_not_slow(self):
+        self.radeon()
+        put(f'{ARM}/dgpu_disable/current_value', 1)
+        shutil.rmtree(R + self.RADEON)
+        real_write = hw.write
+
+        def write(path, value):
+            real_write(path, value)
+            if path == '/sys/bus/pci/rescan':
+                put(R + self.RADEON + '/vendor', '0x1002')
+                put(R + self.RADEON + '/class', '0x030000')
+        with patch.object(gpu, '_run', side_effect=lambda *cmd: cmd == ('modinfo', '-F', 'filename', 'nvidia')), \
+                patch.object(gpu.subprocess, 'run', return_value=Mock(returncode=1)), \
+                patch.object(gpu.hw, 'write', write):
+            self.assertTrue(gpu.nvidia_driver_installed())
+            gpu.set_eco(False)
+        self.assertEqual(get(f'{ARM}/dgpu_disable/current_value'), '0')
+        self.assertEqual(gpu.state()['mode'], gpu.STANDARD)
+        self.assertFalse(gpu.state()['has_eco'])
 
     def test_radeon_eco_never_retried_in_the_background(self):
         self.radeon()
@@ -1029,11 +1338,41 @@ class TestEcoNeedsNvidia(Base):
         self.assertIn(("modprobe", "-r", "nvidia"), calls)
         self.assertIn(("modprobe", "nvidia_drm"), calls)
         self.assertEqual(d.notice, "")
+        self.assertTrue(os.path.exists(R + gpu.DGPU_SEEN))  # Eco took a built-in NVIDIA dGPU off the bus
+
+    def test_an_unrelated_empty_port_is_no_sign_of_a_dgpu(self):
+        # an iGPU-only laptop with an empty Thunderbolt/M.2 port and the NVIDIA module on disk:
+        # Boreas never took a built-in dGPU off the bus here, so none is expected
+        shutil.rmtree(R + DGPU)
+        pci_bridge("0000:00:07.0")
+        rescans = []
+        real_write = hw.write
+
+        def write(path, value):
+            if path.endswith("/sys/bus/pci/rescan"):
+                rescans.append(path)
+            real_write(path, value)
+        with patch.object(gpu, "_run", side_effect=lambda *cmd: cmd[0] == "modinfo"), \
+                patch.object(gpu.hw, "write", write):
+            self.assertFalse(gpu.nvidia_dgpu_expected())
+            for saved, notice in ((gpu.STANDARD, ""), (gpu.ECO, "Eco and Optimized need an NVIDIA dGPU. "
+                                                                  "The GPU mode was set to Standard.")):
+                with self.subTest(saved=saved):
+                    c = config.Config()
+                    c["gpu_target"] = saved
+                    c.save()
+                    d = daemon.Daemon(config.Config())
+                    d.reapply(at_boot=True)
+                    self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+                    self.assertEqual(d.notice, notice)
+        self.assertEqual(rescans, [])  # Standard at boot does not go looking for a dGPU
 
     def test_nvidia_slow_to_come_back_keeps_the_saved_choice(self):
         # Standard after Eco, but the dGPU has not shown up on the bus yet (DgpuSlow): Eco is not
         # offered for now, nothing is written, and the saved Optimized is not overwritten
+        remember_dgpu()  # Boreas took this dGPU off the bus for Eco before
         shutil.rmtree(R + DGPU)
+        pci_bridge("0000:00:01.1")  # the dGPU's port, empty while the dGPU is off the bus
         put(R + "/sys/module/nvidia/refcnt", 3)  # the driver was loaded again when leaving Eco
         calls = self.calls()
         self.assertFalse(gpu.state()["has_eco"])
@@ -1058,6 +1397,27 @@ class TestEcoNeedsNvidia(Base):
             put(R + "/sys/class/power_supply/ADP0/online", 0)
             d.tick()
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+
+    def test_nvidia_slow_to_come_back_with_an_unloaded_driver_keeps_the_saved_choice(self):
+        remember_dgpu()  # Boreas took this dGPU off the bus for Eco before
+        shutil.rmtree(R + DGPU)
+        pci_bridge("0000:00:01.1")  # the dGPU's port, empty while the dGPU is off the bus
+        self.assertFalse(gpu.nvidia_driver_loaded())
+        c = config.Config()
+        c["gpu_target"] = gpu.OPTIMIZED
+        c.save()
+        d = daemon.Daemon(config.Config())
+        with patch.object(gpu, "_run", side_effect=lambda *cmd: cmd == ("modinfo", "-F", "filename", "nvidia")), \
+                patch.object(gpu, "set_eco") as eco, patch.object(gpu, "set_mux") as mux:
+            d.reapply(at_boot=True)
+            put(R + "/sys/class/power_supply/ADP0/online", 0)
+            d.tick()
+        self.assertEqual(d.cfg["gpu_target"], gpu.OPTIMIZED)
+        self.assertEqual(self.saved_target(), gpu.OPTIMIZED)
+        self.assertEqual(d.notice, "")
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        eco.assert_not_called()
+        mux.assert_not_called()
 
     def test_ebpf_eco_keeps_eco_while_the_device_is_hidden(self):
         # in the eBPF engine's Eco the NVIDIA sysfs files are blocked for us: nothing to read
@@ -1569,6 +1929,16 @@ class TestDaemon(Base):
     def make(self):
         return daemon.Daemon(config.Config())
 
+    def test_governor_only_update_holds_cpu_lock(self):
+        d = self.make()
+        held = []
+        with patch.object(hw, "cpu_governor_choices", return_value=["default", "performance"]), \
+                patch.object(hw, "set_cpu_governor",
+                             side_effect=lambda value: held.append((d.lock._is_owned(), d.cpu_lock._is_owned()))):
+            d.handle({"cmd": "update_mode", "mode": d.cfg["mode"],
+                      "data": {"cpu_governor": "performance"}})
+        self.assertEqual(held, [(True, True)])
+
     def test_boot_profile_failure_keeps_independent_controls(self):
         d = self.make()
         d.cfg["charge_limit"] = 60
@@ -1589,6 +1959,8 @@ class TestDaemon(Base):
         self.assertIn("startup performance mode", d.notice)
         self.assertIn("Operation not supported", d.notice)
         self.assertEqual(d.status()["profile"], "low-power")
+        self.assertTrue(d.source_mode_pending)
+        self.assertEqual(d.last_profile, "low-power")
         # The independent command path remains usable after the failed reapply.
         d.handle({"cmd": "set_charge_limit", "value": 70})
         self.assertEqual(d.status()["battery"]["limit"], 70)
@@ -1607,17 +1979,60 @@ class TestDaemon(Base):
         self.assertEqual(d.cpu.target, 85)                    # the temperature target is still held
         self.assertEqual(d.status()["cpu_temp"]["state"], "active")
 
-    def test_requested_profile_failure_is_still_reported(self):
+    def test_resume_retries_profile_but_explicit_mode_failure_is_reported(self):
         d = self.make()
+        d.cfg["gpu_target"] = gpu.OPTIMIZED
         error = OSError(errno.EOPNOTSUPP, "Operation not supported")
         with patch.object(hw, "set_profile", side_effect=error), \
                 patch.object(d, "apply_gpu_target") as target:
-            with self.assertRaises(OSError):
-                d.reapply()
+            d.reapply()  # resume retries the refused profile and still applies Optimized
             with self.assertRaises(OSError):
                 d.handle({"cmd": "set_mode", "mode": hw.TURBO})
-        target.assert_not_called()
+        target.assert_called_once_with(gpu.OPTIMIZED)
         self.assertEqual(get(R + hw.PLATFORM_PROFILE), "balanced")
+
+    def test_boot_profile_retry_clears_startup_notice(self):
+        d = self.make()
+        d.cfg['mode_ac'] = hw.TURBO
+        error = OSError(errno.EBUSY, 'Device or resource busy')
+        with patch.object(hw, 'set_profile', side_effect=error):
+            d.reapply(at_boot=True)
+        self.assertTrue(d.source_mode_pending)
+        self.assertTrue(d.notice.startswith('Could not apply the startup performance mode'))
+        self.assertEqual(hw.get_profile(), 'balanced')
+        for _ in range(daemon.ECO_RETRY_TICKS):
+            d.tick()
+        self.assertEqual(hw.get_profile(), 'performance')
+        self.assertEqual(d.cfg['mode'], hw.TURBO)
+        self.assertFalse(d.source_mode_pending)
+        self.assertEqual(d.notice, '')
+
+    def test_reading_a_factory_curve_keeps_the_pending_switch_and_the_notice(self):
+        # the fan page reads the firmware curve 400 ms after the window connects; that re-applies
+        # the running mode with write_profile=False, which is not the refused mode landing
+        d = self.make()
+        d.cfg['mode_ac'] = hw.TURBO
+        with patch.object(hw, 'set_profile', side_effect=OSError(errno.EBUSY, 'busy')):
+            d.reapply(at_boot=True)
+        notice = d.notice
+        self.assertTrue(notice.startswith('Could not apply the startup performance mode'))
+        d.apply_mode(d.cfg['mode'], write_profile=False)
+        self.assertTrue(d.source_mode_pending)
+        self.assertEqual(d.notice, notice)
+        for _ in range(daemon.ECO_RETRY_TICKS):
+            d.tick()
+        self.assertEqual(hw.get_profile(), 'performance')
+        self.assertEqual(d.notice, '')
+
+    def test_chosen_mode_clears_the_startup_notice(self):
+        d = self.make()
+        error = OSError(errno.EBUSY, 'Device or resource busy')
+        with patch.object(hw, 'set_profile', side_effect=error):
+            d.reapply(at_boot=True)
+        self.assertTrue(d.notice.startswith('Could not apply the startup performance mode'))
+        d.set_mode(hw.SILENT)
+        self.assertEqual(hw.get_profile(), 'quiet')
+        self.assertEqual(d.notice, '')
 
     def test_apply_turbo_with_fans_and_power(self):
         d = self.make()
@@ -1981,10 +2396,12 @@ class TestSelfUpdate(unittest.TestCase):
         import subprocess as sp
         from boreas import update
         self.seen = []
+        self.run_kwargs = []
         self.code = code
 
         def fake_run(cmd, **kw):
             self.seen.append(cmd)
+            self.run_kwargs.append(kw)
             return sp.CompletedProcess(cmd, self.code, "", "boom")
         no_proxy = {k: v for k, v in os.environ.items() if k.lower() != "https_proxy"}
         stack = contextlib.ExitStack()
@@ -2034,13 +2451,44 @@ class TestSelfUpdate(unittest.TestCase):
     def test_run_update_hands_the_https_proxy_over(self):
         # pkexec clears the environment; without this a proxy-only network could not update
         from boreas import update
+        proxy = "http://proxyuser:proxypass@proxy.lan:3128"
         with self._patched():
-            os.environ["https_proxy"] = "http://proxy.lan:3128"
+            os.environ["https_proxy"] = proxy
             update.run_update("9.0.0")
-            os.environ["https_proxy"] = "http://proxy.lan:3128 --x"   # not an address: dropped
-            update.run_update("9.0.0")
-        self.assertEqual(self.seen[0][-3:], ["--proxy", "http://proxy.lan:3128", "9.0.0"])
-        self.assertEqual(self.seen[1][-2:], [update.HELPER, "9.0.0"])
+        for secret in ("proxyuser", "proxypass", proxy):
+            self.assertNotIn(secret, " ".join(self.seen[0]))
+        self.assertEqual(self.seen[0][-2:], ["--proxy-stdin", "9.0.0"])
+        self.assertEqual(self.run_kwargs[0]["input"], proxy + "\n")
+        self.assertNotIn("stdin", self.run_kwargs[0])
+
+    def test_run_update_normalizes_supported_proxies(self):
+        from boreas import update
+        for value, expected in (("proxy.lan:3128", "http://proxy.lan:3128"),
+                                ("HTTP://proxy.lan:3128", "http://proxy.lan:3128"),
+                                ("HTTPS://user:pass@proxy.lan:3128/", "https://user:pass@proxy.lan:3128/"),
+                                ("http://[::1]:3128", "http://[::1]:3128"),
+                                ("[2001:db8::1]:3128", "http://[2001:db8::1]:3128"),
+                                ("http://user:pass@[::1]:3128", "http://user:pass@[::1]:3128"),
+                                # RFC 3986 lets a user name or password use ~ ! $ & ' ( ) * + , ; =
+                                ("http://ali~veli:p!a$s&w'o(r)d*+,;=@proxy.lan:3128",
+                                 "http://ali~veli:p!a$s&w'o(r)d*+,;=@proxy.lan:3128")):
+            with self.subTest(proxy=value), self._patched():
+                os.environ["HTTPS_PROXY"] = value
+                update.run_update("9.0.0")
+                self.assertEqual(self.seen[0][-2:], ["--proxy-stdin", "9.0.0"])
+                self.assertEqual(self.run_kwargs[0]["input"], expected + "\n")
+
+    def test_run_update_rejects_invalid_proxy_before_pkexec(self):
+        from boreas import update
+        for bad in ("socks5://proxy.lan:1080", "file:///etc/passwd", "http://proxy.lan:3128 --x",
+                    "http://proxy.lan:3128\nhttp://other:3128", "http://[1:2]:3128",
+                    "http://proxy.lan:99999", "http://proxy.lan/path"):
+            with self.subTest(proxy=bad), self._patched():
+                os.environ["https_proxy"] = bad
+                with self.assertRaisesRegex(RuntimeError, "(?i)proxy") as error:
+                    update.run_update("9.0.0")
+                self.assertNotIn(bad, str(error.exception))
+                self.assertEqual(self.seen, [])
 
     def _helper(self):
         import importlib.machinery
@@ -2057,6 +2505,7 @@ class TestSelfUpdate(unittest.TestCase):
         return mod
 
     def test_helper_main_folds_every_failure_into_1(self):
+        import io
         from boreas import update
         helper = self._helper()
         calls = []
@@ -2071,13 +2520,65 @@ class TestSelfUpdate(unittest.TestCase):
                 with self.subTest(fail=self.fail_with):
                     self.assertEqual(helper.main(["boreas-update", "9.0.0"]), code)
             self.fail_with = None
-            self.assertEqual(helper.main(["boreas-update", "--proxy", "http://p:3128", "9.0.0"]), 0)
+            with patch.object(helper.sys, "stdin", io.StringIO("http://p:3128\n")):
+                self.assertEqual(helper.main(["boreas-update", "--proxy-stdin", "9.0.0"]), 0)
             self.assertEqual(calls[-1], ("9.0.0", "http://p:3128"))
             n = len(calls)
             for bad in (["--proxy", "file:///etc/passwd", "9.0.0"], ["--proxy", "9.0.0"], ["9.0.0", "9.0.1"]):
                 with self.subTest(bad=bad):
                     self.assertEqual(helper.main(["boreas-update", *bad]), 1)
             self.assertEqual(len(calls), n)  # none of those reached the install
+
+    def test_helper_reads_and_validates_proxy_from_stdin(self):
+        import io
+        from boreas import update
+        helper = self._helper()
+        proxy = "http://proxyuser:proxypass@proxy.lan:3128"
+        with patch.object(helper.os, "geteuid", return_value=0), \
+                patch.object(update, "install_release") as install, \
+                patch.dict(os.environ, {}, clear=False), \
+                patch.object(helper.sys, "stdin", io.StringIO(proxy + "\nignored\n")):
+            self.assertEqual(helper.main(["boreas-update", "--proxy-stdin", "9.0.0"]), 0)
+            self.assertEqual(os.environ["https_proxy"], proxy)
+            install.assert_called_once_with("9.0.0")
+            install.reset_mock()
+            for bad in ("", "file:///etc/passwd\n", "http://proxy.lan:3128 --x\n", proxy + "\r\n"):
+                with self.subTest(proxy=bad), patch.object(helper.sys, "stdin", io.StringIO(bad)), \
+                        patch.object(helper.sys, "stderr", io.StringIO()) as errors:
+                    self.assertEqual(helper.main(["boreas-update", "--proxy-stdin", "9.0.0"]), 1)
+                    self.assertIn("proxy", errors.getvalue().lower())
+            install.assert_not_called()
+
+    def test_helper_subprocess_receives_proxy_on_stdin(self):
+        import subprocess as sp
+        repo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        proxy = "http://proxyuser:proxypass@proxy.lan:3128"
+        with tempfile.TemporaryDirectory(prefix="boreas-proxy-helper-") as lib:
+            helper = os.path.join(lib, "boreas-update")
+            shutil.copy(os.path.join(repo, "data", "boreas-update"), helper)
+            pkg = os.path.join(lib, "boreas")
+            os.mkdir(pkg)
+            shutil.copy(os.path.join(repo, "boreas", "update.py"), pkg)
+            # Replace installation and the root check only in this disposable subprocess.
+            with open(os.path.join(pkg, "__init__.py"), "w") as f:
+                f.write('__version__ = "9.0.0"\n'
+                        'import os\nfrom . import update\nos.geteuid = lambda: 0\n'
+                        'def install(version):\n    print(version, os.environ.get("https_proxy"))\n'
+                        'update.install_release = install\n')
+            for value, expected in ((proxy, proxy), ("proxy.lan:3128", "http://proxy.lan:3128"),
+                                    ("HTTP://proxy.lan:3128", "http://proxy.lan:3128"),
+                                    ("http://[::1]:3128", "http://[::1]:3128"),
+                                    ("socks5://proxy.lan:1080", None), ("file:///etc/passwd", None),
+                                    ("http://proxy.lan:99999", None), ("", None)):
+                with self.subTest(proxy=value):
+                    r = sp.run([sys.executable, "-I", helper, "--proxy-stdin", "9.0.0"],
+                               input=value + "\n", capture_output=True, text=True)
+                    self.assertEqual(r.returncode, 0 if expected else 1, r.stderr)
+                    if expected:
+                        self.assertEqual(r.stdout.strip(), "9.0.0 " + expected)
+                    else:
+                        self.assertIn("proxy", r.stderr.lower())
+                        self.assertEqual(r.stdout, "")
 
     def test_root_only_checks_the_file_and_every_folder_above_it(self):
         from boreas import update
@@ -2100,7 +2601,7 @@ class TestSelfUpdate(unittest.TestCase):
 
     def test_run_update_handles_cancel_and_failure(self):
         from boreas import update
-        with self._patched() as stack:
+        with self._patched():
             self.code = 126
             with self.assertRaises(update.UpdateCancelled):
                 update.run_update("9.0.0")
