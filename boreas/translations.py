@@ -334,6 +334,17 @@ _T = {
         "pkexec не найден. Обновите вручную: git pull && sudo ./install.sh",
         "pkexec nicht gefunden. Manuell aktualisieren: git pull && sudo ./install.sh",
         "pkexec が見つかりません。手動で更新してください: git pull && sudo ./install.sh"),
+    "The update helper is missing or not protected. Update manually: git pull && sudo ./install.sh": (
+        "Güncelleme yardımcısı eksik ya da korumasız. Elle güncelleyin: git pull && sudo ./install.sh",
+        "更新助手缺失或未受保护。请手动更新：git pull && sudo ./install.sh",
+        "अपडेट हेल्पर नहीं मिला या सुरक्षित नहीं है। खुद अपडेट करें: git pull && sudo ./install.sh",
+        "Falta el asistente de actualización o no está protegido. Actualiza a mano: git pull && sudo ./install.sh",
+        "أداة التحديث مفقودة أو غير محمية. حدّث يدويًا: git pull && sudo ./install.sh",
+        "L'assistant de mise à jour est absent ou non protégé. Mettez à jour à la main : git pull && sudo ./install.sh",
+        "O assistente de atualização está ausente ou desprotegido. Atualize manualmente: git pull && sudo ./install.sh",
+        "Помощник обновления отсутствует или не защищён. Обновите вручную: git pull && sudo ./install.sh",
+        "Das Update-Hilfsprogramm fehlt oder ist nicht geschützt. Manuell aktualisieren: git pull && sudo ./install.sh",
+        "更新ヘルパーが見つからないか保護されていません。手動で更新してください: git pull && sudo ./install.sh"),
     "Unexpected version in the update archive: {version}": (
         "Güncelleme arşivinde beklenmeyen sürüm: {version}", "更新包中的版本异常：{version}",
         "अपडेट आर्काइव में अनपेक्षित वर्ज़न: {version}", "Versión inesperada en el archivo de actualización: {version}",

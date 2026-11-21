@@ -2,9 +2,9 @@
 
 The check only asks GitHub for the latest published release; nothing about the system is sent.
 A version is offered once its release carries the GPU helper, because install.sh downloads the
-helper from that release. Installing happens only when the user presses "Update": the source
-archive of that release's tag is downloaded to a temporary folder and install.sh is run with
-pkexec, which asks for the administrator password.
+helper from that release. Installing happens only when the user presses "Update": pkexec asks for
+the administrator password and starts the installed helper (data/boreas-update), which downloads
+the source archive of that release's tag into a folder only root can reach and runs its install.sh.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def is_newer(remote: str | None, local: str = __version__) -> bool:
 
 def tarball_url(version: str) -> str:
     """The source archive of a release tag: the same commit CI built that release's helper from."""
-    if not re.fullmatch(r"\d+(\.\d+)*", version or ""):
+    if not re.fullmatch(r"\d+(\.\d+)*", version or "", re.ASCII):
         raise ValueError(f"Not a release version: {version}")
     return f"https://codeload.github.com/{REPO}/tar.gz/refs/tags/v{version}"
 
@@ -135,36 +135,96 @@ def source_version(root: str) -> str | None:
         return parse_version(f.read())
 
 
-INSTALL_WRAPPER = '/bin/sh "$0" || exit 1'
+# Started by pkexec. It is the installed copy (root's files, under root's folders), so nothing the
+# user account can write runs as root; it downloads the release itself into root's own folder.
+HELPER = "/usr/lib/boreas/boreas-update"
+PYTHON = "/usr/bin/python3"
+PROXY_RX = re.compile(r"https?://[A-Za-z0-9._:@%-]+(:\d+)?/?", re.ASCII)
+
+
+def _root_only(path: str) -> bool:
+    """True when the file and every folder above it belong to root and only root can change them."""
+    p = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return False
+        if st.st_uid != 0 or st.st_mode & 0o022:
+            return False
+        parent = os.path.dirname(p)
+        if parent == p:
+            return True
+        p = parent
+
+
+def _root_tree(folder: str) -> bool:
+    """_root_only for a folder and everything in it: the code the helper imports."""
+    if not _root_only(folder):
+        return False
+    for top, dirs, files in os.walk(os.path.realpath(folder)):
+        for name in dirs + files:
+            try:
+                st = os.lstat(os.path.join(top, name))
+            except OSError:
+                return False
+            if st.st_uid != 0 or st.st_mode & 0o022:
+                return False
+    return True
+
+
+def _proxy_args() -> list[str]:
+    """pkexec clears the environment, so the user's HTTPS proxy is handed over as an argument.
+    It only carries the download: the archive still comes over TLS from GitHub."""
+    url = os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY") or ""
+    return ["--proxy", url] if PROXY_RX.fullmatch(url) else []
 
 
 def run_update(expected: str) -> str:
-    """Downloads and installs the release `expected` with pkexec; returns the installed version.
+    """Installs the release `expected` through pkexec and the root helper; returns that version.
     UpdateCancelled if the password dialog is closed."""
     owner = packaged()
     if owner:
         raise RuntimeError(f"Boreas was installed as a package ({owner}); update it with your package manager.")
+    tarball_url(expected)  # ValueError for anything that is not a release version, before any password
     pkexec = shutil.which("pkexec")
     if not pkexec:
         raise RuntimeError("pkexec not found. Update manually: git pull && sudo ./install.sh")
-    # mkdtemp's 0700 stays: root reads it anyway, and no other user may touch what root installs
+    if not (_root_only(HELPER) and _root_only(PYTHON)
+            and _root_tree(os.path.join(os.path.dirname(HELPER), "boreas"))):
+        raise RuntimeError("The update helper is missing or not protected. "
+                           "Update manually: git pull && sudo ./install.sh")
+    # -I: no user site folder, no PYTHONPATH and no current folder on the import path.
+    # 126 and 127 mean "cancelled" and "not authorized" only when pkexec itself says so:
+    # the helper folds its own failures into 1.
+    # No timeout here: once the password is given the process is root's and cannot be killed from
+    # this side, and the download and install.sh carry their own time limits.
+    r = subprocess.run([pkexec, PYTHON, "-I", HELPER, *_proxy_args(), expected],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if r.returncode == PKEXEC_CANCEL:
+        raise UpdateCancelled()
+    if r.returncode == PKEXEC_DENIED:
+        raise NoAuthorization()
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or [f"exit code {r.returncode}"]
+        raise RuntimeError(tail[0])
+    return expected
+
+
+def install_release(expected: str) -> None:
+    """Runs as root (the helper): downloads the release `expected` into a folder only root can
+    reach, checks its version and runs its install.sh."""
+    # mkdtemp's 0700 stays: the folder is root's, and no other user may touch what root installs
     tmp = tempfile.mkdtemp(prefix="boreas-update-")
     try:
         root = download_source(tmp, expected)
         got = source_version(root)
         if not got or version_key(got) != version_key(expected):
             raise ValueError(f"Unexpected version in the update archive: {got}")
-        # 126 and 127 mean "cancelled" and "not authorized" only when pkexec itself says so:
-        # the installer's own exit status is folded into 1
-        r = subprocess.run([pkexec, "/bin/sh", "-c", INSTALL_WRAPPER, os.path.join(root, "install.sh")],
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600)
-        if r.returncode == PKEXEC_CANCEL:
-            raise UpdateCancelled()
-        if r.returncode == PKEXEC_DENIED:
-            raise NoAuthorization()
+        r = subprocess.run(["/bin/sh", os.path.join(root, "install.sh")], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or [f"exit code {r.returncode}"]
             raise RuntimeError(tail[0])
-        return got
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

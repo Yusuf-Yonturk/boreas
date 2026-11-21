@@ -176,6 +176,14 @@ class PackagingTests(InstallTestCase):
         self.assertTrue(os.access(setup, os.X_OK))
         self.assertEqual(setup.read_bytes(), (REPO / 'data/boreas-setup').read_bytes())
 
+    def test_update_helper_is_installed_next_to_the_code(self):
+        # update.HELPER is where pkexec starts it; it imports the code from the folder it sits in
+        self.install()
+        helper = self.stage / 'usr/lib/boreas/boreas-update'
+        self.assertEqual(helper.read_bytes(), (REPO / 'data/boreas-update').read_bytes())
+        self.assertEqual(oct(helper.stat().st_mode & 0o777), oct(0o755))
+        self.assertTrue((helper.parent / 'boreas/update.py').exists())
+
     def test_packaged_mark_only_when_asked(self):
         mark = self.stage / 'usr/lib/boreas/packaged'
         self.install()

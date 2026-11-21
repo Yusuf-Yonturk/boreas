@@ -179,8 +179,9 @@ and battery settings in the same window; press it again to go back.
 
 Boreas checks GitHub 10 seconds after it starts and then once a day; each check only asks GitHub
 for the latest published release. When a newer version is available, the window shows
-**Update · Release notes · Hide**. **Update** downloads the source of that release from GitHub, installs it
-after asking for your administrator password (pkexec) and restarts the app. **Release notes** opens
+**Update · Release notes · Hide**. **Update** asks for your administrator password (pkexec), then a
+helper installed with Boreas downloads the source of that release from GitHub as root, installs it and
+the app restarts. **Release notes** opens
 [CHANGELOG.md](CHANGELOG.md).
 
 To update by hand instead:

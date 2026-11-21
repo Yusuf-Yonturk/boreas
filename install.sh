@@ -94,6 +94,8 @@ install -Dm755 "$SRC/data/bin/boreas" "$D/usr/bin/boreas"
 install -Dm755 "$SRC/data/bin/boreasd" "$D/usr/bin/boreasd"
 install -Dm755 "$SRC/data/bin/boreasctl" "$D/usr/bin/boreasctl"
 install -Dm755 "$SRC/data/boreas-setup" "$D/usr/bin/boreas-setup"
+# the root side of the in-app update (pkexec starts it); root's file, next to root's code
+install -m755 "$SRC/data/boreas-update" "$D/usr/lib/boreas/boreas-update"
 # Present only in a copy a package owns; a copy installed by this script updates itself.
 rm -f "$D/usr/lib/boreas/packaged"
 if [ "$1" = "--files-only" ] && [ -n "${BOREAS_PACKAGED:-}" ]; then
