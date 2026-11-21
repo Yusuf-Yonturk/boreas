@@ -575,6 +575,30 @@ _T = {
         "Impossible de changer le mode GPU : {error}", "Não foi possível mudar o modo da GPU: {error}",
         "Не удалось сменить режим GPU: {error}", "GPU-Modus konnte nicht geändert werden: {error}",
         "GPU モードを切り替えられませんでした: {error}"),
+    "Eco and Optimized are not supported on this device": (
+        "Eco ve Optimized bu cihazda desteklenmiyor", "此设备不支持节能和优化模式",
+        "इस डिवाइस पर Eco और ऑप्टिमाइज़्ड समर्थित नहीं हैं", "Este dispositivo no admite Eco ni Optimizado",
+        "لا يدعم هذا الجهاز وضعي Eco والمُحسّن", "Les modes Éco et Optimisé ne sont pas pris en charge sur cet appareil",
+        "Os modos Eco e Otimizado não são suportados neste dispositivo", "Режимы Эко и Оптимум не поддерживаются на этом устройстве",
+        "Eco und Optimiert werden auf diesem Gerät nicht unterstützt", "このデバイスは Eco と最適化に対応していません"),
+    "Eco and Optimized need an NVIDIA dGPU": (
+        "Eco ve Optimized için NVIDIA dGPU gerekir", "节能和优化模式需要 NVIDIA 独显",
+        "Eco और ऑप्टिमाइज़्ड के लिए NVIDIA dGPU चाहिए", "Eco y Optimizado requieren una dGPU NVIDIA",
+        "يتطلب وضعا Eco والمُحسّن بطاقة dGPU من NVIDIA", "Les modes Éco et Optimisé nécessitent un dGPU NVIDIA",
+        "Os modos Eco e Otimizado exigem uma dGPU NVIDIA", "Для режимов Эко и Оптимум нужна дискретная GPU NVIDIA",
+        "Eco und Optimiert benötigen eine NVIDIA-dGPU", "Eco と最適化には NVIDIA の dGPU が必要です"),
+    "{reason}. The GPU mode was set to Standard.": (
+        "{reason}. GPU modu Standart yapıldı.", "{reason}。GPU 模式已设为标准。",
+        "{reason}। GPU मोड स्टैंडर्ड पर सेट किया गया।", "{reason}. El modo de GPU se cambió a Estándar.",
+        "{reason}. تم ضبط وضع GPU على قياسي.", "{reason}. Le mode GPU est passé à Standard.",
+        "{reason}. O modo da GPU foi definido como Padrão.", "{reason}. Режим GPU переключён на Стандарт.",
+        "{reason}. Der GPU-Modus wurde auf Standard gesetzt.", "{reason}。GPU モードを標準にしました。"),
+    "The eBPF engine needs an NVIDIA dGPU": (
+        "eBPF motoru için NVIDIA dGPU gerekir", "eBPF 引擎需要 NVIDIA 独显",
+        "eBPF इंजन के लिए NVIDIA dGPU चाहिए", "El motor eBPF requiere una dGPU NVIDIA",
+        "يتطلب محرك eBPF بطاقة dGPU من NVIDIA", "Le moteur eBPF nécessite un dGPU NVIDIA",
+        "O motor eBPF exige uma dGPU NVIDIA", "Для движка eBPF нужна дискретная GPU NVIDIA",
+        "Die eBPF-Engine benötigt eine NVIDIA-dGPU", "eBPF エンジンには NVIDIA の dGPU が必要です"),
     "Could not apply the postponed Eco mode: {error}": (
         "Ertelenen Eco modu uygulanamadı: {error}", "无法应用推迟的节能模式：{error}", "स्थगित Eco मोड लागू नहीं हो सका: {error}",
         "No se pudo aplicar el modo Eco aplazado: {error}", "تعذّر تطبيق وضع Eco المؤجل: {error}",

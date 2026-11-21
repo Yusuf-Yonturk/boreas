@@ -956,6 +956,25 @@ class TestHeldSelection(unittest.TestCase):
             w.render()
         self.assertIn("sınırlı", w.mode_label.text())  # no blinking there either
 
+    def test_eco_and_optimized_hidden_without_eco(self):
+        # a Radeon dGPU (2022 Zephyrus G14): the service refuses them, so they are not shown at all
+        w = self.w
+        gpu = {"mode": "standard", "has_mux": True, "has_eco": False, "pending_reboot": False, "backend": "firmware"}
+        w.status = {**self.STATUS, "gpu": gpu, "gpu_target": "standard"}
+        w.render()
+        w._build_tray_menu()
+        shown = {b.property("key") for b in w.gpu_group.buttons() if not b.isHidden()}
+        self.assertEqual(shown, {"standard", "ultimate"})
+        tray = [a.text() for a in w.tray_menu.actions() if a.text().startswith("GPU: ")]
+        self.assertEqual(len(tray), 2)
+        self.assertFalse([t for t in tray if "Eco" in t])
+        # an NVIDIA dGPU: all four, as before
+        w.status = {**self.STATUS, "gpu": {**gpu, "has_eco": True}, "gpu_target": "standard"}
+        w.render()
+        w._build_tray_menu()
+        self.assertEqual(len([b for b in w.gpu_group.buttons() if not b.isHidden()]), 4)
+        self.assertEqual(len([a for a in w.tray_menu.actions() if a.text().startswith("GPU: ")]), 4)
+
     def test_gpu_users_are_summarized(self):
         w = self.w
         engine = {"policy": "standard", "power_state": "D3cold", "runtime_status": "suspended",

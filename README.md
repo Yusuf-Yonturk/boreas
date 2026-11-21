@@ -223,6 +223,10 @@ does on errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-t
   service retries every 15 s and applies it before the display manager on boot. On KDE Plasma
   (Wayland) KWin keeps the dGPU open for the whole session, so there Eco is applied on the next
   boot. If the NVIDIA module is never released, it stops retrying until the next reboot.
+- **Eco and Optimized need an NVIDIA dGPU.** The steps above only know how to let go of an NVIDIA
+  dGPU, so on a laptop with a Radeon dGPU (for example the 2022 ROG Zephyrus G14) Eco and Optimized
+  are not shown and the service refuses them. Standard and Ultimate work as usual. A saved Eco or
+  Optimized mode falls back to Standard with a notice.
 
 ## Experimental eBPF GPU engine
 
