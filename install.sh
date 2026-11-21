@@ -1,5 +1,7 @@
 #!/bin/sh
 # Install: sudo ./install.sh      For packaging: DESTDIR=... ./install.sh --files-only
+# A package also sets BOREAS_GPU_ENGINE=none (no download while building) and BOREAS_PACKAGED=<name>
+# (the in-app update is switched off: the package manager updates Boreas).
 set -e
 D="${DESTDIR:-}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -30,7 +32,9 @@ fetch() {
     fi
 }
 helper_tmp=""
-if [ -n "${BOREAS_GPU_ENGINE:-}" ]; then
+if [ "${BOREAS_GPU_ENGINE:-}" = none ]; then
+    helper_src=""  # asked for explicitly: no helper, and no download either
+elif [ -n "${BOREAS_GPU_ENGINE:-}" ]; then
     helper_src="$BOREAS_GPU_ENGINE"
     if [ ! -f "$helper_src" ]; then
         echo "BOREAS_GPU_ENGINE does not point to a file: $helper_src" >&2
@@ -80,6 +84,12 @@ install -m644 "$SRC"/boreas/gui/*.py "$D/usr/lib/boreas/boreas/gui/"
 install -Dm755 "$SRC/data/bin/boreas" "$D/usr/bin/boreas"
 install -Dm755 "$SRC/data/bin/boreasd" "$D/usr/bin/boreasd"
 install -Dm755 "$SRC/data/bin/boreasctl" "$D/usr/bin/boreasctl"
+install -Dm755 "$SRC/data/boreas-setup" "$D/usr/bin/boreas-setup"
+# Present only in a copy a package owns; a copy installed by this script updates itself.
+rm -f "$D/usr/lib/boreas/packaged"
+if [ "$1" = "--files-only" ] && [ -n "${BOREAS_PACKAGED:-}" ]; then
+    printf '%s\n' "$BOREAS_PACKAGED" > "$D/usr/lib/boreas/packaged"
+fi
 install -Dm644 "$SRC/data/boreasd.service" "$D/usr/lib/systemd/system/boreasd.service"
 install -Dm755 "$SRC/data/boreas.sleep" "$D/usr/lib/systemd/system-sleep/boreas"
 install -Dm644 "$SRC/data/boreas.desktop" "$D/usr/share/applications/boreas.desktop"
@@ -167,33 +177,7 @@ if [ -n "$fl" ] && command -v fc-list >/dev/null && [ -z "$(fc-list :lang="$fl" 
     echo "Warning: no font found for '$lang' (sudo pacman -S $pkg)"
 fi
 
-# mask asusd / supergfxd / power-profiles-daemon so they do not write to the same
-# hardware (undo: uninstall.sh). asusd is a "static" unit and the asusctl udev rule
-# starts it on every boot; power-profiles-daemon is D-Bus activated by the desktop.
-# disable does not help, and through Conflicts= in boreasd they would stop us too.
-# What is masked here is recorded with its previous state, so uninstall.sh brings back only
-# that: a unit the user had masked or disabled before Boreas stays the way they left it.
-MASKED=/etc/boreas/masked-units
-systemctl daemon-reload
-for s in asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service; do
-    was=$(systemctl is-enabled "$s" 2>/dev/null || true)
-    if [ -n "$(systemctl list-unit-files --no-legend "$s" 2>/dev/null)" ] && [ "$was" != masked ]; then
-        echo "masking: $s"
-        systemctl mask --now "$s"
-        install -d /etc/boreas
-        grep -q "^$s " "$MASKED" 2>/dev/null || echo "$s $was" >> "$MASKED"
-    fi
-done
-systemctl enable boreasd.service
-systemctl restart boreasd.service  # so the old code does not keep running after an update
+# hand the hardware to Boreas: masks asusd / supergfxd / power-profiles-daemon (undo: uninstall.sh)
+# and starts boreasd
+/usr/bin/boreas-setup enable
 echo "Installed. UI: boreas   CLI: boreasctl status"
-# the socket is root:wheel 0660; without the group it is root-only and the UI cannot connect
-if ! getent group wheel >/dev/null 2>&1; then
-    echo "Warning: there is no 'wheel' group, so only root can reach the service (sudo boreasctl status)."
-    echo "         Create it and add your user: sudo groupadd wheel && sudo usermod -aG wheel <user>, then log in again."
-elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] &&
-     ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx wheel; then
-    echo "Warning: $SUDO_USER is not in the 'wheel' group, so the UI and boreasctl cannot reach the service."
-    echo "         sudo usermod -aG wheel $SUDO_USER, then log in again."
-fi
-echo "If rog-control-center starts automatically, turn that off in its settings."

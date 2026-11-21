@@ -1,0 +1,33 @@
+# Maintainer: Yusuf Yontürk <140352702+Yusuf-Yonturk@users.noreply.github.com>
+
+pkgname=boreas
+pkgver=0.1.8
+pkgrel=1
+pkgdesc="G-Helper-style control panel for ASUS ROG and TUF laptops: performance modes, fan curves, power limits, GPU modes, Aura lighting, charge limit"
+arch=('any')
+url="https://github.com/Yusuf-Yonturk/boreas"
+license=('GPL-3.0-only')
+depends=('python>=3.11' 'pyside6' 'systemd' 'hicolor-icon-theme')
+optdepends=('polkit: enable Boreas from its window instead of a terminal'
+            'qt6-wayland: sharp UI on Wayland'
+            'kscreen: refresh rate control on KDE Plasma'
+            'noto-fonts-cjk: Chinese and Japanese interface'
+            'noto-fonts: Hindi and Arabic interface')
+install=boreas.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # replaced by updpkgsums when the version is published
+
+check() {
+    cd "$pkgname-$pkgver"
+    # the service and installer tests: a fake sysfs tree, no root, no display, no network
+    python -m unittest tests.test_boreas tests.test_thermal tests.test_cpu_boost tests.test_install
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    # files only: no download, no service is touched. The optional eBPF GPU helper is not part
+    # of this package. BOREAS_PACKAGED switches the in-app update off; pacman updates Boreas.
+    DESTDIR="$pkgdir" BOREAS_GPU_ENGINE=none BOREAS_PACKAGED=aur sh ./install.sh --files-only
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+}

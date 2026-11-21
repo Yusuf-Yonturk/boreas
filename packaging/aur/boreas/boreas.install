@@ -1,0 +1,29 @@
+post_install() {
+    cat <<'MSG'
+==> Boreas is installed but does not control anything yet.
+    To hand the laptop controls to it:
+
+        sudo boreas-setup enable
+
+    This masks asusd, supergfxd and power-profiles-daemon (they write to the
+    same hardware, so only one side can run) and starts boreasd.
+    To give them back:  sudo boreas-setup disable
+    Your user must be in the 'wheel' group to use the window and boreasctl.
+MSG
+}
+
+post_upgrade() {
+    # the service must not keep running the old code next to a new window
+    systemctl try-restart boreasd.service 2>/dev/null || true
+}
+
+pre_remove() {
+    # stops boreasd and brings back the services 'boreas-setup enable' masked
+    /usr/bin/boreas-setup disable || true
+}
+
+post_remove() {
+    # bytecode Python wrote next to the code; the settings in /etc/boreas are kept
+    rm -rf /usr/lib/boreas/boreas
+    rmdir /usr/lib/boreas 2>/dev/null || true
+}
