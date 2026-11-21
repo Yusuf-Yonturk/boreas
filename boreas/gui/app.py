@@ -793,7 +793,8 @@ class MainWindow(QWidget):
                 if k == "ultimate":
                     b.setEnabled(g["has_mux"])
                 if k in ("eco", "optimized"):
-                    b.setEnabled(g["has_eco"])
+                    # not offered at all where the service refuses them (a Radeon dGPU, no dgpu_disable)
+                    b.setVisible(g["has_eco"])
             text = _(GPU_HINTS.get(target, ""))
             tip = ""
             if g["pending_reboot"] or (target == "ultimate") != (active == "ultimate"):
@@ -878,7 +879,7 @@ class MainWindow(QWidget):
     def _build_tray_menu(self):
         s = self.status
         sig = (tuple((x["id"], x["name"]) for x in s.get("modes", [])), s.get("mode"),
-               s.get("gpu_target"), (s.get("gpu") or {}).get("mode"))
+               s.get("gpu_target"), (s.get("gpu") or {}).get("mode"), (s.get("gpu") or {}).get("has_eco"))
         if getattr(self, "_menu_sig", None) == sig or self.tray_menu.isVisible():
             return
         self._menu_sig = sig
@@ -892,6 +893,8 @@ class MainWindow(QWidget):
             m.addSeparator()
             target = s.get("gpu_target") or s["gpu"]["mode"]
             for k, label in GPU_LABELS:
+                if k in ("eco", "optimized") and not s["gpu"].get("has_eco"):
+                    continue
                 act = QAction(f"GPU: {_(label)}", m, checkable=True, checked=k == target)
                 act.triggered.connect(lambda _=False, key=k: self._tray_pick(self.set_gpu, key))
                 m.addAction(act)

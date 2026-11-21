@@ -129,6 +129,8 @@ class TestLookup(unittest.TestCase):
             raised = re.findall(r'raise OSError\("([^"]+)"\)', fh.read())
         shown = [t for t in raised if not t.startswith(("Boreas GPU engine response", "Could not reset", "Could not restore nvidia-powerd after"))]
         shown += ["Leave Ultimate and reboot before selecting the eBPF engine", "GPU switching is not supported on this device",
+                  "The eBPF engine needs an NVIDIA dGPU", "Eco and Optimized need an NVIDIA dGPU",
+                  "Eco and Optimized are not supported on this device",
                   "Backend transition could not be applied immediately", "No such fan: turbine", "Invalid value for ppt"]
         self.assertGreaterEqual(len(shown), 14)
         for lang in ("tr", "ar", "ja"):

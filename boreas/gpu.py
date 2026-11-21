@@ -9,6 +9,10 @@ Mapping:
 Writing dgpu_disable while the driver is still bound can freeze the system, so the
 NVIDIA modules are unloaded and the PCI device is removed first. If the modules are in
 use (KWin, games, CUDA), Eco is postponed until the next boot.
+
+That detach step only knows NVIDIA. On a machine with a Radeon dGPU (2022 Zephyrus G14,
+GA402R) it would write dgpu_disable=1 with amdgpu still bound, so Eco and Optimized are
+offered only when eco_capable() says the dGPU is NVIDIA. Standard and Ultimate work everywhere.
 """
 
 from __future__ import annotations
@@ -29,6 +33,9 @@ NV_SERVICES = ("nvidia-persistenced.service", "nvidia-powerd.service")
 NV_SERVICE_COMMANDS = ("nvidia-persiste", "nvidia-powerd")
 PROC = "/proc"
 PCI_ADDR = re.compile(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]")
+# Why Eco and Optimized are refused (the GUI translates these texts)
+NO_ECO = "Eco and Optimized are not supported on this device"
+NEEDS_NVIDIA = "Eco and Optimized need an NVIDIA dGPU"
 
 
 class GpuBusy(Exception):
@@ -72,13 +79,16 @@ def state() -> dict:
     pending = hw.read_int(hw.ARMOURY + "/pending_reboot")
     if pending is None:
         pending = hw.read_int(hw.ARMOURY + "/pending_reboot/current_value")
+    # The eBPF helper only starts with an NVIDIA offload GPU, and in its Eco the device's sysfs
+    # files are hidden from us, so the PCI check below would read nothing.
+    capable = gpu_engine.selected() or eco_capable(eco_v)
     return {
         "mode": mode,
         "mux": mux_v,
         "dgpu_disable": eco_v,
         "has_mux": mux is not None,
-        "has_eco": eco is not None,
-        "ebpf_available": os.path.isfile(gpu_engine.helper_path()),
+        "has_eco": eco is not None and capable,
+        "ebpf_available": capable and os.path.isfile(gpu_engine.helper_path()),
         "backend": "ebpf" if gpu_engine.selected() else "firmware",
         "backend_error": engine_error,
         "engine": engine,
@@ -98,6 +108,34 @@ def nvidia_pci_devices() -> list[str]:
 
 def dgpu_present() -> bool:
     return any((hw.read(d + "/class") or "").startswith("0x03") for d in nvidia_pci_devices())
+
+
+def internal_nvidia_present() -> bool:
+    """An NVIDIA display device built into the laptop. An eGPU (USB4/Thunderbolt, which the
+    kernel marks "removable") says nothing about the dGPU dgpu_disable switches off."""
+    return any((hw.read(d + "/class") or "").startswith("0x03") and hw.read(d + "/removable") != "removable"
+               for d in nvidia_pci_devices())
+
+
+def nvidia_driver_loaded() -> bool:
+    return _loaded("nvidia")
+
+
+def eco_capable(dgpu_disable: int | None) -> bool:
+    """Whether the dGPU is one the Eco path knows how to detach (NVIDIA).
+
+    True when a built-in NVIDIA display device (PCI class 0x03) is on the bus, or when the
+    machine is already in Eco: an NVIDIA dGPU in Eco is off the bus, and leaving Eco must stay
+    possible. The vendor of a Radeon dGPU says nothing on its own, since the iGPU is AMD (0x1002) too.
+    """
+    return dgpu_disable == 1 or internal_nvidia_present()
+
+
+def eco_refusal(st: dict) -> str | None:
+    """Why Eco and Optimized cannot be chosen in this state() (None: they can)."""
+    if st.get("has_eco") or st.get("backend") == "ebpf":
+        return None  # the eBPF helper only runs on an NVIDIA offload GPU and has its own Eco
+    return NEEDS_NVIDIA if st.get("dgpu_disable") is not None else NO_ECO
 
 
 def dgpu_runtime_status() -> str | None:
@@ -281,6 +319,9 @@ def set_eco(enabled: bool) -> None:
         raise ValueError("Eco mode is not supported")
     if bool(cur.current) == enabled:
         return
+    if enabled and not eco_capable(cur.current):
+        # a Radeon dGPU: dgpu_disable=1 with amdgpu still bound can freeze the system
+        raise ValueError(NEEDS_NVIDIA)
     if enabled:
         _detach_dgpu()
         try:

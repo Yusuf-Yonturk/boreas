@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 TMP = tempfile.mkdtemp(prefix="boreas-test-")
 os.environ["BOREAS_SYSFS_ROOT"] = TMP + "/root"
@@ -23,6 +23,8 @@ from boreas import client  # noqa: E402
 
 R = TMP + "/root"
 ARM = R + hw.ARMOURY
+IGPU = "/sys/bus/pci/devices/0000:06:00.0"
+DGPU = "/sys/bus/pci/devices/0000:01:00.0"
 
 
 def put(path, value):
@@ -34,6 +36,12 @@ def put(path, value):
 def get(path):
     with open(path) as f:
         return f.read().strip()
+
+
+def enter_eco():
+    """Eco as the hardware shows it: dgpu_disable=1 and the dGPU gone from the PCI bus."""
+    put(f"{ARM}/dgpu_disable/current_value", 1)
+    shutil.rmtree(R + DGPU, ignore_errors=True)
 
 
 def build_tree():
@@ -80,6 +88,11 @@ def build_tree():
     put(R + hw.KBD_LED + "/brightness", 3)
     put(R + hw.KBD_LED + "/max_brightness", 3)
     put(R + hw.DMI_PRODUCT, "ROG Strix G713PV_G713PV")
+    # the GPUs: AMD iGPU (Raphael) and the NVIDIA dGPU (RTX 4060 Laptop), as on the G713PV
+    put(R + IGPU + "/vendor", "0x1002")
+    put(R + IGPU + "/class", "0x030000")
+    put(R + DGPU + "/vendor", "0x10de")
+    put(R + DGPU + "/class", "0x030000")
     for n, desc in ((0, b"\x05\x01\x85\x01\x81\x00"), (1, b"\x06\x31\xff\x85\x5d\xb1\x02")):
         put(f"{R}/sys/class/hidraw/hidraw{n}/device/uevent",
             "HID_ID=0003:00000B05:000019B6\nHID_NAME=ASUSTek Computer Inc. N-KEY Device")
@@ -574,8 +587,7 @@ class TestGpu(Base):
 
     def test_leaving_eco_reports_a_dgpu_that_did_not_come_back(self):
         # dgpu_disable=0 was written but the dGPU never shows up on the bus: that is not Standard
-        put(f"{ARM}/dgpu_disable/current_value", 1)
-        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        enter_eco()
         calls = self._gpu_calls()
         with self.assertRaises(OSError):
             gpu.set_eco(False)
@@ -583,16 +595,14 @@ class TestGpu(Base):
 
     def test_leaving_eco_without_the_nvidia_driver_is_not_an_error(self):
         # an AMD dGPU: dgpu_present() cannot see it, so there is nothing to wait for
-        put(f"{ARM}/dgpu_disable/current_value", 1)
-        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        enter_eco()
         self._gpu_calls(lambda cmd: cmd[:1] != ("modprobe",))
         gpu.set_eco(False)
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
     def test_ultimate_from_eco_with_a_slow_dgpu_still_writes_the_mux(self):
         # the dGPU comes up at the reboot Ultimate needs anyway
-        put(f"{ARM}/dgpu_disable/current_value", 1)
-        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        enter_eco()
         self._gpu_calls()
         gpu.set_mux(True)
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
@@ -606,8 +616,7 @@ class TestGpu(Base):
         self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "1")
 
     def test_leaving_eco_attaches_the_dgpu(self):
-        put(f"{ARM}/dgpu_disable/current_value", 1)
-        os.makedirs(R + "/sys/bus/pci", exist_ok=True)
+        enter_eco()
         calls = self._gpu_calls()
         real_write = hw.write
 
@@ -634,7 +643,7 @@ class TestGpu(Base):
 
     def test_leaving_eco_wakes_sleeping_port(self):
         # G713PV: with the port asleep, dgpu_disable=0 waited 30 s in the firmware and failed with EIO
-        put(f"{ARM}/dgpu_disable/current_value", 1)
+        enter_eco()
         port = self._bridge("0000:00:01.1")             # empty below in Eco: the dGPU's port
         busy = self._bridge("0000:00:02.1", child=True)  # has a device below: left alone
         self._gpu_calls()
@@ -654,7 +663,7 @@ class TestGpu(Base):
         self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
 
     def test_port_restored_when_firmware_fails(self):
-        put(f"{ARM}/dgpu_disable/current_value", 1)
+        enter_eco()
         port = self._bridge("0000:00:01.1")
         self._gpu_calls()
 
@@ -759,6 +768,310 @@ class TestGpu(Base):
             d.handle({"cmd": "set_mode", "mode": 42})
         self.assertNotEqual(d.cfg["gpu_target"], "foo")
         self.assertNotEqual(d.cfg["mode_ac"], 42)
+
+
+class TestEcoNeedsNvidia(Base):
+    """The firmware Eco path only knows how to detach an NVIDIA dGPU. On a Radeon dGPU
+    (2022 Zephyrus G14, GA402R) it would write dgpu_disable=1 with amdgpu bound, which can
+    freeze the machine, so Eco and Optimized are neither offered nor accepted there."""
+
+    RADEON = "/sys/bus/pci/devices/0000:03:00.0"
+
+    def radeon(self):
+        """GA402R: Rembrandt iGPU and Radeon RX 6700S dGPU, both AMD (0x1002); no NVIDIA device."""
+        shutil.rmtree(R + DGPU)
+        put(R + hw.DMI_PRODUCT, "ROG Zephyrus G14 GA402RJ_GA402RJ")
+        put(R + self.RADEON + "/vendor", "0x1002")
+        put(R + self.RADEON + "/class", "0x030000")
+        put(R + "/sys/module/amdgpu/refcnt", 2)
+
+    def calls(self):
+        calls = []
+        gpu._run = lambda *cmd: (calls.append(cmd), cmd[:1] != ("modprobe",))[1]  # no NVIDIA driver
+        return calls
+
+    def saved_target(self):
+        with open(os.environ["BOREAS_CONFIG"]) as f:
+            return json.load(f).get("gpu_target")
+
+    # ---- Radeon dGPU ----
+
+    def test_radeon_state_does_not_offer_eco(self):
+        self.radeon()
+        st = gpu.state()
+        self.assertFalse(st["has_eco"])
+        self.assertTrue(st["has_mux"])
+        self.assertEqual(st["mode"], gpu.STANDARD)
+        self.assertEqual(gpu.eco_refusal(st), gpu.NEEDS_NVIDIA)
+        helper = TMP + "/boreas-gpu-engine"
+        put(helper, "")
+        with patch.object(gpu.gpu_engine, "helper_path", return_value=helper):
+            self.assertFalse(gpu.state()["ebpf_available"])  # the eBPF helper is NVIDIA only too
+
+    def test_radeon_refuses_eco_and_optimized_requests(self):
+        self.radeon()
+        calls = self.calls()
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+        for target in (gpu.ECO, gpu.OPTIMIZED):
+            with self.assertRaisesRegex(ValueError, "NVIDIA"):
+                d.handle({"cmd": "set_gpu", "target": target})
+            self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+            self.assertEqual(self.saved_target(), gpu.STANDARD)  # nothing to come back at boot
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        with self.assertRaises(ValueError):
+            d.handle({"cmd": "set_gpu", "target": gpu.OPTIMIZED})
+        with self.assertRaises(ValueError):
+            d.apply_gpu_target(gpu.ECO, explicit=True)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertEqual(calls, [])  # no driver unload, no service touched
+
+    def test_radeon_set_eco_refuses_before_touching_anything(self):
+        # the last line of defence: whoever calls it, dgpu_disable=1 is not written
+        self.radeon()
+        calls = self.calls()
+        with self.assertRaisesRegex(ValueError, "NVIDIA"):
+            gpu.set_eco(True)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertEqual(calls, [])
+        gpu.set_eco(False)  # Standard stays a no-op
+
+    def test_radeon_standard_and_ultimate_still_work(self):
+        self.radeon()
+        self.calls()
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.STANDARD}), {})
+        self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.ULTIMATE}), {"reboot": True})
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
+        self.assertEqual(gpu.state()["mode"], gpu.ULTIMATE)
+        self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.STANDARD}), {"reboot": True})
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "1")
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def test_radeon_saved_eco_target_falls_back_to_standard_at_boot(self):
+        self.radeon()
+        calls = self.calls()
+        for saved in (gpu.ECO, gpu.OPTIMIZED):
+            c = config.Config()
+            c["gpu_target"] = saved
+            c.save()
+            d = daemon.Daemon(config.Config())  # an existing config: not adopted from the hardware
+            self.assertEqual(d.cfg["gpu_target"], saved)
+            d.reapply(at_boot=True)  # must not raise: the display manager waits for the service
+            self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+            self.assertEqual(self.saved_target(), gpu.STANDARD)
+            self.assertEqual(d.notice, "Eco and Optimized need an NVIDIA dGPU. The GPU mode was set to Standard.")
+            self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+            self.assertFalse(d.eco_pending())
+        self.assertEqual(calls, [])
+
+    def test_radeon_saved_optimized_on_unplug_falls_back(self):
+        # the plug/unplug path applies Optimized without the user asking: same fallback, no crash
+        self.radeon()
+        self.calls()
+        d = daemon.Daemon(config.Config())
+        d.cfg["gpu_target"] = gpu.OPTIMIZED
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        d.tick()
+        self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+        self.assertIn("NVIDIA", d.notice)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+
+    def test_radeon_eco_never_retried_in_the_background(self):
+        self.radeon()
+        d = daemon.Daemon(config.Config())
+        d.cfg["gpu_target"] = gpu.ECO  # as if written by hand
+        self.assertFalse(d.eco_pending())
+        with patch.object(gpu, "set_eco") as set_eco:
+            for _ in range(daemon.ECO_RETRY_TICKS * 2):
+                d.tick()
+        set_eco.assert_not_called()
+
+    def test_radeon_first_start_adopts_standard(self):
+        self.radeon()
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+        self.assertEqual(self.saved_target(), gpu.STANDARD)
+
+    def test_radeon_with_an_nvidia_egpu_still_refuses_eco(self):
+        # an NVIDIA card on USB4/Thunderbolt is not the dGPU dgpu_disable switches off
+        self.radeon()
+        egpu = R + "/sys/bus/pci/devices/0000:64:00.0"
+        put(egpu + "/vendor", "0x10de")
+        put(egpu + "/class", "0x030000")
+        put(egpu + "/removable", "removable")
+        calls = self.calls()
+        self.assertFalse(gpu.state()["has_eco"])
+        d = daemon.Daemon(config.Config())
+        with self.assertRaisesRegex(ValueError, "NVIDIA"):
+            d.handle({"cmd": "set_gpu", "target": gpu.ECO})
+        with self.assertRaisesRegex(ValueError, "NVIDIA"):
+            gpu.set_eco(True)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(egpu + "/remove"))
+
+    def test_radeon_saved_eco_in_ultimate_adopts_ultimate_without_standard_notice(self):
+        self.radeon()
+        put(f"{ARM}/gpu_mux_mode/current_value", 0)  # Ultimate chosen in the BIOS
+        c = config.Config()
+        c["gpu_target"] = gpu.ECO
+        c.save()
+        d = daemon.Daemon(config.Config())
+        d.reapply(at_boot=True)
+        self.assertEqual(d.cfg["gpu_target"], gpu.ULTIMATE)
+        self.assertEqual(self.saved_target(), gpu.ULTIMATE)
+        self.assertNotIn("Standard", d.notice)
+        self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
+
+    def test_mux_only_saved_eco_falls_back(self):
+        # no dgpu_disable at all: nothing to switch off, the saved choice goes back to Standard
+        shutil.rmtree(ARM + "/dgpu_disable")
+        put(R + "/sys/module/nvidia/refcnt", 1)
+        c = config.Config()
+        c["gpu_target"] = gpu.OPTIMIZED
+        c.save()
+        d = daemon.Daemon(config.Config())
+        d.reapply(at_boot=True)
+        self.assertEqual(self.saved_target(), gpu.STANDARD)
+        self.assertEqual(d.notice, "Eco and Optimized are not supported on this device. The GPU mode was set to Standard.")
+
+    def test_radeon_already_in_eco_can_leave_it(self):
+        # dgpu_disable=1 set elsewhere (Windows, asusctl): Eco shows, and leaving it works
+        self.radeon()
+        put(f"{ARM}/dgpu_disable/current_value", 1)
+        shutil.rmtree(R + self.RADEON)  # in Eco the dGPU is off the bus
+        self.calls()
+        st = gpu.state()
+        self.assertEqual(st["mode"], gpu.ECO)
+        self.assertTrue(st["has_eco"])
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.STANDARD}), {})
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        put(R + self.RADEON + "/vendor", "0x1002")  # the Radeon is back on the bus
+        put(R + self.RADEON + "/class", "0x030000")
+        self.assertFalse(gpu.state()["has_eco"])  # and Eco is no longer offered
+
+    def test_radeon_refuses_the_ebpf_engine(self):
+        self.radeon()
+        self.addCleanup(gpu.gpu_engine.set_config_backend, None)
+        d = daemon.Daemon(config.Config())
+        with patch.dict(os.environ), patch.object(gpu.gpu_engine, "get") as engine:
+            os.environ.pop("BOREAS_GPU_BACKEND", None)
+            with self.assertRaisesRegex(ValueError, "NVIDIA"):
+                d.handle({"cmd": "set_gpu_backend", "backend": "ebpf"})
+        engine.assert_not_called()  # the helper is not even started
+        self.assertEqual(d.cfg["gpu_backend"], "firmware")
+        self.assertFalse(gpu.gpu_engine.selected())
+
+    # ---- NVIDIA dGPU (G713PV): unchanged ----
+
+    def test_nvidia_offers_eco(self):
+        st = gpu.state()
+        self.assertTrue(st["has_eco"])
+        self.assertIsNone(gpu.eco_refusal(st))
+
+    def test_nvidia_in_eco_keeps_eco_although_the_dgpu_left_the_bus(self):
+        enter_eco()
+        self.assertFalse(gpu.dgpu_present())
+        st = gpu.state()
+        self.assertEqual(st["mode"], gpu.ECO)
+        self.assertTrue(st["has_eco"])
+        self.assertIsNone(gpu.eco_refusal(st))
+        helper = TMP + "/boreas-gpu-engine"
+        put(helper, "")
+        with patch.object(gpu.gpu_engine, "helper_path", return_value=helper):
+            self.assertTrue(gpu.state()["ebpf_available"])
+        self.calls()
+        d = daemon.Daemon(config.Config())
+        self.assertEqual(d.cfg["gpu_target"], gpu.ECO)  # first start adopts Eco as before
+        for target in (gpu.ECO, gpu.OPTIMIZED):
+            put(R + "/sys/class/power_supply/ADP0/online", 0)
+            self.assertEqual(d.handle({"cmd": "set_gpu", "target": target}), {})
+            self.assertEqual(d.cfg["gpu_target"], target)
+        d.reapply(at_boot=True)
+        self.assertEqual(d.cfg["gpu_target"], gpu.OPTIMIZED)  # no fallback
+        self.assertEqual(d.notice, "")
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+
+    def test_nvidia_full_cycle(self):
+        # Standard -> Eco -> Standard -> Optimized on battery -> AC, all through the firmware path
+        for m in gpu.NV_MODULES:
+            put(R + f"/sys/module/{m}/refcnt", 0)
+        calls = []
+        gpu._run = lambda *cmd: (calls.append(cmd), True)[1]
+        real_write = hw.write
+
+        def write(path, value):
+            real_write(path, value)
+            if path.endswith(DGPU + "/remove"):
+                shutil.rmtree(R + DGPU)
+            elif path.endswith("/sys/bus/pci/rescan") and get(f"{ARM}/dgpu_disable/current_value") == "0":
+                put(R + DGPU + "/vendor", "0x10de")
+                put(R + DGPU + "/class", "0x030000")
+        with patch.object(gpu.hw, "write", write), patch.object(gpu, "_nvidia_users", lambda ignore=(): []):
+            d = daemon.Daemon(config.Config())
+            self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.ECO}), {})
+            self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+            self.assertFalse(gpu.dgpu_present())
+            self.assertTrue(gpu.state()["has_eco"])
+            self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.STANDARD}), {})
+            self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+            self.assertTrue(gpu.dgpu_present())
+            put(R + "/sys/class/power_supply/ADP0/online", 0)
+            d.tick()  # the service sees the unplug
+            self.assertEqual(d.handle({"cmd": "set_gpu", "target": gpu.OPTIMIZED}), {})
+            self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+            put(R + "/sys/class/power_supply/ADP0/online", 1)
+            d.tick()
+            self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+            self.assertEqual(d.cfg["gpu_target"], gpu.OPTIMIZED)
+        self.assertIn(("modprobe", "-r", "nvidia"), calls)
+        self.assertIn(("modprobe", "nvidia_drm"), calls)
+        self.assertEqual(d.notice, "")
+
+    def test_nvidia_slow_to_come_back_keeps_the_saved_choice(self):
+        # Standard after Eco, but the dGPU has not shown up on the bus yet (DgpuSlow): Eco is not
+        # offered for now, nothing is written, and the saved Optimized is not overwritten
+        shutil.rmtree(R + DGPU)
+        put(R + "/sys/module/nvidia/refcnt", 3)  # the driver was loaded again when leaving Eco
+        calls = self.calls()
+        self.assertFalse(gpu.state()["has_eco"])
+        c = config.Config()
+        c["gpu_target"] = gpu.OPTIMIZED
+        c.save()
+        d = daemon.Daemon(config.Config())
+        d.reapply(at_boot=True)
+        put(R + "/sys/class/power_supply/ADP0/online", 0)
+        d.tick()
+        self.assertEqual(d.cfg["gpu_target"], gpu.OPTIMIZED)
+        self.assertEqual(self.saved_target(), gpu.OPTIMIZED)
+        self.assertEqual(d.notice, "")
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertEqual(calls, [])
+        put(R + DGPU + "/vendor", "0x10de")  # the dGPU is back: Optimized works again
+        put(R + DGPU + "/class", "0x030000")
+        gpu._run = lambda *cmd: True
+        with patch.object(gpu, "_nvidia_users", lambda ignore=(): []):
+            put(R + "/sys/class/power_supply/ADP0/online", 1)
+            d.tick()
+            put(R + "/sys/class/power_supply/ADP0/online", 0)
+            d.tick()
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "1")
+
+    def test_ebpf_eco_keeps_eco_while_the_device_is_hidden(self):
+        # in the eBPF engine's Eco the NVIDIA sysfs files are blocked for us: nothing to read
+        shutil.rmtree(R + DGPU)
+        self.addCleanup(gpu.gpu_engine.set_config_backend, None)
+        gpu.gpu_engine.set_config_backend("ebpf")
+        engine = Mock()
+        engine.request.return_value = {"policy": "eco", "runtime_status": "suspended", "power_state": "D3cold"}
+        with patch.dict(os.environ), patch.object(gpu.gpu_engine, "get", return_value=engine):
+            os.environ.pop("BOREAS_GPU_BACKEND", None)
+            st = gpu.state()
+        self.assertEqual(st["mode"], gpu.ECO)
+        self.assertTrue(st["has_eco"])
+        self.assertIsNone(gpu.eco_refusal(st))
 
 
 class TestCpuDetect(Base):

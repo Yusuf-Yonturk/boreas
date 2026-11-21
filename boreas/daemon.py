@@ -105,6 +105,7 @@ class Daemon:
         base = hw.BASE_BY_PROFILE.get(hw.get_profile() or "", hw.BALANCED)
         c["mode"] = c[self.source_key()] = base
         if gpu.supported():
+            # Eco is only read back from the hardware as dgpu_disable=1, where it is always allowed
             current = gpu.state()["mode"]
             c["gpu_target"] = current if current in GPU_TARGETS else None
         c.save()
@@ -347,6 +348,11 @@ class Daemon:
             mux = hw.get_attr("gpu_mux_mode")
             if (mux and mux.current == 0) or target == gpu.ULTIMATE:
                 raise ValueError("Leave Ultimate and reboot before selecting the eBPF engine")
+            eco = hw.get_attr("dgpu_disable")
+            # The helper only drives an NVIDIA offload GPU. In firmware Eco the dGPU is off the bus;
+            # the engine itself then asks to leave Eco first.
+            if not gpu.eco_capable(eco.current if eco else None):
+                raise ValueError("The eBPF engine needs an NVIDIA dGPU")
         try:
             next_target = target
             if backend == "firmware":
@@ -399,6 +405,23 @@ class Daemon:
                 raise OSError(st["backend_error"])
             return {}
         with self.lock:
+            reason = gpu.eco_refusal(st) if target in (gpu.ECO, gpu.OPTIMIZED) else None
+            if reason:
+                if explicit:
+                    raise ValueError(reason)
+                if reason == gpu.NEEDS_NVIDIA and gpu.nvidia_driver_loaded():
+                    # an NVIDIA dGPU that has not come back on the bus yet (after leaving Eco):
+                    # keep the saved choice, but write nothing until the dGPU is seen again
+                    log(f"GPU mode {target} not applied now: {reason}")
+                    return {}
+                # A saved Eco/Optimized target on a dGPU the Eco path cannot switch off (a Radeon
+                # dGPU, or the config came from another machine): fall back to Standard once.
+                # In Ultimate the MUX adoption below picks the target instead.
+                target = gpu.STANDARD
+                if st["mux"] != 0:
+                    self.cfg["gpu_target"] = target
+                    self.cfg.save()
+                    self.set_notice(f"{reason}. The GPU mode was set to Standard.")
             ultimate = st["mux"] == 0
             if st["has_mux"] and (target == gpu.ULTIMATE) != ultimate:
                 if explicit:
@@ -806,6 +829,11 @@ class Daemon:
             if cmd == "set_gpu":
                 if req["target"] not in GPU_TARGETS:
                     raise ValueError(f"GPU mode must be one of {', '.join(GPU_TARGETS)}")
+                if req["target"] in (gpu.ECO, gpu.OPTIMIZED) and not gpu.gpu_engine.selected():
+                    # checked before saving: a refused target must not come back at the next boot
+                    reason = gpu.eco_refusal(gpu.state())
+                    if reason:
+                        raise ValueError(reason)
                 c["gpu_target"] = req["target"]
                 c.save()
                 return self.apply_gpu_target(req["target"], explicit=True)

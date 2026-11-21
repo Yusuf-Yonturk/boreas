@@ -225,6 +225,10 @@ Ardından pencerede **Çıkış**'a basıp `boreas` ile yeniden açın. Kontrol 
   açılışta ekran yöneticisinden önce uygular. KDE Plasma'da (Wayland) KWin dGPU'yu oturum boyunca açık
   tuttuğu için Eco orada bir sonraki açılışta uygulanır. NVIDIA modülü hiç bırakılmıyorsa yeniden
   başlatmaya kadar tekrar denemez.
+- **Eco ve Optimized için NVIDIA dGPU gerekir.** Yukarıdaki adımlar yalnızca NVIDIA dGPU'yu bırakmayı
+  bilir; bu yüzden Radeon dGPU'lu bir dizüstünde (örneğin 2022 ROG Zephyrus G14) Eco ve Optimized
+  gösterilmez ve servis onları reddeder. Standard ve Ultimate her zamanki gibi çalışır. Kayıtlı bir Eco
+  ya da Optimized modu bir bildirimle Standard'a döner.
 
 ## Deneysel eBPF GPU motoru
 
