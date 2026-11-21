@@ -4,6 +4,10 @@
 
 **English** · [Türkçe](README.tr.md)
 
+<p align="center">
+  <img src="docs/demo.gif" width="440" alt="Boreas: switching the performance mode and the GPU mode, keyboard effects, fan curves and the charge limit">
+</p>
+
 Boreas gives your ASUS laptop on Linux what Armoury Crate and G-Helper give it on Windows: one small
 window for performance modes, custom fan curves, CPU and GPU power limits, GPU modes (Eco, Optimized and
 the Ultimate MUX switch), Aura keyboard lighting and the battery charge limit. Every mode keeps its own
@@ -18,6 +22,17 @@ The window layout is modelled on [G-Helper](https://github.com/seerge/g-helper) 
 familiar if you come from Windows. No code is shared: G-Helper is a Windows program, Boreas is written from
 scratch in Python and Qt. A few hardware details were learned by reading G-Helper and asusctl; they are
 listed in the [third-party notices](THIRD_PARTY_NOTICES.md). Boreas is Linux only; on Windows, use G-Helper.
+
+## Quick start
+
+```bash
+git clone https://github.com/Yusuf-Yonturk/boreas.git && cd boreas && sudo ./install.sh
+```
+
+Then open **Boreas** from the application menu, or run `boreas`. It needs Python 3.11+ and PySide6
+(Arch / CachyOS: `sudo pacman -S --needed python pyside6 qt6-wayland`). On first start it adopts your
+current settings and writes nothing to the hardware, and `sudo ./uninstall.sh` puts everything back.
+[What the installer changes](#what-the-installer-changes-on-your-system) is listed below.
 
 ![Boreas: main window in the light theme, fan curves and power limits in the dark theme](docs/screenshots.png)
 
@@ -49,8 +64,9 @@ uninstaller brings them back.
 
 Boreas is built on the kernel's standard asus-wmi / asus-armoury interfaces, so it is not written for one
 model. Cards for hardware it does not find (GPU modes, panel overdrive, refresh rate) stay hidden. Your
-model can be the next row: run Boreas, then [open an issue](https://github.com/Yusuf-Yonturk/boreas/issues/new/choose)
-with the output of `boreasctl status` and `uname -r`, whether everything worked or not.
+model can be the next row: run Boreas, then send a
+[hardware report](https://github.com/Yusuf-Yonturk/boreas/issues/new?template=hardware_report.yml),
+whether everything worked or not.
 
 ## Features
 
@@ -166,13 +182,11 @@ menu (**Check for updates**) or with `BOREAS_NO_UPDATE_CHECK=1`.
 
 ## CPU temperature target
 
-Each mode can have a 75-95 °C target. Above the target Boreas lowers the ASUS CPU power limits (SPL and,
-where exposed, SPPT/FPPT) through `asus-armoury`; when the CPU cools it raises them again, never above
-what the mode and your own power limits set. If the limits reach their floor and the CPU is still hot, it
-steps below the mode's own CPU policy rung by rung (EPP notch by notch, then cpufreq boost off; with the
-Performance power profile: boost off, then the default governor, then EPP) and restores them in reverse order. The per-mode **sustained power floor** keeps SPL
-from being lowered below a chosen wattage, so a gaming mode can hold 45 W instead of the firmware's 30 W
-minimum.
+Each mode can have a 75-95 °C target. Above it Boreas lowers the ASUS CPU power limits through
+`asus-armoury` and raises them again when the CPU cools, never above what the mode and your own limits
+set. If the limits reach their floor and the CPU is still hot, it steps down the mode's CPU policy (EPP,
+then boost off) and restores it in reverse. A per-mode **sustained power floor** keeps a gaming mode at,
+say, 45 W instead of the firmware's 30 W minimum.
 
 ```bash
 boreasctl cputemp 85        # target for the active mode
@@ -181,14 +195,9 @@ boreasctl cpufloor 45       # sustained power floor; `cpufloor min` = firmware m
 ```
 
 **This is a software target, not a hard temperature ceiling.** Boost, firmware, shared GPU cooling and
-service delays can cause overshoots. At minimum power the state becomes `limited` if the temperature is
-still above the target. It needs a CPU sensor and valid ranges for the exposed CPU power controls,
-including SPL; this is capability detection, not a promise of support for every ASUS laptop. The default path needs no BIOS
-allowlist and no custom kernel module, and nothing reaches the SMU through raw PCI access. Do not run another power tuning service
-at the same time.
-
-How the controller steps, what it does on errors, the status fields and the experimental `smu-bridge`
-(G713PV / G713PV.336 only) are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
+service delays can cause overshoots, and it is offered only where the laptop exposes the CPU power
+controls. Do not run another power tuning service at the same time. How the controller steps, what it
+does on errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
 
 ## GPU modes
 
@@ -201,32 +210,20 @@ How the controller steps, what it does on errors, the status fields and the expe
   (Wayland) KWin keeps the dGPU open for the whole session, so there Eco is applied on the next
   boot. If the NVIDIA module is never released, it stops retrying until the next reboot.
 
-## Experimental embedded GPU engine
+## Experimental eBPF GPU engine
 
-An opt-in eBPF backend adapted from Cardwire is included (`boreas-gpu-engine`).
-`sudo ./install.sh` installs the x86_64 helper that CI built for this version from the GitHub
-Release, after checking its sha256, or the file named by `BOREAS_GPU_ENGINE` (it remains disabled
-by default). You can toggle **eBPF engine (no-reboot Eco) · Experimental** inside the **GPU mode**
-card in the UI, or from the CLI:
+An opt-in backend adapted from Cardwire that blocks access to the dGPU instead of removing it, so Eco
+does not need a reboot. The installer puts the helper in place (see [Install](#install)); it stays off
+until you switch it on with **eBPF engine (no-reboot Eco) · Experimental** in the **GPU mode** card or:
 
 ```bash
 boreasctl gpu-backend ebpf       # enable eBPF GPU blocking
-boreasctl gpu-backend firmware   # return to default ASUS firmware backend
+boreasctl gpu-backend firmware   # return to the default ASUS firmware backend
 ```
 
-Install a patched helper at `/etc/boreas/boreas-gpu-engine` to preserve it across
-upgrades; Boreas prefers this path and checks protocol compatibility. The installer
-also preserves checksum-detected edits to its managed helper; unknown legacy
-copies are backed up without auto-activation. Remove an old systemd backend
-environment override before using the switch. Returning to firmware selects
-**Standard**, preserving Ultimate and pending MUX requests.
-
-Eco policy alone does not prove the GPU is asleep. In the 2026-11-02 G713PV test on
-Linux `7.3.0-5-cachyos`, access blocking/restoration passed, but the GPU remained
-`D0 / active` after 60 seconds and RTD3 reported `Not supported`. This is not a
-power-saving or general hardware compatibility claim.
-
-See [build instructions, limitations and validation checklist](docs/gpu-engine.md).
+Blocking access does not prove the GPU is asleep, and this is not a power-saving claim: on the G713PV
+the GPU reached D3cold with one kernel and stayed awake with another. Building it, keeping a patched
+helper across upgrades, the limits and the test record are in [docs/gpu-engine.md](docs/gpu-engine.md).
 
 ## Development
 
