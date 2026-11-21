@@ -35,7 +35,7 @@ from boreas.gui import app as A  # noqa: E402
 from boreas.gui.common import apply_theme  # noqa: E402
 
 WINDOW = (570, 950)       # logical size of each window
-CANVAS = (1500, 847)      # size of a frame: the proportions of docs/screenshots.png
+CANVAS = (1500, 847)      # size of a frame, 16:9 like a screenshot of the three windows
 MARGIN, GAP = 50, 38      # above and below the windows, and between them
 RADIUS = 16               # corners of a window
 CORNER = 30               # corners of the frame itself; outside them the GIF is transparent

@@ -1,11 +1,11 @@
-![Boreas: ASUS laptop control for Linux](docs/banner.jpg)
+![Boreas: ASUS laptop control for Linux](docs/banner.png)
 
 **The G-Helper-style control panel for ASUS ROG & TUF laptops on Linux.**
 
 **English** · [Türkçe](README.tr.md)
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Boreas: switching the performance mode and the GPU mode, keyboard effects, fan curves and the charge limit">
+  <img src="docs/demo.gif" alt="Boreas: the main window in the light and the dark theme next to Fans and power, while the mode, the GPU mode, the keyboard effect and the charge limit change">
 </p>
 
 Boreas gives your ASUS laptop on Linux what Armoury Crate and G-Helper give it on Windows: one small
@@ -29,12 +29,9 @@ listed in the [third-party notices](THIRD_PARTY_NOTICES.md). Boreas is Linux onl
 git clone https://github.com/Yusuf-Yonturk/boreas.git && cd boreas && sudo ./install.sh
 ```
 
-Then open **Boreas** from the application menu, or run `boreas`. It needs Python 3.11+ and PySide6
-(Arch / CachyOS: `sudo pacman -S --needed python pyside6 qt6-wayland`). On first start it adopts your
-current settings and writes nothing to the hardware, and `sudo ./uninstall.sh` puts everything back.
-[What the installer changes](#what-the-installer-changes-on-your-system) is listed below.
-
-![Boreas: main window in the light theme, fan curves and power limits in the dark theme](docs/screenshots.png)
+Then open **Boreas** from the application menu, or run `boreas`. The requirements are under
+[Install](#install), with [what the installer changes](#what-the-installer-changes-on-your-system);
+`sudo ./uninstall.sh` puts everything back.
 
 ## Why Boreas
 
@@ -250,7 +247,6 @@ workflow, tests and how to add a language.
 - [Cardwire](https://github.com/OpenGamingCollective/cardwire), by luytan and contributors,
   for the GPL-3.0 GPU access-control code used in the experimental Rust engine.
   See [third-party notices](THIRD_PARTY_NOTICES.md).
-
 - Serge and the [G-Helper](https://github.com/seerge/g-helper) community, for their open-source work on
   ASUS hardware.
 - The [asus-linux.org](https://asus-linux.org) community, for the Linux kernel drivers (asus-wmi,

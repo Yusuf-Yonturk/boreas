@@ -1,11 +1,11 @@
-![Boreas: Linux için ASUS laptop kontrolü](docs/banner.jpg)
+![Boreas: Linux için ASUS laptop kontrolü](docs/banner.png)
 
 **Linux'ta ASUS ROG ve TUF dizüstüler için G-Helper tarzı kontrol paneli.**
 
 [English](README.md) · **Türkçe**
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Boreas: performans modu ve GPU modu değiştirme, klavye efektleri, fan eğrileri ve şarj limiti">
+  <img src="docs/demo.gif" alt="Boreas: açık ve koyu temada ana pencere ile fan ve güç sayfası; mod, GPU modu, klavye efekti ve şarj limiti değişirken">
 </p>
 
 Boreas, Armoury Crate ve G-Helper'ın Windows'ta verdiğini ASUS dizüstünüze Linux'ta verir: performans
@@ -31,12 +31,9 @@ G-Helper kullanın.
 git clone https://github.com/Yusuf-Yonturk/boreas.git && cd boreas && sudo ./install.sh
 ```
 
-Sonra uygulama menüsünden **Boreas**'ı açın ya da `boreas` çalıştırın. Python 3.11+ ve PySide6 gerekir
-(Arch / CachyOS: `sudo pacman -S --needed python pyside6 qt6-wayland`). İlk açılışta mevcut ayarlarınızı
-benimser ve donanıma hiçbir şey yazmaz; `sudo ./uninstall.sh` her şeyi geri alır.
-[Kurulumun neyi değiştirdiği](#kurulum-sisteminizde-neyi-değiştirir) aşağıda yazılıdır.
-
-![Boreas: açık temada ana pencere, koyu temada fan eğrileri ve güç limitleri](docs/screenshots.png)
+Sonra uygulama menüsünden **Boreas**'ı açın ya da `boreas` çalıştırın. Gereksinimler
+[Kurulum](#kurulum) bölümünde, [kurulumun neyi değiştirdiği](#kurulum-sisteminizde-neyi-değiştirir) ile
+birlikte yazılıdır; `sudo ./uninstall.sh` her şeyi geri alır.
 
 ## Neden Boreas
 
@@ -252,7 +249,6 @@ yeni dil ekleme için [CONTRIBUTING.tr.md](CONTRIBUTING.tr.md) dosyasına bakın
 - Deneysel Rust motorunda kullanılan GPL-3.0 GPU erişim kontrolü kodu için
   luytan, katkıcıları ve [Cardwire](https://github.com/OpenGamingCollective/cardwire) projesine.
   [Üçüncü taraf bildirimleri](THIRD_PARTY_NOTICES.md).
-
 - ASUS donanımı üzerine yaptıkları açık kaynak çalışma için Serge'ye ve
   [G-Helper](https://github.com/seerge/g-helper) topluluğuna.
 - Linux çekirdek sürücüleri (asus-wmi, asus-armoury) ve asusctl için [asus-linux.org](https://asus-linux.org)
