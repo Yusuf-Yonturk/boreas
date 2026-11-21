@@ -1663,20 +1663,205 @@ class TestSelfUpdate(unittest.TestCase):
                 text = bad if isinstance(bad, str) else json.dumps(bad)
                 self.assertIsNone(update.parse_release(text))
 
-    def test_update_downloads_the_release_tag_not_the_branch(self):
+    def _pkexec(self, code=0):
+        """pkexec and a trusted helper, with subprocess.run recorded instead of run."""
+        import subprocess as sp
+        from boreas import update
+        self.seen = []
+        self.code = code
+
+        def fake_run(cmd, **kw):
+            self.seen.append(cmd)
+            return sp.CompletedProcess(cmd, self.code, "", "boom")
+        no_proxy = {k: v for k, v in os.environ.items() if k.lower() != "https_proxy"}
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.dict(os.environ, no_proxy, clear=True))
+        stack.enter_context(patch.object(update, "_root_tree", lambda folder: True))
+        return stack, [patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"),
+                       patch.object(update, "_root_only", lambda path: True),
+                       patch.object(update.subprocess, "run", fake_run)]
+
+    def _patched(self, code=0):
+        stack, patches = self._pkexec(code)
+        for p in patches:
+            stack.enter_context(p)
+        return stack
+
+    def test_run_update_hands_only_the_version_to_a_root_helper(self):
+        # nothing the user can write runs as root: pkexec starts the installed helper, which
+        # downloads the release into root's own folder
+        from boreas import update
+        with self._patched():
+            self.assertEqual(update.run_update("9.0.0"), "9.0.0")
+        self.assertEqual(self.seen, [["/usr/bin/pkexec", update.PYTHON, "-I", update.HELPER, "9.0.0"]])
+        self.assertEqual(update.HELPER, "/usr/lib/boreas/boreas-update")
+
+    def test_run_update_refuses_a_helper_the_user_could_change(self):
+        from boreas import update
+        stack, patches = self._pkexec()
+        with stack:
+            for p in (patches[0], patches[2]):
+                stack.enter_context(p)
+            with patch.object(update, "_root_only", lambda path: False):
+                with self.assertRaises(RuntimeError):
+                    update.run_update("9.0.0")
+        self.assertEqual(self.seen, [])  # pkexec was never started
+
+    def test_run_update_checks_the_code_the_helper_imports(self):
+        from boreas import update
+        stack, patches = self._pkexec()
+        with stack:
+            for p in patches:
+                stack.enter_context(p)
+            with patch.object(update, "_root_tree", lambda folder: folder != "/usr/lib/boreas/boreas"):
+                with self.assertRaises(RuntimeError):
+                    update.run_update("9.0.0")
+        self.assertEqual(self.seen, [])
+
+    def test_run_update_hands_the_https_proxy_over(self):
+        # pkexec clears the environment; without this a proxy-only network could not update
+        from boreas import update
+        with self._patched():
+            os.environ["https_proxy"] = "http://proxy.lan:3128"
+            update.run_update("9.0.0")
+            os.environ["https_proxy"] = "http://proxy.lan:3128 --x"   # not an address: dropped
+            update.run_update("9.0.0")
+        self.assertEqual(self.seen[0][-3:], ["--proxy", "http://proxy.lan:3128", "9.0.0"])
+        self.assertEqual(self.seen[1][-2:], [update.HELPER, "9.0.0"])
+
+    def _helper(self):
+        import importlib.machinery
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "boreas-update")
+        loader = importlib.machinery.SourceFileLoader("boreas_update_helper", path)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        old = os.umask(0o022)
+        try:
+            loader.exec_module(mod)
+        finally:
+            os.umask(old)
+        return mod
+
+    def test_helper_main_folds_every_failure_into_1(self):
+        from boreas import update
+        helper = self._helper()
+        calls = []
+
+        def install(v):
+            calls.append((v, os.environ.get("https_proxy")))
+            if self.fail_with:
+                raise self.fail_with
+        with patch.object(helper.os, "geteuid", lambda: 0), patch.object(update, "install_release", install), \
+                patch.dict(os.environ, {}, clear=False):
+            for self.fail_with, code in ((None, 0), (RuntimeError("exit code 126"), 1), (ValueError("x"), 1)):
+                with self.subTest(fail=self.fail_with):
+                    self.assertEqual(helper.main(["boreas-update", "9.0.0"]), code)
+            self.fail_with = None
+            self.assertEqual(helper.main(["boreas-update", "--proxy", "http://p:3128", "9.0.0"]), 0)
+            self.assertEqual(calls[-1], ("9.0.0", "http://p:3128"))
+            n = len(calls)
+            for bad in (["--proxy", "file:///etc/passwd", "9.0.0"], ["--proxy", "9.0.0"], ["9.0.0", "9.0.1"]):
+                with self.subTest(bad=bad):
+                    self.assertEqual(helper.main(["boreas-update", *bad]), 1)
+            self.assertEqual(len(calls), n)  # none of those reached the install
+
+    def test_root_only_checks_the_file_and_every_folder_above_it(self):
+        from boreas import update
+        self.assertTrue(update._root_only("/usr/bin/python3") or os.stat("/usr/bin/python3").st_uid != 0)
+        mine = os.path.join(TMP, "boreas-update")
+        with open(mine, "w") as f:
+            f.write("")
+        self.assertFalse(update._root_only(mine))           # owned by the user running the tests
+        self.assertFalse(update._root_only(mine + ".missing"))
+        self.assertFalse(update._root_tree(TMP))             # a folder of the user's
+        self.assertFalse(update._root_tree(TMP + "/missing"))
+
+    def test_run_update_rejects_bad_versions_before_pkexec(self):
+        from boreas import update
+        with self._patched():
+            for bad in ("", "main", "9.0.0/../../heads/main", None, "9.0.0 --x", "\u0669.\u0660"):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    update.run_update(bad)
+        self.assertEqual(self.seen, [])
+
+    def test_run_update_handles_cancel_and_failure(self):
+        from boreas import update
+        with self._patched() as stack:
+            self.code = 126
+            with self.assertRaises(update.UpdateCancelled):
+                update.run_update("9.0.0")
+            self.code = 127
+            with self.assertRaises(update.NoAuthorization):
+                update.run_update("9.0.0")
+            self.code = 1
+            with self.assertRaises(RuntimeError) as e:
+                update.run_update("9.0.0")
+            self.assertEqual(str(e.exception), "boom")  # the helper's last line reaches the user
+
+    def test_install_release_downloads_the_tag_and_runs_its_installer(self):
         import subprocess as sp
         from boreas import update
         good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'},
                              prefix="boreas-9.0.0/")
-        with self._serve(good), patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"), \
-                patch.object(update.subprocess, "run", lambda cmd, **kw: sp.CompletedProcess(cmd, 0, "", "")):
-            update.run_update("9.0.0")
+        ran = []
+
+        def fake_run(cmd, **kw):
+            ran.append((cmd, os.path.exists(cmd[-1])))
+            return sp.CompletedProcess(cmd, self.code, "", "")
+        self.code = 0
+        with self._serve(good), patch.object(update.subprocess, "run", fake_run):
+            update.install_release("9.0.0")
             self.assertEqual(self.requested, ["https://codeload.github.com/Yusuf-Yonturk/boreas/tar.gz/refs/tags/v9.0.0"])
+            self.assertEqual(ran[-1][0][0], "/bin/sh")
+            self.assertTrue(ran[-1][0][-1].endswith("/install.sh") and ran[-1][1])
+            self.assertFalse(os.path.exists(ran[-1][0][-1]))  # the download folder is gone afterwards
             with self.assertRaises(ValueError):   # main moved on: a newer archive than the offered release
-                update.run_update("8.9.0")
-            for bad in ("", "main", "9.0.0/../../heads/main", None):
-                with self.subTest(bad=bad), self.assertRaises(ValueError):
-                    update.run_update(bad)
+                update.install_release("8.9.0")
+            with self.assertRaises(ValueError):   # an archive older than the offered release
+                update.install_release("9.1.0")
+            self.code = 3
+            with self.assertRaises(RuntimeError):
+                update.install_release("9.0.0")
+
+    def test_install_release_keeps_the_download_folder_private(self):
+        import stat
+        import subprocess as sp
+        from boreas import update
+        good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'})
+        modes = []
+
+        def fake_run(cmd, **kw):
+            folder = os.path.dirname(os.path.dirname(cmd[-1]))  # <tmp>/boreas-main/install.sh
+            modes.append(stat.S_IMODE(os.stat(folder).st_mode))
+            return sp.CompletedProcess(cmd, 0, "", "")
+        old = os.umask(0)   # a lax umask must not matter
+        try:
+            with self._serve(good), patch.object(update.subprocess, "run", fake_run):
+                update.install_release("9.0.0")
+        finally:
+            os.umask(old)
+        self.assertEqual(modes, [0o700])
+
+    def test_helper_script_exit_codes_are_not_mistaken_for_pkexec(self):
+        # the helper folds every failure into 1, so 126/127 can only come from pkexec itself
+        import subprocess as sp
+        repo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        lib = tempfile.mkdtemp(prefix="boreas-lib-")   # the installed layout: helper next to the code
+        shutil.copy(os.path.join(repo, "data", "boreas-update"), lib)
+        os.symlink(os.path.join(repo, "boreas"), os.path.join(lib, "boreas"))
+        helper = os.path.join(lib, "boreas-update")
+        try:
+            for args, reason in (([], "usage"), (["not-a-version"], "Not a release version"),
+                                 (["9.0.0"], "must run as root" if os.geteuid() else "")):
+                with self.subTest(args=args):
+                    if not reason:
+                        continue  # running the tests as root would really install
+                    r = sp.run([sys.executable, "-I", helper, *args], capture_output=True, text=True)
+                    self.assertEqual(r.returncode, 1)
+                    self.assertIn(reason, r.stderr.strip().splitlines()[-1])
+        finally:
+            shutil.rmtree(lib)
 
     def test_download_extracts_project(self):
         from boreas import update
@@ -1697,68 +1882,6 @@ class TestSelfUpdate(unittest.TestCase):
                     update.download_source(d, "9.0.0")
             self.assertFalse(os.path.exists(os.path.join(os.path.dirname(d), "evil.sh")))
             shutil.rmtree(d)
-
-    def test_installer_exit_codes_are_not_mistaken_for_pkexec(self):
-        import subprocess as sp
-        from boreas import update
-        script = os.path.join(TMP, "fails.sh")
-        for code in (126, 127, 3):
-            with open(script, "w") as f:
-                f.write(f"exit {code}\n")
-            self.assertEqual(sp.run(["/bin/sh", "-c", update.INSTALL_WRAPPER, script]).returncode, 1, code)
-        with open(script, "w") as f:
-            f.write("exit 0\n")
-        self.assertEqual(sp.run(["/bin/sh", "-c", update.INSTALL_WRAPPER, script]).returncode, 0)
-
-    def test_run_update_uses_pkexec_and_handles_cancel(self):
-        import subprocess as sp
-        from unittest.mock import patch
-        from boreas import update
-        good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'})
-        seen = []
-
-        def fake_run(cmd, **kw):
-            seen.append(cmd)
-            return sp.CompletedProcess(cmd, self.code, "", "boom")
-        with self._serve(good), patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"), \
-                patch.object(update.subprocess, "run", fake_run):
-            self.code = 0
-            self.assertEqual(update.run_update("9.0.0"), "9.0.0")
-            self.assertEqual(seen[-1][:4], ["/usr/bin/pkexec", "/bin/sh", "-c", update.INSTALL_WRAPPER])
-            self.assertTrue(seen[-1][4].endswith("install.sh"))
-            self.code = 126
-            with self.assertRaises(update.UpdateCancelled):
-                update.run_update("9.0.0")
-            self.code = 127
-            with self.assertRaises(update.NoAuthorization):
-                update.run_update("9.0.0")
-            self.code = 1
-            with self.assertRaises(RuntimeError):
-                update.run_update("9.0.0")
-            with self.assertRaises(ValueError):   # an archive older than expected is not installed
-                update.run_update("9.1.0")
-
-    def test_run_update_keeps_the_download_folder_private(self):
-        """Root installs these files; no other local user may reach them while the password dialog is open."""
-        import stat
-        import subprocess as sp
-        from unittest.mock import patch
-        from boreas import update
-        good = self._tarball({"install.sh": b"#!/bin/sh\n", "boreas/__init__.py": b'__version__ = "9.0.0"\n'})
-        modes = []
-
-        def fake_run(cmd, **kw):
-            folder = os.path.dirname(os.path.dirname(cmd[-1]))  # <tmp>/boreas-main/install.sh
-            modes.append(stat.S_IMODE(os.stat(folder).st_mode))
-            return sp.CompletedProcess(cmd, 0, "", "")
-        old = os.umask(0)   # a lax umask must not matter
-        try:
-            with self._serve(good), patch.object(update.shutil, "which", lambda n: "/usr/bin/pkexec"), \
-                    patch.object(update.subprocess, "run", fake_run):
-                update.run_update("9.0.0")
-        finally:
-            os.umask(old)
-        self.assertEqual(modes, [0o700])
 
 
 class TestRobustness(Base):

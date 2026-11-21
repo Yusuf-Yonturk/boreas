@@ -201,8 +201,8 @@ Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 
 Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca yayımlanmış
 son sürümü sorar. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
-Gizle** görünür. **Güncelle** o sürümün kaynağını GitHub'dan indirir, yönetici şifrenizi sorduktan sonra (pkexec)
-kurar ve uygulamayı yeniden başlatır. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
+Gizle** görünür. **Güncelle** önce yönetici şifrenizi sorar (pkexec), ardından Boreas ile kurulan bir yardımcı o
+sürümün kaynağını GitHub'dan root olarak indirip kurar ve uygulama yeniden başlar. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
 
 Elle güncellemek için:
 
