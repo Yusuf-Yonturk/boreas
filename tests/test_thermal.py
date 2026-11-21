@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import os as _os  # noqa: E402
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))  # run from tests/ too
 from boreas import hw, ryzen, thermal
 
 
@@ -303,7 +306,7 @@ class TestController(unittest.TestCase):
     def test_ladder_engages_after_grace_and_dwell(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(88, 14)  # at the floor since t=8, hot since t=1, but 15 s from set_baseline
+        self.step(88, 19)  # all three rails reach the floor at t=10; grace ends at t=20
         self.assertEqual((self.c.stage, self.c.state), (0, "limited"))
         self.step(88)
         self.assertEqual(self.c.stage, 1)
@@ -320,17 +323,49 @@ class TestController(unittest.TestCase):
     def test_ladder_waits_for_the_floor(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(86, 30)  # 2 W/s from 48: the floor is reached at t=20
-        self.assertEqual(self.attrs[self.PL1].current, 10)
-        self.assertEqual(self.c.stage, 1)  # engaged only after 10 s at the floor
+        self.step(86, 29)  # PL1 reaches 10 W at t=19, but the last rail only at t=29
+        self.assertEqual(self.caps(), [10, 10, 10])
+        self.assertEqual(self.c.stage, 0)
+        self.step(86, 9)
+        self.assertEqual(self.c.stage, 0)
+        self.step(86)
+        self.assertEqual(self.c.stage, 1)  # ten continuous seconds with every cap at its floor
         self.assertEqual(len(self.policy_writes), 1)
+
+    def test_ladder_restarts_floor_grace_after_a_cap_rises(self):
+        self.enable_ladder()
+        self.c.start(85)
+        self.step(86, 38)
+        self.attrs[thermal.POWER_ATTRS[-1]].current = 14
+        self.step(86)  # t=39: still above the floor after the cut
+        self.step(86)  # t=40: all caps reach the floor again
+        self.step(86, 9)
+        self.assertEqual(self.c.stage, 0)
+        self.step(86)
+        self.assertEqual(self.c.stage, 1)
+
+    def test_ladder_restarts_floor_grace_after_a_nonhot_tick(self):
+        for temp in (85, 82):
+            with self.subTest(temp=temp):
+                self.c = thermal.Controller()
+                self.now = 0.0
+                for a, watts in zip(self.attrs.values(), (50, 60, 70)):
+                    a.current = watts
+                self.enable_ladder()
+                self.c.start(85)
+                self.step(86, 38)
+                self.step(temp)  # t=39: hold or cool breaks the hot interval
+                self.step(86, 10)  # hot again since t=40
+                self.assertEqual(self.c.stage, 0)
+                self.step(86)
+                self.assertEqual(self.c.stage, 1)
 
     def test_ladder_releases_in_reverse_before_caps_recover(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(88, 30)
+        self.step(88, 35)
         self.assertEqual(self.c.stage, 2)
-        self.step(70, 20)  # cool since t=31: 20 s of dwell before the first release
+        self.step(70, 20)  # cool since t=36: 20 s of dwell before the first release
         self.assertEqual(self.c.stage, 2)
         self.assertEqual(self.attrs[self.PL1].current, 10)  # caps stay down while escalated
         self.step(70)
@@ -371,7 +406,7 @@ class TestController(unittest.TestCase):
     def test_set_baseline_resets_stage_without_touching_caps(self):
         self.enable_ladder("max", "default")
         self.c.start(85)
-        self.step(88, 30)
+        self.step(88, 35)
         self.assertEqual(self.c.stage, 2)
         n = len(self.writes)
         self.c.set_baseline(thermal.Baseline("balanced", "default"))

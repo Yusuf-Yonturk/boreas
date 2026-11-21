@@ -11,7 +11,7 @@ os.environ.setdefault("BOREAS_SOCKET", tempfile.mktemp(prefix="boreas-nosock-"))
 os.environ["BOREAS_NO_UPDATE_CHECK"] = "1"  # the tests stay offline
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import QThreadPool, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
 
 from boreas import i18n  # noqa: E402
@@ -745,6 +745,16 @@ class TestPackagedCopy(unittest.TestCase):
                 w.tray.hide()
 
 
+class TestSetupPrivilegeCall(unittest.TestCase):
+    def test_enable_does_not_time_out_the_password_dialog(self):
+        result = A.setup.subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(A.setup.shutil, "which", return_value="/usr/bin/pkexec"), \
+                patch.object(A.setup.subprocess, "run", return_value=result) as run:
+            self.assertEqual(A.setup.enable(), "")
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/pkexec", A.setup.SETUP, "enable"])
+        self.assertNotIn("timeout", run.call_args.kwargs)
+
+
 class TestOfferSetup(unittest.TestCase):
     """After a package install the window asks before it hands the hardware to Boreas."""
 
@@ -1163,7 +1173,18 @@ class TestAuraZonesAndFollowModes(unittest.TestCase):
         self.assertEqual([c.name() for c in w.zone_colors], ["#ff0000", "#00ff00", "#0000ff", "#0a141e"])
 
 
+def screen_job_inline(fn, cb=None):
+    """run_async stand-in: the kscreen-doctor read runs at once, other jobs are dropped."""
+    if fn is A.screen.internal:
+        cb(fn())
+
+
 class TestScreenRetry(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(A, "run_async", screen_job_inline)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_screen_row_is_looked_for_again_when_kscreen_is_late(self):
         info = {"name": "eDP-1", "current": 240, "rates": {60: 1, 240: 2}}
         later = []
@@ -1188,10 +1209,91 @@ class TestScreenRetry(unittest.TestCase):
             w.tray.hide()
 
 
+class TestScreenOffTheUiThread(unittest.TestCase):
+    def test_kscreen_is_read_in_the_background_and_the_row_built_on_the_ui_thread(self):
+        import threading
+        info = {"name": "eDP-1", "current": 240, "rates": {60: 1, 240: 2}}
+        threads = []
+
+        def internal():
+            threads.append(threading.current_thread())
+            return info
+        with patch.object(A.screen, "internal", internal):
+            w = A.MainWindow()
+            try:
+                self.assertFalse(w.screen_rates)  # the window is up before kscreen-doctor answers
+                for _ in range(500):
+                    if w.screen_rates:
+                        break
+                    QThreadPool.globalInstance().waitForDone(10)
+                    qa.processEvents()
+                self.assertEqual(w.screen_rates, [60, 240])
+                self.assertEqual(len(threads), 1)
+                self.assertIsNot(threads[0], threading.main_thread())
+                self.assertFalse(w.screen_row.isHidden())
+            finally:
+                w.quitting = True
+                w.tray.hide()
+
+
+class TestScreenAfterStatus(unittest.TestCase):
+    def test_auto_rate_is_applied_when_the_display_answers_after_the_first_status(self):
+        info = {"name": "eDP-1", "current": 60, "rates": {60: 1, 240: 2}}
+        jobs = []
+        with patch.object(A, "run_async", lambda fn, cb=None: jobs.append((fn, cb))):
+            w = A.MainWindow()
+            try:
+                w.settings = FakeSettings()
+                w.settings.setValue("screen_auto", True)
+                w.status = dict(TestHeldSelection.STATUS)
+                w.render()                      # first status: on AC, no display rates yet
+                applied = []
+                w._apply_rate = applied.append
+                screen_cb = [cb for fn, cb in jobs if fn is A.screen.internal]
+                self.assertEqual(len(screen_cb), 1)
+                screen_cb[0](info)
+                self.assertEqual(applied, [240])
+            finally:
+                w.quitting = True
+                w.tray.hide()
+
+
+class TestScreenJson(unittest.TestCase):
+    """kscreen-doctor output that does not look as expected means no display row, not a crash."""
+
+    def internal_for(self, stdout):
+        from boreas.gui import screen
+        result = screen.subprocess.CompletedProcess([], 0, stdout, "")
+        with patch.object(screen.shutil, "which", return_value="/usr/bin/kscreen-doctor"), \
+                patch.object(screen.subprocess, "run", return_value=result):
+            return screen.internal()
+
+    def test_malformed_json_returns_none(self):
+        for stdout in ("[]", "null", "42", '"x"', '{"outputs": 5}', '{"outputs": [5]}',
+                       '{"outputs": [{"enabled": true}]}',
+                       '{"outputs": [{"enabled": true, "name": 7}]}',
+                       '{"outputs": [{"enabled": true, "name": "eDP-1", "currentModeId": "1",'
+                       ' "modes": [{"id": "1"}]}]}',
+                       '{"outputs": [{"enabled": true, "name": "eDP-1", "currentModeId": "1",'
+                       ' "modes": [{"id": "1", "size": {"width": 1}, "refreshRate": "fast"}]}]}',
+                       '{"outputs": [{"enabled": true, "name": "eDP-1", "currentModeId": "1",'
+                       ' "modes": 3}]}',
+                       "not json"):
+            with self.subTest(stdout=stdout):
+                self.assertIsNone(self.internal_for(stdout))
+
+    def test_wellformed_json_still_reads(self):
+        stdout = ('{"outputs": [{"enabled": true, "name": "eDP-1", "currentModeId": "2", "modes": ['
+                  '{"id": "1", "size": {"width": 2560, "height": 1600}, "refreshRate": 60.0},'
+                  '{"id": "2", "size": {"width": 2560, "height": 1600}, "refreshRate": 239.97}]}]}')
+        self.assertEqual(self.internal_for(stdout),
+                         {"name": "eDP-1", "current": 240, "rates": {60: "1", 240: "2"}})
+
+
 class TestScreenRate(unittest.TestCase):
     def test_current_rate_selected_on_first_start(self):
         info = {"name": "eDP-1", "current": 240, "rates": {60: 1, 240: 2}}
-        with patch.object(A.screen, "internal", lambda: info):
+        with patch.object(A.screen, "internal", lambda: info), patch.object(A, "run_async", screen_job_inline):
             w = A.MainWindow()
         w.settings = FakeSettings()  # first start: no saved rate
         w.status = dict(TestHeldSelection.STATUS)

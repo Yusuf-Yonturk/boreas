@@ -107,6 +107,7 @@ class Controller:
         self.last_tick = float("-inf")
         self.cool_since: float | None = None
         self.hot_since: float | None = None
+        self.floor_since: float | None = None
         self.over_since: float | None = None
         self.last_recover = float("-inf")
         self.reapply_at: float | None = None
@@ -286,6 +287,7 @@ class Controller:
             self.applied = None
         self.cool_since = None
         self.hot_since = None
+        self.floor_since = None
         self.over_since = None
         self._reset_relapse()
         self.reapply_at = None
@@ -311,6 +313,7 @@ class Controller:
         self.active_backend = backend
         if target != self.target or floor_w != self.floor_w:
             self._reset_relapse()  # what was learned belongs to the old target and floor
+            self.floor_since = None
         self.floor_w = floor_w
         self.user_caps = {n: int(v) for n, v in (user_caps or {}).items() if n in POWER_ATTRS}
         if backend == "smu-bridge":
@@ -347,6 +350,7 @@ class Controller:
         if target != self.target:
             self.cool_since = None
             self.hot_since = None
+            self.floor_since = None
             self.over_since = None
         self.target = target
         self.state = "active"
@@ -357,6 +361,7 @@ class Controller:
         self.state = "error"
         self.cool_since = None
         self.hot_since = None
+        self.floor_since = None
         self.over_since = None
         self.reapply_at = None
 
@@ -460,6 +465,10 @@ class Controller:
                     self.hot_since = now
                 self._move(attrs, -min(CUT_MAX_W, max(CUT_MIN_W, 2 * e)))
                 at_floor = all(hw.get_attr(n).current <= self.floor(n, a) for n, a in attrs.items())
+                if not at_floor:
+                    self.floor_since = None
+                elif self.floor_since is None:
+                    self.floor_since = now
                 if e < FAST_OVER or not at_floor:
                     self.over_since = None
                 elif self.over_since is None:
@@ -469,11 +478,12 @@ class Controller:
                     if (self.over_since is not None and now - self.over_since >= FAST_GRACE
                             and self._boost_rung_ahead()):
                         self._escalate_to_boost(now, temp)
-                    elif (now - self.hot_since >= ESCALATE_GRACE
+                    elif (now - self.floor_since >= ESCALATE_GRACE
                             and now - self.stage_changed_at >= RUNG_DWELL):
                         self._escalate(now, temp)
             elif e <= -COOL_BAND:
                 self.hot_since = None
+                self.floor_since = None
                 self.over_since = None
                 if self.cool_since is None:
                     self.cool_since = now
@@ -487,6 +497,7 @@ class Controller:
                     self._move(attrs, RECOVER_STEP_W)
             else:
                 self.hot_since = None
+                self.floor_since = None
                 self.over_since = None
                 self.cool_since = None
                 self.state = "active"

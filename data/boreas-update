@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -I
 """In-app update, the root side: started by pkexec as
-`python3 -I boreas-update [--proxy URL] <version>`.
+`python3 -I boreas-update [--proxy-stdin] <version>`.
 
 It imports the installed copy next to it (root's files), downloads the release <version> into a
 folder only root can reach and runs that release's install.sh. Every failure exits with 1 and its
@@ -16,18 +16,18 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 def main(argv: list[str]) -> int:
     args = argv[1:]
-    proxy = None
-    if len(args) == 3 and args[0] == "--proxy":
-        proxy, args = args[1], args[2:]
+    proxy_stdin = len(args) == 2 and args[0] == "--proxy-stdin"
+    if proxy_stdin:
+        args = args[1:]
     if len(args) != 1:
-        print("usage: boreas-update [--proxy URL] VERSION", file=sys.stderr)
+        print("usage: boreas-update [--proxy-stdin] VERSION", file=sys.stderr)
         return 1
     try:
         from boreas import update
         update.tarball_url(args[0])  # a release version, nothing else
-        if proxy is not None:
-            if not update.PROXY_RX.fullmatch(proxy):
-                raise ValueError(f"Not a proxy address: {proxy}")
+        if proxy_stdin:
+            # on stdin, not argv: other users can read argv in /proc and pkexec logs it
+            proxy = update.normalize_proxy(sys.stdin.readline(4096).removesuffix("\n"))
             os.environ["https_proxy"] = proxy  # urllib here and curl in install.sh read it
         if os.geteuid() != 0:
             raise PermissionError("boreas-update must run as root (pkexec)")

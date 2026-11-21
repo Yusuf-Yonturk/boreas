@@ -3,6 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import os as _os  # noqa: E402
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))  # run from tests/ too
 from boreas import hw
 
 

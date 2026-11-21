@@ -7,7 +7,7 @@ pkgdesc="Control panel for ASUS ROG and TUF laptops: performance modes, fan curv
 arch=('any')
 url="https://github.com/Yusuf-Yonturk/boreas"
 license=('GPL-3.0-only')
-depends=('python>=3.11' 'pyside6' 'systemd' 'hicolor-icon-theme')
+depends=('python>=3.11' 'pyside6' 'qt6-svg' 'systemd' 'hicolor-icon-theme')
 optdepends=('polkit: enable Boreas from its window instead of a terminal'
             'qt6-wayland: sharp UI on Wayland'
             'kscreen: refresh rate control on KDE Plasma'

@@ -42,7 +42,7 @@ Then open **Boreas** from the application menu, or run `boreas`. The requirement
   mode changes all of it at once: from the window, the tray, Fn+F5, or automatically on battery / AC.
 - **A CPU temperature target.** Pick 75-95 °C for a mode and Boreas steers the power limits towards it,
   with a power floor so a gaming mode does not fall to the firmware's minimum.
-- **Eco without a reboot**, through the optional eBPF GPU backend (experimental).
+- **Eco without a reboot** on laptops with an NVIDIA dGPU, through the optional eBPF GPU backend (experimental).
 - **11 languages, light and dark, in-app updates**, and a layout that is familiar if you come from Windows.
 - **Easy to try, easy to undo.** On first start Boreas adopts your current settings and writes nothing to
   the hardware; `sudo ./uninstall.sh` brings asusd, supergfxd and power-profiles-daemon back.
@@ -78,7 +78,7 @@ whether everything worked or not.
 | NVIDIA Dynamic Boost / temp target | ✓ | asus-armoury `nv_*` |
 | CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury |
 | Auto mode on battery / AC | ✓ | `power_supply` |
-| GPU: Eco / Standard / Optimized / Ultimate | ✓ | `dgpu_disable`, `gpu_mux_mode` |
+| GPU: Eco / Standard / Optimized / Ultimate | ✓ (Eco and Optimized with an NVIDIA dGPU) | `dgpu_disable`, `gpu_mux_mode` |
 | Display 60 Hz / max / Auto | ✓ (KDE) | `kscreen-doctor` |
 | Panel overdrive | ✓ | `panel_overdrive` |
 | Keyboard Aura (static, breathe with two colors, cycle, rainbow, strobe; Star, Rain, Highlight, Laser, Ripple, Comet, Flash on per-key keyboards; zone colors on four-zone keyboards) | ✓ | hidraw, report 0x5D (output report) |
@@ -133,6 +133,7 @@ sudo boreas-setup enable
 
 The package only puts the files in place; `sudo boreas-setup enable` hands the laptop to Boreas (the
 same service changes as the installer, listed below) and `sudo boreas-setup disable` gives it back.
+After `disable`, Boreas stays off through updates until `sudo boreas-setup enable`.
 `sudo pacman -R boreas-git` runs the disable step for you. The package has no in-app update and no eBPF
 GPU helper. To update, run `git pull` in the repository and `makepkg -si` in the same folder again.
 
@@ -232,7 +233,7 @@ does on errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-t
 ## Experimental eBPF GPU engine
 
 An opt-in backend adapted from Cardwire that blocks access to the dGPU instead of removing it, so Eco
-does not need a reboot. The installer puts the helper in place (see [Install](#install)); it stays off
+does not need a reboot. Like Eco itself it needs an NVIDIA dGPU. The installer puts the helper in place (see [Install](#install)); it stays off
 until you switch it on with **eBPF engine (no-reboot Eco) · Experimental** in the **GPU mode** card or:
 
 ```bash

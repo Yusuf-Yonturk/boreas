@@ -1,15 +1,22 @@
 #!/bin/sh
 # Hands the laptop controls to Boreas, or gives them back.
 #   sudo boreas-setup enable    mask asusd / supergfxd / power-profiles-daemon, start boreasd
-#   sudo boreas-setup disable   stop boreasd and bring those services back as they were
+#   sudo boreas-setup enable --keep-off   update files without turning a user-disabled Boreas on
+#   sudo boreas-setup adopt --previous=VERSION   install.sh, before it replaces an installed copy:
+#        takes over the masks of a version that kept no (full) record of them (empty VERSION: none)
+#   sudo boreas-setup disable   restore those services and keep Boreas off across updates
+#   sudo boreas-setup disable --removing   restore recorded services, clear the switched-off marker
+#   sudo boreas-setup disable --legacy     uninstall.sh also restores installs without records
 # install.sh and uninstall.sh run this; a distribution package leaves the first call to the user.
 set -e
 
 UNITS="asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service"
 MASKED="${BOREAS_MASKED_UNITS:-/etc/boreas/masked-units}"
+INSTALLED="${BOREAS_INSTALLED_SETUP:-/usr/bin/boreas-setup}"  # the copy being replaced, if any
+OFF="$(dirname "$MASKED")/switched-off"
 
 usage() {
-    echo "Usage: boreas-setup enable|disable" >&2
+    echo "Usage: boreas-setup enable [--keep-off] | disable [--legacy|--removing] | adopt --previous=VERSION" >&2
     exit 2
 }
 
@@ -20,7 +27,73 @@ need_root() {
     fi
 }
 
+# Released versions that may have left masks without a record: 0.1.6 and older kept none, and
+# 0.1.7 records only what it masks itself, so a copy updated from 0.1.6 to 0.1.7 lacks 0.1.6's.
+before_records() {
+    case "$1" in
+        0.0.*|0.1.[0-7]|0.1.[0-7][!0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Run by install.sh before it replaces an installed copy, so a run stopped halfway (and then
+# repeated, now reading its own version) does not lose this. The masks of such a version are
+# taken over into the record with the states the legacy rule assumes (supergfxd enabled, the
+# others static); every later disable or uninstall then works from the record. A record 0.1.7
+# left lists only what 0.1.7 masked itself, so masks it does not list are added to it (as with
+# uninstall --legacy, a mask the user made before Boreas is then taken as Boreas's too). A
+# record kept by an installed boreas-setup is left as it is.
+adopt() {
+    case "$*" in --previous=*) ;; *) usage ;; esac
+    [ $# -eq 1 ] || usage
+    previous="${1#--previous=}"
+    # 0.1.6 and 0.1.7 shipped no boreas-setup: a copy that has it keeps its own record
+    if [ ! -e "$INSTALLED" ] && before_records "$previous"; then
+        if ! systemctl --version >/dev/null 2>&1; then
+            echo "systemctl does not answer: the services masked by Boreas $previous cannot be" \
+                "recorded. Nothing was changed; run the installer again." >&2
+            exit 1
+        fi
+        lines=""
+        for s in $UNITS; do
+            # a unit already listed keeps the state recorded for it
+            grep -q "^$s " "$MASKED" 2>/dev/null && continue
+            if [ "$(systemctl is-enabled "$s" 2>/dev/null)" = masked ]; then
+                case "$s" in supergfxd.service) was=enabled ;; *) was=static ;; esac
+                lines="$lines$s $was
+"
+            fi
+        done
+        # nothing found (or systemctl did not answer): no record, so a later run can still adopt
+        if [ -n "$lines" ]; then
+            install -d "$(dirname "$MASKED")"
+            # a record whose last line has no newline gets one first
+            if [ -s "$MASKED" ] && [ -n "$(tail -c 1 "$MASKED")" ]; then
+                echo >> "$MASKED"
+            fi
+            printf %s "$lines" >> "$MASKED"
+        fi
+    fi
+}
+
 enable() {
+    keep_off=""
+    for a in "$@"; do
+        case "$a" in
+            --keep-off) keep_off=1 ;;
+            *) usage ;;
+        esac
+    done
+    # The marker counts only next to a record: an uninstall.sh of 0.1.7 removed the record but
+    # knows no marker, so a marker alone does not keep a fresh install off.
+    if [ -n "$keep_off" ] && [ -f "$OFF" ] && [ -f "$MASKED" ]; then
+        systemctl daemon-reload
+        # turned back on by hand (systemctl enable --now): run the new code, change nothing else
+        systemctl try-restart boreasd.service 2>/dev/null || true
+        echo "Boreas is switched off (boreas-setup disable): files updated, services left as they are. Turn it on with: sudo boreas-setup enable"
+        exit 0
+    fi
+    rm -f "$OFF"
     # asusd / supergfxd / power-profiles-daemon write to the same hardware. asusd is a "static"
     # unit and the asusctl udev rule starts it on every boot; power-profiles-daemon is D-Bus
     # activated by the desktop. disable does not help, and through Conflicts= in boreasd they
@@ -28,13 +101,25 @@ enable() {
     # brings back only that: a unit the user had masked or disabled before Boreas stays the
     # way they left it.
     systemctl daemon-reload
+    install -d "$(dirname "$MASKED")"
+    # A fresh hand-over starts with an empty record: what the user masked before stays theirs.
+    # (The masks of an older install were taken over by adopt before its files were replaced.)
+    [ -f "$MASKED" ] || : > "$MASKED"
     for s in $UNITS; do
         was=$(systemctl is-enabled "$s" 2>/dev/null || true)
         if [ -n "$(systemctl list-unit-files --no-legend "$s" 2>/dev/null)" ] && [ "$was" != masked ]; then
             echo "masking: $s"
-            systemctl mask --now "$s"
-            install -d "$(dirname "$MASKED")"
+            # recorded first: a mask that lands but fails to stop the unit is still given back;
+            # a mask that did not land at all is taken out of the record again
             grep -q "^$s " "$MASKED" 2>/dev/null || echo "$s $was" >> "$MASKED"
+            if ! systemctl mask --now "$s"; then
+                if [ "$(systemctl is-enabled "$s" 2>/dev/null)" != masked ]; then
+                    grep -v "^$s " "$MASKED" > "$MASKED.new" || true
+                    mv "$MASKED.new" "$MASKED"
+                fi
+                echo "Could not mask $s. To give back what was masked: boreas-setup disable" >&2
+                exit 1
+            fi
         fi
     done
     systemctl enable boreasd.service
@@ -62,6 +147,8 @@ enable() {
 }
 
 disable() {
+    case "${1:-}" in ''|--legacy|--removing) ;; *) usage ;; esac
+    [ $# -le 1 ] || usage
     systemctl disable --now boreasd.service 2>/dev/null || true
     if [ -f "$MASKED" ]; then
         # Only what enable masked comes back, in the state it had.
@@ -78,9 +165,18 @@ disable() {
                 on="$on $s"
             fi
         done < "$MASKED"
-        rm -f "$MASKED"
+        # The user's disable empties it: the switched-off mark counts only next to a record.
+        # Removing Boreas removes it, so nothing of this install is left to take for later.
+        if [ -n "${1:-}" ]; then rm -f "$MASKED"; else : > "$MASKED"; fi
+    elif [ -z "${1:-}" ]; then
+        # the user's own disable without a record (a package switched on by hand): nothing of
+        # Boreas's to bring back, but an empty record lets the switched-off mark count
+        back="" on=""
+        install -d "$(dirname "$MASKED")"
+        : > "$MASKED"
     elif [ "${1:-}" = "--legacy" ]; then
-        # installed by a version that kept no record: every mask is taken to be ours.
+        # uninstall.sh on an install by 0.1.6 or older that was never updated: no record, so
+        # every mask is taken to be ours.
         # supergfxd is a normal enabled unit; asusd / asus-shutdown come from udev (static);
         # power-profiles-daemon is started by the desktop over D-Bus
         for s in $UNITS; do
@@ -98,10 +194,15 @@ disable() {
     [ -z "$on" ] || systemctl enable $on 2>/dev/null || true
     # shellcheck disable=SC2086
     [ -z "$back" ] || systemctl start $back 2>/dev/null || true
+    case "${1:-}" in
+        --legacy|--removing) rm -f "$OFF" ;;
+        '') install -d "$(dirname "$OFF")"; : > "$OFF" ;;
+    esac
 }
 
 case "${1:-}" in
-    enable) need_root enable; enable ;;
+    enable) need_root enable; shift; enable "$@" ;;
     disable) need_root disable; shift; disable "$@" ;;
+    adopt) need_root adopt; shift; adopt "$@" ;;
     *) usage ;;
 esac

@@ -98,27 +98,81 @@ def state() -> dict:
 
 
 def nvidia_pci_devices() -> list[str]:
-    """PCI functions of the dGPU (GPU + HDMI audio)."""
+    """PCI functions of the built-in NVIDIA dGPU (GPU + HDMI audio). An eGPU (USB4/Thunderbolt,
+    which the kernel marks "removable") is not the dGPU dgpu_disable switches off: it is neither
+    counted nor removed from the bus."""
     out = []
     for d in sorted(glob.glob(hw.p("/sys/bus/pci/devices/*"))):
-        if hw.read(d[len(hw.ROOT):] + "/vendor") == "0x10de":
-            out.append(d[len(hw.ROOT):])
+        device = d[len(hw.ROOT):]
+        if hw.read(device + "/vendor") == "0x10de" and hw.read(device + "/removable") != "removable":
+            out.append(device)
     return out
 
 
-def dgpu_present() -> bool:
+def internal_nvidia_present() -> bool:
+    """An NVIDIA display device built into the laptop is on the bus."""
     return any((hw.read(d + "/class") or "").startswith("0x03") for d in nvidia_pci_devices())
 
 
-def internal_nvidia_present() -> bool:
-    """An NVIDIA display device built into the laptop. An eGPU (USB4/Thunderbolt, which the
-    kernel marks "removable") says nothing about the dGPU dgpu_disable switches off."""
-    return any((hw.read(d + "/class") or "").startswith("0x03") and hw.read(d + "/removable") != "removable"
-               for d in nvidia_pci_devices())
+dgpu_present = internal_nvidia_present
+
+
+def other_dgpu_present() -> bool:
+    """An iGPU plus a non-NVIDIA dGPU are visible among the built-in display devices."""
+    vendors = []
+    for d in glob.glob(hw.p("/sys/bus/pci/devices/*")):
+        device = d[len(hw.ROOT):]
+        if ((hw.read(device + "/class") or "").startswith("0x03") and
+                hw.read(device + "/removable") != "removable"):
+            vendor = hw.read(device + "/vendor")
+            if vendor:  # unreadable (a rescan in progress): not counted
+                vendors.append(vendor)
+    return len(vendors) >= 2 and "0x10de" not in vendors
 
 
 def nvidia_driver_loaded() -> bool:
     return _loaded("nvidia")
+
+
+def nvidia_driver_installed() -> bool:
+    if _loaded("nvidia"):
+        return True
+    try:
+        if _run("modinfo", "-F", "filename", "nvidia"):
+            return True
+    except OSError:
+        pass
+    # After a kernel upgrade without a reboot the running kernel's module directory is gone and
+    # modinfo fails although the driver is installed: look at every installed kernel.
+    for dep in glob.glob(hw.p("/usr/lib/modules/*/modules.dep")):
+        try:
+            with open(dep, errors="replace") as f:
+                if any("/nvidia.ko" in line for line in f):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+# Written when Eco takes a built-in NVIDIA dGPU off the bus. An empty PCIe port proves nothing (a
+# Thunderbolt or M.2 port is empty on most laptops), so only this says a dGPU belongs here.
+DGPU_SEEN = "/etc/boreas/nvidia-dgpu"
+
+
+def _remember_dgpu() -> None:
+    try:
+        os.makedirs(os.path.dirname(hw.p(DGPU_SEEN)), exist_ok=True)
+        with open(hw.p(DGPU_SEEN), "w") as f:
+            f.write("a built-in NVIDIA dGPU was taken off the PCI bus for Eco\n")
+    except OSError:
+        pass  # without it a dGPU that does not come back is reported less precisely, nothing more
+
+
+def nvidia_dgpu_expected() -> bool:
+    """A built-in NVIDIA dGPU belongs on the bus although none is visible now (it has not come
+    back after leaving Eco): Boreas took one off the bus for Eco before, no other dGPU is built
+    in and the NVIDIA driver is installed. The file checks come first, modinfo only after them."""
+    return os.path.exists(hw.p(DGPU_SEEN)) and not other_dgpu_present() and nvidia_driver_installed()
 
 
 def eco_capable(dgpu_disable: int | None) -> bool:
@@ -152,7 +206,7 @@ def _loaded(module: str) -> bool:
 
 def _comm(pid: str) -> str:
     try:
-        with open(f"{PROC}/{pid}/comm") as f:
+        with open(f"{PROC}/{pid}/comm", errors="replace") as f:
             return f.read().strip()
     except OSError:  # the process exited in the meantime
         return "?"
@@ -240,6 +294,8 @@ def _detach_dgpu() -> None:
             _run("modprobe", "nvidia_drm")
             restore()
             raise GpuBusy([f"module {m} could not be unloaded"], hard=True)
+    if internal_nvidia_present():
+        _remember_dgpu()
     for d in reversed(nvidia_pci_devices()):
         try:
             hw.write(d + "/remove", 1)
@@ -256,14 +312,14 @@ def _attach_dgpu(tries: int = 5) -> None:
         if present:
             break
         time.sleep(1)
-    # the driver is loaded either way: it binds on its own if the dGPU shows up late
-    nvidia = _run("modprobe", "nvidia_drm")
+    # Try to load the driver even if the dGPU is late; it may refuse to load without a device.
+    _run("modprobe", "nvidia_drm")
     for svc in NV_SERVICES:
         if subprocess.run(["systemctl", "is-enabled", svc], capture_output=True).returncode == 0:
             _run("systemctl", "start", svc)
-    # dgpu_present() only knows NVIDIA cards: without the NVIDIA driver (an AMD dGPU) there is
-    # nothing to check, and leaving Eco stays as it was
-    if nvidia and not present:
+    # dgpu_present() only knows built-in NVIDIA cards. A visible non-NVIDIA dGPU has already
+    # returned, even if an NVIDIA driver happens to be installed on disk.
+    if not present and nvidia_dgpu_expected():
         raise DgpuSlow(f"the dGPU did not appear on the PCI bus within {tries} s")
 
 
@@ -318,6 +374,14 @@ def set_eco(enabled: bool) -> None:
             return  # a MUX-only device: without dgpu_disable the dGPU is never off
         raise ValueError("Eco mode is not supported")
     if bool(cur.current) == enabled:
+        if not enabled and not internal_nvidia_present() and nvidia_dgpu_expected():
+            # Standard already, but the dGPU did not come back after Eco (DgpuSlow): look again,
+            # with the empty ports awake as when leaving Eco
+            saved = _wake_bridges()
+            try:
+                _attach_dgpu()
+            finally:
+                _restore_bridges(saved)
         return
     if enabled and not eco_capable(cur.current):
         # a Radeon dGPU: dgpu_disable=1 with amdgpu still bound can freeze the system
