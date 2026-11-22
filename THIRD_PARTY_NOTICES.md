@@ -105,3 +105,15 @@ License: GNU General Public License, version 2 (GPL-2.0).
 
 No source files are vendored. Its CPU detection (`smu.c`) and MP1 mailbox
 addresses were used as an independent check of the table in `smu/boreas_smu.c`.
+
+## linuxhw/ACPI (BIOS table survey)
+
+Source: https://github.com/linuxhw/ACPI
+Reference commit: d6d30c6ef6f45506567f25a302c64f009d8f5f4e
+Original author/maintainer: Linux Hardware Project and the people who sent hardware probes.
+License: Creative Commons Attribution 4.0 (CC-BY-4.0).
+
+No tables or other files are included in this repository. Its decoded ACPI tables of
+ASUS laptops were searched for the `\_SB.AM00` mutex and the MP1 mailbox addresses on
+2026-11-22; the findings are summarised in `docs/cpu-smu.md` ("Which ASUS BIOSes carry
+the lock").

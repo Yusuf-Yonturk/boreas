@@ -158,7 +158,7 @@ class Controller:
             reason = "this CPU is not in the supported list"
         else:
             reason = f"the boreas_smu module is not loaded ({ryzen.DEVICE} missing)"
-        return f"SMU temperature ceiling switched on ({ryzen.OPT_IN_FILE}) but not usable: {reason}; using power-feedback"
+        return f"SMU temperature ceiling enabled ({ryzen.OPT_IN_FILE}) but not usable: {reason}; using power-feedback"
 
     @staticmethod
     def attributes() -> dict:

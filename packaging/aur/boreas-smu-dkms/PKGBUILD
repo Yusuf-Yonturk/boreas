@@ -1,0 +1,26 @@
+# Maintainer: Yusuf Yontürk <140352702+Yusuf-Yonturk@users.noreply.github.com>
+
+pkgname=boreas-smu-dkms
+_modname=boreas-smu
+_modver=1  # PACKAGE_VERSION in smu/dkms.conf
+pkgver=0.1.9
+pkgrel=1
+pkgdesc="Experimental: Boreas hands a mode's CPU temperature target to the Ryzen CPU itself (SMU kernel module, DKMS)"
+arch=('x86_64')
+url="https://github.com/Yusuf-Yonturk/boreas"
+license=('GPL-2.0-only')
+depends=('boreas' 'dkms')
+install=boreas-smu-dkms.install
+source=("boreas-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('e725c5f0f78bd7ef02762af634ae304454bf75253f42793c8c10a6827da59842')
+
+package() {
+    cd "boreas-$pkgver/smu"
+    # the dkms package's own pacman hook builds the module for every installed kernel with headers
+    install -Dm644 boreas_smu.c Makefile dkms.conf -t "$pkgdir/usr/src/$_modname-$_modver/"
+    install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/boreas-smu.conf" <<<'boreas_smu'
+    # the opt-in boreasd reads; without this file it keeps the power-feedback controller
+    install -dm755 "$pkgdir/etc/boreas"
+    : > "$pkgdir/etc/boreas/smu"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}

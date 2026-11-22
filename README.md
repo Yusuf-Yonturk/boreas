@@ -216,10 +216,23 @@ controls.
 
 **Experimental: the CPU's own ceiling.** On many AMD Ryzen laptops the target can instead be handed to
 the CPU itself, the way G-Helper does on Windows; the CPU then holds it within milliseconds. This needs a
-small kernel module that is built with DKMS (`dkms` and your kernel's headers must be installed):
+small kernel module that is built with DKMS. The installer switches it on by default on every Ryzen family
+listed below; `dkms` and your kernel's headers must be installed for the module to build. The command it
+sends is the one G-Helper and RyzenAdj send. Switching it off is saved in `/etc/boreas/smu-off`, so later
+installs and updates leave it off:
 
 ```bash
-sudo BOREAS_SMU=1 ./install.sh   # switch it on (BOREAS_SMU=0 switches it off again)
+sudo BOREAS_SMU=0 ./install.sh # switch it off and keep it off across installs and updates
+sudo BOREAS_SMU=1 ./install.sh # switch it on again
+```
+
+Installed as a package (see above)? Then the module is a package of its own, removed again with
+`sudo pacman -R boreas-smu-dkms`:
+
+```bash
+cd boreas/packaging/aur/boreas-smu-dkms
+makepkg -si
+sudo modprobe boreas_smu && sudo systemctl try-restart boreasd   # or reboot
 ```
 
 Boreas recognises the CPU family by itself (Ryzen 2000-3000, 4000-5000, 6000-8000 mobile, 7045HX-9055HX,

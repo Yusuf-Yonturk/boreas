@@ -8,11 +8,201 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from boreas import hw, ryzen
 
 REPO = Path(__file__).resolve().parents[1]
 FAKE_HELPER = b'#!/bin/sh\necho fake helper\n'
+
+
+class SmuInstallChoiceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        root_patch = patch.object(hw, 'ROOT', str(self.root))
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+        self.cpuinfo = self.root / 'proc/cpuinfo'
+        self.cpuinfo.parent.mkdir()
+        self.cpu()
+        self.settings = self.root / 'etc/boreas'
+        self.on = self.settings / 'smu'
+        self.off = self.settings / 'smu-off'
+
+    def cpu(self, vendor='AuthenticAMD', family=0x19, model=0x61):
+        self.cpuinfo.write_text(f'vendor_id : {vendor}\ncpu family : {family}\nmodel : {model}\n')
+
+    def saved(self, *names):
+        self.settings.mkdir(parents=True, exist_ok=True)
+        for path in self.settings.iterdir():
+            path.unlink()
+        for name in names:
+            (self.settings / name).write_text(f'saved {name}\n')
+
+    def snapshot(self):
+        if not self.settings.exists():
+            return None
+        return {p.name: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_ino)
+                for p in self.settings.iterdir()}
+
+    def test_known_family_defaults_on(self):
+        for value in (None, ''):
+            with self.subTest(env_value=value):
+                self.on.unlink(missing_ok=True)
+                line = ryzen.install_choice(value)
+                self.assertTrue(self.on.is_file())
+                self.assertFalse(self.off.exists())
+                self.assertIn('on by default for Dragon Range / Raphael', line)
+                self.assertEqual(self.on.read_text(), ryzen.CHOICE_DEFAULT)
+                self.assertIn('BOREAS_SMU=0 switches it off', line)
+
+    def test_saved_choices_are_untouched(self):
+        for names in (('smu',), ('smu-off',), ('smu', 'smu-off')):
+            for value in (None, ''):
+                with self.subTest(files=names, env_value=value):
+                    self.saved(*names)
+                    before = self.snapshot()
+                    self.assertEqual(ryzen.install_choice(value), '')
+                    self.assertEqual(self.snapshot(), before)
+
+    def test_every_known_family_defaults_on(self):
+        # verified only records what was measured; the module's own table decides the default
+        for (family, model), known in ryzen.FAMILIES.items():
+            with self.subTest(family=hex(family), model=hex(model)):
+                shutil.rmtree(self.settings, ignore_errors=True)
+                self.cpu(family=family, model=model)
+                line = ryzen.install_choice(None)
+                self.assertTrue(self.on.is_file())
+                self.assertFalse(self.off.exists())
+                self.assertIn(f'on by default for {known.name}', line)
+
+    def test_explicit_off_holds_on_an_unverified_family(self):
+        self.cpu(model=0x74)  # Phoenix
+        self.saved('smu-off')
+        before = self.snapshot()
+        self.assertEqual(ryzen.install_choice(None), '')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_intel_unknown_or_missing_cpu_stays_off(self):
+        for vendor, family, model in (('GenuineIntel', 6, 183),
+                                      ('GenuineIntel', 0x19, 0x61),
+                                      ('AuthenticAMD', 0x19, 0x21)):
+            with self.subTest(vendor=vendor, family=family, model=model):
+                self.cpu(vendor, family, model)
+                self.assertEqual(ryzen.install_choice(None), '')
+                self.assertFalse(self.settings.exists())
+        self.cpuinfo.write_text('vendor_id : AuthenticAMD\ncpu family : invalid\nmodel : 97\n')
+        self.assertEqual(ryzen.install_choice(None), '')
+        self.assertFalse(self.settings.exists())
+        self.cpuinfo.unlink()
+        self.assertEqual(ryzen.install_choice(None), '')
+        self.assertFalse(self.settings.exists())
+
+    def test_explicit_off_is_persistent(self):
+        self.saved('smu')
+        self.assertIn('CPU temperature ceiling: off', ryzen.install_choice('0'))
+        self.assertFalse(self.on.exists())
+        self.assertTrue(self.off.is_file())
+        before = self.snapshot()
+        self.assertEqual(ryzen.install_choice(None), '')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_explicit_on_replaces_off_on_unverified_family(self):
+        self.cpu(model=0x74)
+        self.saved('smu-off')
+        self.assertIn('CPU temperature ceiling: on (requested by user)', ryzen.install_choice('1'))
+        self.assertEqual(self.on.read_text(), ryzen.CHOICE_USER)
+        self.assertFalse(self.off.exists())
+        before = self.snapshot()
+        self.assertEqual(ryzen.install_choice(None), '')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_explicit_choices_create_settings_directory(self):
+        for value, chosen, removed in (('0', self.off, self.on), ('1', self.on, self.off)):
+            with self.subTest(env_value=value):
+                shutil.rmtree(self.settings, ignore_errors=True)
+                ryzen.install_choice(value)
+                self.assertTrue(chosen.is_file())
+                self.assertFalse(removed.exists())
+
+    def test_invalid_value_warns_without_changing_files(self):
+        for names in (None, ('smu',), ('smu-off',), ('smu', 'smu-off')):
+            for value in ('yes', '2', ' 1', '0 ', ' '):
+                with self.subTest(files=names, env_value=value):
+                    if names is not None:
+                        self.saved(*names)
+                    before = self.snapshot()
+                    line = ryzen.install_choice(value)
+                    self.assertTrue(line.startswith('Warning:'), line)
+                    self.assertIn('BOREAS_SMU', line)
+                    self.assertEqual(self.snapshot(), before)
+
+    def test_only_dragon_range_is_verified(self):
+        self.assertTrue(ryzen.FAMILIES[(0x19, 0x61)].verified)
+        self.assertEqual({pair for pair, family in ryzen.FAMILIES.items() if family.verified},
+                         {(0x19, 0x61)})
+
+    def test_check_script_knows_the_same_families(self):
+        # tools/smu-check.sh runs without Boreas installed, so it carries its own copy of the table
+        text = (REPO / 'tools/smu-check.sh').read_text()
+        body = text.split("<<'EOF'\n", 1)[1].split('\ninfo = {}', 1)[0]
+        ns = {}
+        exec(body.replace('tables = sys.argv[1]', 'tables = "."'), ns)
+        self.assertEqual({pair: entry[0] for pair, entry in ns['FAMILIES'].items()},
+                         {pair: family.name for pair, family in ryzen.FAMILIES.items()})
+        self.assertEqual({entry[0] for entry in ns['VERIFIED']},
+                         {family.name for family in ryzen.FAMILIES.values() if family.verified})
+
+    def test_installer_calls_choice_before_smu_file_check(self):
+        script = (REPO / 'install.sh').read_text()
+        call = '(cd "$SRC" && python3 -m boreas.ryzen install-choice) ||'
+        self.assertNotIn('case "${BOREAS_SMU:-}"', script)
+        self.assertIn(call, script)
+        self.assertLess(script.index('systemctl stop boreasd.service'), script.index(call))
+        self.assertLess(script.index(call), script.index('if [ -f /etc/boreas/smu ]; then'))
+        self.assertLess(script.index('[ "$1" = "--files-only" ] && exit 0'), script.index(call))
+
+    def test_installer_keeps_going_when_the_choice_fails(self):
+        # boreasd is stopped just before: under set -e a failed call would leave it stopped
+        script = (REPO / 'install.sh').read_text()
+        call = script.index('(cd "$SRC" && python3 -m boreas.ryzen install-choice) ||')
+        self.assertIn('echo "Warning: the CPU temperature ceiling choice could not be saved',
+                      script[call:script.index('if [ -f /etc/boreas/smu ]; then')])
+
+    def test_refused_module_is_not_loaded_at_boot(self):
+        script = (REPO / 'install.sh').read_text()
+        refused = script[script.index('if modprobe boreas_smu'):script.index('Warning: boreas_smu did not load')]
+        self.assertIn('rm -f /etc/modules-load.d/boreas-smu.conf', refused)
+
+    def test_missing_dkms_warning_explains_how_to_switch_off(self):
+        script = (REPO / 'install.sh').read_text()
+        warning = re.search(r'echo "Warning: the CPU temperature ceiling needs dkms.*?(?=\n    else)',
+                            script, re.S)
+        self.assertIsNotNone(warning)
+        self.assertIn('BOREAS_SMU=0 switches it off', warning.group())
+
+    def test_cli_reads_environment_and_preserves_choice_without_it(self):
+        env = dict(os.environ, BOREAS_SYSFS_ROOT=str(self.root), PYTHONPATH=str(REPO))
+        for value, chosen in (('0', self.off), (None, self.off), ('1', self.on), (None, self.on)):
+            with self.subTest(env_value=value, chosen=chosen.name):
+                env.pop('BOREAS_SMU', None)
+                if value is not None:
+                    env['BOREAS_SMU'] = value
+                result = subprocess.run([sys.executable, '-m', 'boreas.ryzen', 'install-choice'],
+                                        cwd=self.root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
+                self.assertTrue(chosen.is_file())
+                self.assertFalse((self.on if chosen == self.off else self.off).exists())
+                if value is None:
+                    self.assertEqual(result.stdout, '')
+                else:
+                    self.assertIn('CPU temperature ceiling:', result.stdout)
 
 
 class InstallTestCase(unittest.TestCase):

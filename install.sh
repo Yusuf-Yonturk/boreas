@@ -204,9 +204,9 @@ if [ -n "$fl" ] && command -v fc-list >/dev/null && [ -z "$(fc-list :lang="$fl" 
 fi
 
 # Optional: the CPU's own temperature ceiling through the boreas_smu kernel module (smu/, DKMS).
-# BOREAS_SMU=1 switches it on, BOREAS_SMU=0 off; the choice is the file /etc/boreas/smu, so later
-# installs and the in-app update (which has no environment) keep it. A failed build or a CPU the
-# module does not support is only a warning: the service then keeps using power-feedback.
+# BOREAS_SMU=1 switches it on, BOREAS_SMU=0 off; /etc/boreas/smu and smu-off keep the choice across
+# installs and the in-app update (which has no environment). Without a choice, every CPU family the
+# module knows defaults on. A failed build or unsupported CPU is only a warning: power-feedback stays.
 SMU_PKG=boreas-smu
 SMU_VER=1
 smu_off() {
@@ -225,15 +225,16 @@ if systemctl is-active --quiet boreasd.service 2>/dev/null; then
     was_running="--was-running"
 fi
 systemctl stop boreasd.service 2>/dev/null || true
-case "${BOREAS_SMU:-}" in
-    1) install -d /etc/boreas && : > /etc/boreas/smu ;;
-    0) rm -f /etc/boreas/smu ;;
-esac
+# from $SRC: python -m puts the current directory first on sys.path, so a boreas/ folder where the
+# installer was started cannot stand in for these sources. A failure keeps the saved choice and the
+# install goes on, so boreasd is started again below.
+(cd "$SRC" && python3 -m boreas.ryzen install-choice) ||
+    echo "Warning: the CPU temperature ceiling choice could not be saved; keeping the one in /etc/boreas"
 if [ -f /etc/boreas/smu ]; then
     smu_off  # a rebuild from these sources, also after an update of the module
     if ! command -v dkms >/dev/null 2>&1; then
         echo "Warning: the CPU temperature ceiling needs dkms and the kernel headers" \
-            "(Arch/CachyOS: sudo pacman -S dkms linux-headers); using power-feedback"
+            "(Arch/CachyOS: sudo pacman -S dkms linux-headers); using power-feedback; BOREAS_SMU=0 switches it off"
     else
         install -d "/usr/src/$SMU_PKG-$SMU_VER"
         install -m644 "$SRC/smu/boreas_smu.c" "$SRC/smu/Makefile" "$SRC/smu/dkms.conf" "/usr/src/$SMU_PKG-$SMU_VER/"
@@ -258,6 +259,11 @@ if [ -f /etc/boreas/smu ]; then
             if modprobe boreas_smu 2>/dev/null; then
                 echo "CPU temperature ceiling: on (kernel module boreas_smu)"
             else
+                # built for the running kernel and still refused: this CPU or BIOS (no \_SB.AM00) is not
+                # one it serves, so it is not loaded at every boot either
+                case " $smu_built " in
+                    *" $(uname -r) "*) rm -f /etc/modules-load.d/boreas-smu.conf ;;
+                esac
                 echo "Warning: boreas_smu did not load (unsupported CPU or BIOS, see: journalctl -k -g boreas_smu);" \
                     "using power-feedback"
             fi

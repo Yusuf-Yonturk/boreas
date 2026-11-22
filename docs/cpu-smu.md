@@ -7,14 +7,34 @@ Windows. This page says how, on which CPUs, and what was checked.
 
 ## How it is switched on
 
+With no saved choice, `install.sh` switches the ceiling on by default for every family in the table
+below. The command and mailbox are the ones G-Helper, RyzenAdj, PawnIO and ryzen_smu send on these
+families; G-Helper and PawnIO send them without the BIOS lock this module holds. Whether the module
+loads is decided on the machine (CPU family, `\_SB.AM00`), and any SMU fault falls back to
+power-feedback. The module needs `dkms` and your kernel's headers to build; without them the
+installer warns and Boreas uses power-feedback.
+
 ```bash
-sudo BOREAS_SMU=1 ./install.sh   # BOREAS_SMU=0 switches it off again
+sudo BOREAS_SMU=0 ./install.sh # switch it off persistently
+sudo BOREAS_SMU=1 ./install.sh # switch it on again
 ```
 
-The installer writes `/etc/boreas/smu` (the choice, kept by later installs and the in-app update),
-builds the kernel module `boreas_smu` from `smu/` with DKMS for every installed kernel that has its
-headers, and loads it at boot (`/etc/modules-load.d/boreas-smu.conf`). `boreasd` then uses the
-module when all of these hold:
+`/etc/boreas/smu` means enabled; it holds `default` when the installer chose it and `user` after
+`BOREAS_SMU=1`, so a later version can take its own default back without overriding a user.
+`/etc/boreas/smu-off` records an explicit choice to keep it off.
+`BOREAS_SMU=1` creates `smu` and removes `smu-off`; `BOREAS_SMU=0` removes `smu` and creates
+`smu-off`. With `BOREAS_SMU` unset or empty, either existing file is left untouched, so later
+installs and the in-app update keep the choice even though pkexec does not carry the environment.
+An invalid value warns without changing either file. Uninstalling also keeps these choices.
+
+A copy installed as a package (`packaging/aur/boreas`) takes the package
+`packaging/aur/boreas-smu-dkms` instead. It carries the same module source, `/etc/boreas/smu` and
+`/usr/lib/modules-load.d/boreas-smu.conf`; the `dkms` package's pacman hook builds the module.
+Package builds do not select a default based on the build machine's CPU.
+
+When `/etc/boreas/smu` exists, the installer builds the kernel module `boreas_smu` from `smu/`
+with DKMS for every installed kernel that has its headers, and loads it at boot
+(`/etc/modules-load.d/boreas-smu.conf`). `boreasd` then uses the module when all of these hold:
 
 - `/etc/boreas/smu` exists;
 - the CPU family and model are in the table below (`boreas/ryzen.py` and `smu/boreas_smu.c` hold
@@ -48,8 +68,14 @@ Left out:
 - **Intel:** has no SMU.
 
 The 30-second re-apply follows a G-Helper code comment (those families "silently reset" the limit
-under load); it has not been measured here. Only Dragon Range has been run on hardware so far; every
-other family is experimental until someone reports it.
+under load); it has not been measured here. Only Dragon Range has been run on hardware with this
+module so far (`verified` in `boreas/ryzen.py`); the other families rest on the sources above and on
+G-Helper reports. The installer defaults every family in the table on; a report from another family
+is welcome but not required.
+
+G-Helper re-applies the ceiling 5 s after a mode change on Dragon Range and Fire Range
+(`IsReapplyRyzenRequired`), and the same [app/Mode/ModeControl.cs](https://github.com/seerge/g-helper/blob/main/app/Mode/ModeControl.cs)
+contains the comment and 30 s re-apply for Cezanne, Rembrandt, Phoenix and Hawk Point.
 
 ## Measured on a ROG Strix G713PV (Dragon Range, BIOS 336), 2026-11-21
 
@@ -77,6 +103,31 @@ wake-up, with the fans still stopped and the desktop waking up, Tctl reached 90 
 ceiling was back; the gap is the time between the kernel's resume and `boreasctl reapply`.
 
 No SMU, ACPI or mailbox error appeared in the kernel log in any of these runs.
+
+## Help test it
+
+Whether a laptop can use the ceiling at all is a 10-second check that installs nothing (it reads the
+CPU family and looks for `\_SB.AM00` in the BIOS tables):
+
+```bash
+curl -LO https://raw.githubusercontent.com/Yusuf-Yonturk/boreas/main/tools/smu-check.sh
+sudo sh smu-check.sh
+```
+
+Only the ROG Strix G713PV (Dragon Range) has been measured. A report from any other Ryzen laptop in
+the table above helps, also one where the module does not load. On AC power (Arch and CachyOS; on
+another distribution install `dkms`, `stress-ng` and your kernel's headers with its package manager):
+
+```bash
+sudo pacman -S --needed dkms stress-ng linux-headers   # the headers of your kernel, e.g. linux-lts-headers
+git clone https://github.com/Yusuf-Yonturk/boreas.git && cd boreas
+sudo BOREAS_SMU=1 ./install.sh   # also switches it back on if it was switched off before
+tools/smu-report.sh        # about 2 minutes, every thread under load for 90 s
+```
+
+The script changes no setting. It writes `boreas-smu-report.md`; paste it into a new issue with the
+"CPU temperature ceiling (SMU) test" form. To switch the ceiling off again: `sudo BOREAS_SMU=0 ./install.sh`.
+To remove Boreas: `sudo ./uninstall.sh`.
 
 ## The BIOS shares the mailbox
 
@@ -110,6 +161,30 @@ Hence the module's two rules:
 2. It holds the BIOS's `\_SB.AM00` (`acpi_acquire_mutex`, 500 ms) for every message, so the BIOS and
    Boreas never write the mailbox at the same time. A BIOS without that mutex does not get the
    module at all.
+
+### Which ASUS BIOSes carry the lock
+
+The [linuxhw/ACPI decoded tables](https://github.com/linuxhw/ACPI), surveyed on 2026-11-22,
+show `Mutex (AM00)` on these models. CPU families below are inferred from the model names;
+the BIOS versions of these dumps are unknown. Finding the lock is not a hardware ceiling test.
+
+| Models | Inferred CPU family | SSDT / MP1 addresses |
+|---|---|---|
+| ROG Strix G713PV; TUF A16 FA607PV | Dragon Range | `Vortex`; `0x03B10530` |
+| TUF A15 FA507XV | Phoenix | `AmdTable`; `0x03B10528` / `0x03B10578` |
+| Vivobook S16 M5606UA | Hawk Point / Phoenix | `AmdTable`; `0x03B10528` / `0x03B10578` |
+| TUF A15 FA506NF; TUF A16 FA617NSR | Rembrandt-R | `AmdTable`; `0x03B10528` / `0x03B10578` |
+| Zenbook S16 UM5606WA | Strix Point | MP1 `0x03B10928` / `0x03B10978` |
+
+`AM00` is absent on ROG Strix G513RM (Rembrandt), ROG Strix G513QY and TUF A17 FA706QR
+(Cezanne), TUF A17 FA706IHRB (Renoir), TUF FX505DU and Zephyrus GA502DU (Picasso), and
+Zenbook Flip Q508UG (Lucienne). The module does not load on those BIOSes, so power-feedback
+remains in use. These older BIOSes access the same MP1 addresses under differently named mutexes
+such as `NAPM` and `TMUT`.
+
+The BIOS method using `AM00` is `A018` on Dragon Range and has other names on other families
+(for example `A127`). The module checks only the mutex name; the order of operations in those
+other families' methods has not been decoded.
 
 ## History: the raw userspace transport (removed)
 

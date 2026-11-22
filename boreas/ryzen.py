@@ -18,9 +18,14 @@ from . import hw
 
 CPUINFO = "/proc/cpuinfo"
 DEVICE = "/dev/boreas-smu"
-# the user's opt-in, written by `BOREAS_SMU=1 ./install.sh`; a file because pkexec (in-app update)
-# and systemd do not carry the installer's environment
+# The enabled choice, explicit or the default on a CPU family the module knows. Files keep the
+# choice across pkexec (in-app update) and systemd, which do not carry the installer's environment.
+# smu-off is an explicit "no" that the default does not override.
 OPT_IN_FILE = "/etc/boreas/smu"
+OPT_OUT_FILE = "/etc/boreas/smu-off"
+# what OPT_IN_FILE holds: a later version can tell its own default from a user's choice and take
+# the default back for a family that turns out to misbehave
+CHOICE_DEFAULT, CHOICE_USER = "default\n", "user\n"
 ABI = 2
 IOCTL = 0xC0204274  # _IOWR('B', 0x74, struct boreas_smu_req), 32 bytes
 OP_VERSION, OP_SET_TCTL = 1, 2
@@ -40,14 +45,15 @@ class Family:
     # Families that silently drop the ceiling under load (G-Helper re-applies every 30 s);
     # a G-Helper code comment is the only source, to be replaced by a measurement.
     reapply: bool = False
-    # tested on real hardware with this module; the others are experimental
+    # run on hardware with this module (docs/cpu-smu.md); every family in FAMILIES is on by
+    # default, this only records what has been measured
     verified: bool = False
 
 
 _RAVEN = Family("Raven Ridge / Picasso / Dali")
 _RENOIR = Family("Renoir / Lucienne / Cezanne", reapply=True)
 _MOBILE = Family("Van Gogh / Mendocino / Rembrandt / Phoenix / Hawk Point", reapply=True)
-_DRAGON = Family("Dragon Range / Raphael", verified=False)
+_DRAGON = Family("Dragon Range / Raphael", verified=True)
 _FIRE = Family("Fire Range / Granite Ridge")
 _STRIX = Family("Strix Point / Krackan Point / Strix Halo")
 
@@ -90,8 +96,39 @@ def detect() -> Family | None:
         return None
 
 
+def install_choice(env_value: str | None) -> str:
+    """Save an explicit choice, or switch a CPU family the module knows on when nothing is saved."""
+    on, off = hw.p(OPT_IN_FILE), hw.p(OPT_OUT_FILE)
+    if env_value in (None, ""):
+        if os.path.exists(on) or os.path.exists(off):
+            return ""
+        family = detect()
+        if family is None:
+            return ""
+        enabled = True
+        message = (f"CPU temperature ceiling: on by default for {family.name} "
+                   "(BOREAS_SMU=0 switches it off)")
+    elif env_value == "1":
+        enabled = True
+        message = "CPU temperature ceiling: on (requested by user)"
+    elif env_value == "0":
+        enabled = False
+        message = "CPU temperature ceiling: off (requested by user)"
+    else:
+        return "Warning: BOREAS_SMU must be 0, 1 or empty; keeping the saved CPU temperature ceiling choice"
+
+    os.makedirs(os.path.dirname(on), exist_ok=True)
+    with open(on if enabled else off, "w") as f:
+        f.write(CHOICE_DEFAULT if env_value in (None, "") else CHOICE_USER)
+    try:
+        os.unlink(off if enabled else on)
+    except FileNotFoundError:
+        pass
+    return message
+
+
 class BridgeSmu:
-    """The boreas_smu kernel module (/dev/boreas-smu), used only when the user opted in.
+    """The boreas_smu kernel module (/dev/boreas-smu), used only when OPT_IN_FILE exists.
 
     A version or command reply does not prove that the ceiling holds physically; that is
     measured. Any fault latches for the life of the service and the caller falls back to
@@ -178,3 +215,14 @@ class BridgeSmu:
             raise self._fault(
                 f"The SMU rejected the command ({STATUS_NAMES.get(status, hex(status))})"
             )
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["install-choice"])
+    parser.parse_args()
+    line = install_choice(os.environ.get("BOREAS_SMU"))
+    if line:
+        print(line)
