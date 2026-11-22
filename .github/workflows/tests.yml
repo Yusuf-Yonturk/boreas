@@ -132,10 +132,15 @@ jobs:
         run: |
           python3 tools/release-notes.py "$GITHUB_REF_NAME" > notes.md
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
-              gh release create "$GITHUB_REF_NAME" --verify-tag --title "Boreas ${GITHUB_REF_NAME#v}" --notes-file notes.md
+              gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Boreas ${GITHUB_REF_NAME#v}" --notes-file notes.md
           # a release made by hand right after the tag has no notes yet: give it this version's changelog
           body=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body)
           case "$body" in
               ""|"Release notes: CHANGELOG.md") gh release edit "$GITHUB_REF_NAME" --notes-file notes.md ;;
           esac
           gh release upload "$GITHUB_REF_NAME" dist/boreas-gpu-engine dist/boreas-gpu-engine.sha256 --clobber
+          # Releases are immutable once published, so the maintainer creates them as drafts
+          # (gh release create vX --draft) and this job publishes after the helper is attached.
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true" ]; then
+              gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          fi
