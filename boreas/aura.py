@@ -1,8 +1,9 @@
 """Keyboard RGB (Aura): ASUS Aura HID protocol over hidraw.
 
-The packet layout, effect numbers, speeds and zone numbers are the ones asusctl's rog-aura uses
-(rog-aura/src/builtin_modes.rs). The question that tells the kinds of keyboard apart (probe) was
-learned from G-Helper. See THIRD_PARTY_NOTICES.md.
+The effect numbers, speeds and zone numbers match asusctl's rog-aura (rog-aura/src/builtin_modes.rs,
+set/apply in rog-aura/src/usb.rs). The keyboard product IDs (PIDS), the random-color flag in byte 9,
+the order of the effect menu and the question that tells the kinds of keyboard apart (probe) follow
+G-Helper (app/USB/AsusHid.cs, app/USB/Aura.cs). See THIRD_PARTY_NOTICES.md.
 
 HID output packets with report ID 0x5D are sent to the N-KEY device:
   [5D B3 zone mode R G B speed direction random R2 G2 B2]  effect
