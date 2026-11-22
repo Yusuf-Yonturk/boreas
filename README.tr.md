@@ -18,7 +18,7 @@ kaynak.
 büyük kısmı çekirdeğin asus-wmi sürücüsünden (asus-linux.org geliştiricilerinin genişlettiği) ve onların
 asus-armoury sürücüsünden gelir. Boreas, kullanıcı tarafındaki kısmı
 (asusd, supergfxd, rog-control-center) tek bir küçük sistem servisi (`boreasd`) ve bir tepsi uygulamasıyla
-(`boreas`) değiştirir; Ryzen'de CPU sıcaklık tavanı için kendi küçük çekirdek modülünü ekler.
+(`boreas`) değiştirir; AMD Ryzen işlemcilerde CPU sıcaklık tavanı için kendi küçük çekirdek modülünü ekler.
 
 Boreas, Linux için Python ve Qt ile, küçük bir C çekirdek modülü ve bir Rust GPU yardımcısıyla sıfırdan
 yazıldı. Üçüncü taraf kodu yalnız isteğe bağlı eBPF GPU motorunda bulunur; bu motor Cardwire'ı (GPL-3.0)
@@ -85,7 +85,8 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | Güç profili (mod başına) | ✓ (`Varsayılan` / `Güç tasarrufu` / `Performans`): CPU frekans governor'ı; Boreas power-profiles-daemon'ı maskelemeden önce bunu masaüstünün güç menüsü ayarlıyordu | `cpufreq/scaling_governor` |
 | Güç limitleri (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / sıcaklık hedefi | ✓ | asus-armoury `nv_*` |
-| CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle ya da CPU'nun kendi tavanıyla (Ryzen) | asus-armoury üzerinden yazılımsal geri besleme; desteklenen Ryzen dizüstülerinde CPU'nun kendi tavanı (çekirdek modülü, varsayılan açık) |
+| CPU sıcaklık hedefi (75-95 °C, mod başına) | ✓ | asus-armoury üzerinden yazılımsal geri besleme |
+| CPU'nun kendi sıcaklık tavanı (SMU, AMD Ryzen işlemcilerde) | ✓ (varsayılan açık; BIOS'ta `\_SB.AM00` gerekir) | Boreas'ın `boreas_smu` çekirdek modülü (DKMS) |
 | Pil/prize göre otomatik mod | ✓ | `power_supply` |
 | GPU: Eco / Standart / Optimized / Ultimate | ✓ (Eco ve Optimized NVIDIA dGPU ile) | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran: en düşük hız / maks / Otomatik (Otomatik, panel overdrive'ı da prize göre açıp kapatır) | ✓ (KDE) | `kscreen-doctor` |
@@ -98,7 +99,7 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | Uykudan dönüşte yeniden uygulama | ✓ | systemd-sleep kancası |
 
 Henüz yok: AniMe/Slash matrix, M4/ROG tuşu ataması (KDE kısayoluna `boreasctl mode next`
-bağlanabilir), GPU saat ofsetleri, Ryzen undervolt (Curve Optimizer), çevre birimleri (fare, kulaklık),
+bağlanabilir), GPU saat ofsetleri, AMD Ryzen CPU undervolt (Curve Optimizer), çevre birimleri (fare, kulaklık),
 fan histerezisi, klavye ışığının uyku/kapanış ayarları (Aura power), prize/pile göre ayrı
 klavye parlaklığı, tek seferlik %100 şarj, açılış sesi (`boot_sound`), USB-C şarj modu,
 tuş başına renk.
@@ -232,9 +233,10 @@ bunlara ihtiyaç duymaz. Başka bir güç ayarlama servisiyle birlikte çalışt
 Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
 
-**CPU'nun kendi tavanı (Ryzen, varsayılan açık, henüz yeni).** Birçok AMD Ryzen dizüstünde hedef doğrudan
-CPU'ya verilebilir; CPU onu milisaniyeler içinde kendisi tutar. Bunun için DKMS ile
-derlenen küçük bir çekirdek modülü gerekir. Kurulum bunu aşağıda listelenen her Ryzen ailesinde
+**CPU'nun kendi tavanı (AMD Ryzen işlemciler, varsayılan açık, henüz yeni).** Birçok AMD Ryzen dizüstünde hedef doğrudan
+CPU'ya verilebilir; CPU onu kendisi tutar, böylece kısa boost atakları artık tavanı aşıp geçmez (bir G713PV'de
+en yüksek değer tavanın yaklaşık 2 °C yakınında kaldı). Bunun için DKMS ile
+derlenen küçük bir çekirdek modülü gerekir. Kurulum bunu aşağıda listelenen her AMD Ryzen işlemci ailesinde
 kendiliğinden açar; modülün derlenebilmesi için `dkms` ve çekirdeğinizin başlık dosyaları kurulu olmalı.
 Komut AMD'nin kendisine ait (SMU'nun sıcaklık sınırı mesajı); RyzenAdj ve G-Helper da aynısını gönderir,
 yani iyi denenmiş bir komuttur. Kapatma tercihi

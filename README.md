@@ -18,7 +18,7 @@ It builds on the work of the [asus-linux.org](https://asus-linux.org) community:
 comes from the kernel's asus-wmi driver, which asus-linux.org developers extended, and their asus-armoury
 driver. Boreas replaces the userspace side (asusd,
 supergfxd, rog-control-center) with a single small system service (`boreasd`) and a tray app (`boreas`);
-for the CPU temperature ceiling on Ryzen it adds a small kernel module of its own.
+for the CPU temperature ceiling on AMD Ryzen processors it adds a small kernel module of its own.
 
 Boreas is written from scratch for Linux in Python and Qt, with a small C kernel module and a Rust GPU
 helper. The only third-party code is in the optional eBPF GPU engine, which uses Cardwire (GPL-3.0); where
@@ -86,7 +86,8 @@ whether everything worked or not.
 | Power profile (per mode) | ✓ (`Default` / `Power saver` / `Performance`): the CPU frequency governor the desktop's power menu set before Boreas masked power-profiles-daemon | `cpufreq/scaling_governor` |
 | Power limits (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / temp target | ✓ | asus-armoury `nv_*` |
-| CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls, or the CPU's own ceiling (Ryzen) | Software feedback through asus-armoury; the CPU's own ceiling on supported Ryzen laptops (kernel module, on by default) |
+| CPU temperature target (75-95 °C, per mode) | ✓ | Software feedback through asus-armoury |
+| The CPU's own temperature ceiling (SMU, on AMD Ryzen processors) | ✓ (on by default; needs `\_SB.AM00` in the BIOS) | Boreas's own `boreas_smu` kernel module (DKMS) |
 | Auto mode on battery / AC | ✓ | `power_supply` |
 | GPU: Eco / Standard / Optimized / Ultimate | ✓ (Eco and Optimized with an NVIDIA dGPU) | `dgpu_disable`, `gpu_mux_mode` |
 | Display: lowest rate / max / Auto (Auto also switches panel overdrive with AC) | ✓ (KDE) | `kscreen-doctor` |
@@ -99,7 +100,7 @@ whether everything worked or not.
 | Re-apply after sleep | ✓ | systemd-sleep hook |
 
 Not yet: AniMe/Slash matrix, M4/ROG key binding (bind `boreasctl mode next` to a KDE shortcut),
-GPU clock offsets, Ryzen undervolt (Curve Optimizer), peripherals (mouse, headset), fan hysteresis,
+GPU clock offsets, AMD Ryzen CPU undervolt (Curve Optimizer), peripherals (mouse, headset), fan hysteresis,
 keyboard light sleep/shutdown settings (Aura power), separate keyboard brightness for AC/battery,
 one-time 100 % charge, boot sound (`boot_sound`), USB-C charging mode, per-key colors.
 
@@ -233,9 +234,10 @@ where the laptop exposes bounded ASUS CPU power controls; the CPU's own ceiling 
 Do not run another power tuning service at the same time. How the controller steps, what it does on
 errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
 
-**The CPU's own ceiling (Ryzen, on by default, still new).** On many AMD Ryzen laptops the target can instead be handed to
-the CPU itself; the CPU then holds it within milliseconds. This needs a
-small kernel module that is built with DKMS. The installer switches it on by default on every Ryzen family
+**The CPU's own ceiling (AMD Ryzen processors, on by default, still new).** On many AMD Ryzen laptops the target can instead be handed to
+the CPU itself; the CPU then holds it, so short boost bursts no longer run past it (on a G713PV the
+peak stayed within about 2 °C of the ceiling). This needs a
+small kernel module that is built with DKMS. The installer switches it on by default on every AMD Ryzen processor family
 listed below; `dkms` and your kernel's headers must be installed for the module to build. The command is AMD's
 own (the SMU's temperature-limit message); RyzenAdj and G-Helper send the same one, so it is well tested. Switching it off is saved in `/etc/boreas/smu-off`, so later
 installs and updates leave it off:

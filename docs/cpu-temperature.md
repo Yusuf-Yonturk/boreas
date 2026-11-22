@@ -119,8 +119,7 @@ hold), `ladder`, `effective` (the policy the
 controller last wrote), `baseline`, `control` and `hard_limit: false`. The top
 level `cpu_policy` reports what sysfs says right now (governor, EPP, boost). With
 `power-feedback`, `applied` stays null: no CPU temperature limit has been written.
-With the opt-in `smu-bridge`, `applied` is the last 0x3F argument the SMU
-acknowledged; that is not proof of physical behavior. Sysfs readback may be a
+With `smu-bridge`, `applied` is the last ceiling the SMU acknowledged; that is not proof of physical behavior. Sysfs readback may be a
 driver cache, so it is not proof of physical power or temperature behavior either.
 
 A setting written by the removed SMU backend in an earlier version is not reset by
@@ -160,15 +159,24 @@ Run `python3 -m unittest discover -s tests -v`. Controller tests cover saturatio
 hysteresis, rate limits, gradual recovery, sensor loss, outside writers, missing
 ranges, partial failures, ignored writes, restoration and a synthetic thermal plant.
 Daemon tests cover mode changes, explicit power ceilings, GUI/API target updates,
-fan requirements and that the SMU is not called without the bridge opt-in.
-Bridge tests use a fake ioctl and cover opt-in/`enable_hw` gating, the single 5 s
-reapply, restore-on-stop and fault latching; they do not exercise the real module.
+and fan requirements. Bridge tests use a fake ioctl and cover that the SMU is not
+called without `/etc/boreas/smu` or the module, that an unsupported CPU is never
+asked, the 0.1 s guard after a mode is applied, the 1 s reapply for 10 s and the
+30 s reapply on families that drop the ceiling, handing the ceiling from one mode
+to the next without the default in between, restore on stop, the fallback to
+`power-feedback` after a rejected command or a fault, and the warning when the
+bridge was requested but cannot be used; they do not exercise the real module.
 The raw PCI SMU transport and its isolated tests were removed; a test asserts that
 `boreas/ryzen.py` holds no userspace PCI access.
 
 No physical temperature test or installation is implied by the unit tests alone.
 
-### Observed G713PV / G713PV.336 hardware probe
+### Observed G713PV / G713PV.336 hardware probe (earlier build, 2026-11-02)
+
+Recorded with Boreas 0.1.3 and its research bridge (`/dev/boreas-smu-probe`,
+`BOREAS_SMU_BRIDGE=1`, `enable_hw`, a single 5 s reapply). That bridge has since
+been replaced by `smu/` and none of those switches exist any more; the current
+behaviour and measurements are in [cpu-smu.md](cpu-smu.md). Kept as a record.
 
 On a clean boot (without prior raw PCI `0xB8/0xBC` writes):
 
