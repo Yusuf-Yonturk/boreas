@@ -2538,6 +2538,19 @@ class TestSelfUpdate(unittest.TestCase):
                     self.assertEqual(helper.main(["boreas-update", *bad]), 1)
             self.assertEqual(len(calls), n)  # none of those reached the install
 
+    def test_helper_refuses_a_release_that_is_not_newer(self):
+        import io
+        from boreas import update
+        helper = self._helper()
+        with patch.object(helper.os, "geteuid", return_value=0), \
+                patch.object(update, "install_release") as install:
+            for old in ("0.0.1", update.__version__):
+                with self.subTest(version=old), \
+                        patch.object(helper.sys, "stderr", io.StringIO()) as errors:
+                    self.assertEqual(helper.main(["boreas-update", old]), 1)
+                    self.assertIn("not newer", errors.getvalue())
+            install.assert_not_called()
+
     def test_helper_reads_and_validates_proxy_from_stdin(self):
         import io
         from boreas import update
@@ -2570,7 +2583,8 @@ class TestSelfUpdate(unittest.TestCase):
             shutil.copy(os.path.join(repo, "boreas", "update.py"), pkg)
             # Replace installation and the root check only in this disposable subprocess.
             with open(os.path.join(pkg, "__init__.py"), "w") as f:
-                f.write('__version__ = "9.0.0"\n'
+                # an older installed copy: the helper installs only a newer release
+                f.write('__version__ = "8.0.0"\n'
                         'import os\nfrom . import update\nos.geteuid = lambda: 0\n'
                         'def install(version):\n    print(version, os.environ.get("https_proxy"))\n'
                         'update.install_release = install\n')

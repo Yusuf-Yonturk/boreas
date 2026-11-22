@@ -238,15 +238,26 @@ impl Engine {
         json!({"rtd3_status":rtd3, "backend":"ebpf", "policy":if self.mode == 0 {"eco"} else {"standard"}, "device":self.device, "runtime_status":read(p.join("power/runtime_status")), "power_state":read(p.join("power_state")), "users":users})
     }
 }
+// The list of dGPU users is informational. A process can hold hundreds of thousands of file
+// descriptors, so the scan stops after this long instead of delaying the reply past boreasd's
+// request timeout (which would make boreasd drop the helper and the Eco block with it).
+const USERS_SCAN_BUDGET: Duration = Duration::from_secs(2);
 fn device_users(device: &Device) -> Vec<String> {
     let nodes = [
         format!("/dev/dri/{}", device.card),
         format!("/dev/dri/{}", device.render),
         format!("/dev/nvidia{}", device.minor),
     ];
+    device_users_in(Path::new("/proc"), &nodes, USERS_SCAN_BUDGET)
+}
+fn device_users_in(proc: &Path, nodes: &[String], budget: Duration) -> Vec<String> {
+    let start = Instant::now();
     let mut users = Vec::new();
-    if let Ok(entries) = fs::read_dir("/proc") {
+    if let Ok(entries) = fs::read_dir(proc) {
         for e in entries.flatten() {
+            if start.elapsed() > budget {
+                break;
+            }
             if !e
                 .file_name()
                 .to_string_lossy()
@@ -257,9 +268,10 @@ fn device_users(device: &Device) -> Vec<String> {
             }
             if let Ok(fds) = fs::read_dir(e.path().join("fd"))
                 && fds.flatten().any(|fd| {
-                    fs::read_link(fd.path())
-                        .ok()
-                        .is_some_and(|p| nodes.iter().any(|n| p == Path::new(n)))
+                    start.elapsed() <= budget
+                        && fs::read_link(fd.path())
+                            .ok()
+                            .is_some_and(|p| nodes.iter().any(|n| p == Path::new(n)))
                 })
             {
                 users.push(format!(
@@ -313,6 +325,24 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_users_finds_holders_and_stops_at_the_budget() {
+        let f = Fixture::new();
+        let proc = f.0.join("proc");
+        for (pid, comm, target) in [("100", "game", "/dev/nvidia0"), ("200", "shell", "/dev/null")] {
+            fs::create_dir_all(proc.join(pid).join("fd")).unwrap();
+            fs::write(proc.join(pid).join("comm"), format!("{comm}\n")).unwrap();
+            std::os::unix::fs::symlink(target, proc.join(pid).join("fd/3")).unwrap();
+        }
+        fs::create_dir_all(proc.join("self")).unwrap();
+        let nodes = ["/dev/nvidia0".to_string()];
+        assert_eq!(
+            device_users_in(&proc, &nodes, Duration::from_secs(5)),
+            vec!["game(100)".to_string()]
+        );
+        // a budget already spent: no scan, an empty (informational) list instead of a late reply
+        assert!(device_users_in(&proc, &nodes, Duration::ZERO).is_empty());
+    }
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {

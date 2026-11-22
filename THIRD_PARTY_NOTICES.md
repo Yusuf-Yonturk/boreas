@@ -21,6 +21,10 @@ Integration by Yusuf Yontürk, 2026-11-01: Boreas supplies its own inherited-std
 protocol, conservative NVIDIA topology discovery, display checks and policy owner.
 The vendored crates are otherwise unmodified at this point. No Shiftray source is used.
 
+Boreas change, 2026-11-22: `cardwire-ebpf/src/helpers.rs` `is_comm_whitelisted()` accepts an
+allowed process name only when the process runs as root (uid 0), so an unprivileged process
+cannot rename itself past the Eco block.
+
 The Rust helper and its vendored code are distributed under GPL version 3.
 Binary distributions must provide their corresponding sources, Cargo.lock,
 workspace manifests and build instructions, including the vendored eBPF sources.
