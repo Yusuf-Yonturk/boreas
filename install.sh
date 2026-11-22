@@ -39,7 +39,7 @@ fetch() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --retry 3 -o "$2" "$1"
     else
-        python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$1" "$2"
+        python3 -I -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$1" "$2"
     fi
 }
 helper_tmp=""
@@ -187,9 +187,9 @@ chmod 644 "$CONF"
 echo "Language: $lang (each user can change it from the globe button in the window)"
 
 # UI dependencies (the service only needs python3)
-if ! python3 -c "import PySide6" 2>/dev/null; then
+if ! python3 -I -c "import PySide6" 2>/dev/null; then
     echo "Warning: the UI needs PySide6 (Arch/CachyOS: sudo pacman -S pyside6)"
-elif ! python3 -c "import PySide6.QtSvg" 2>/dev/null; then
+elif ! python3 -I -c "import PySide6.QtSvg" 2>/dev/null; then
     echo "Warning: the UI needs QtSvg (Arch/CachyOS: sudo pacman -S qt6-svg)"
 fi
 [ -d /usr/lib/qt6/plugins/platforms ] && ! ls /usr/lib/qt6/plugins/platforms/*wayland* >/dev/null 2>&1 &&

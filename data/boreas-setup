@@ -10,11 +10,18 @@
 #   sudo boreas-setup disable --legacy     uninstall.sh also restores installs without records
 # install.sh and uninstall.sh run this; a distribution package leaves the first call to the user.
 set -e
+umask 022
 
 UNITS="asusd.service asus-shutdown.service supergfxd.service power-profiles-daemon.service"
 MASKED="${BOREAS_MASKED_UNITS:-/etc/boreas/masked-units}"
 INSTALLED="${BOREAS_INSTALLED_SETUP:-/usr/bin/boreas-setup}"  # the copy being replaced, if any
 OFF="$(dirname "$MASKED")/switched-off"
+# umask 022 covers new files; a record an older run wrote under a loose umask is tightened too
+for f in "$MASKED" "$OFF"; do
+    if [ -f "$f" ]; then
+        chmod 644 "$f"
+    fi
+done
 
 usage() {
     echo "Usage: boreas-setup enable [--keep-off [--was-running]] | disable [--legacy|--removing] | adopt --previous=VERSION" >&2

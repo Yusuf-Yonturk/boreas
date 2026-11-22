@@ -366,8 +366,8 @@ class PackagingTests(InstallTestCase):
     def test_ui_dependency_warnings_distinguish_pyside6_and_qtsvg(self):
         text = (REPO / 'install.sh').read_text()
         warnings = re.search(
-            r'if ! python3 -c "import PySide6" 2>/dev/null; then\n(?P<pyside6>.*?)'
-            r'elif ! python3 -c "import PySide6\.QtSvg" 2>/dev/null; then\n(?P<qtsvg>.*?)fi\n',
+            r'if ! python3 -I -c "import PySide6" 2>/dev/null; then\n(?P<pyside6>.*?)'
+            r'elif ! python3 -I -c "import PySide6\.QtSvg" 2>/dev/null; then\n(?P<qtsvg>.*?)fi\n',
             text, re.S)
         self.assertIsNotNone(warnings, 'PySide6 and QtSvg need separate dependency checks')
         self.assertIn('Warning: the UI needs PySide6', warnings.group('pyside6'))

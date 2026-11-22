@@ -204,10 +204,15 @@ def _loaded(module: str) -> bool:
     return hw.exists(f"/sys/module/{module}")
 
 
+def clean_comm(s: str) -> str:
+    """Keep process names safe for single-line logs and notifications."""
+    return "".join(c if c.isprintable() else "?" for c in s[:15])
+
+
 def _comm(pid: str) -> str:
     try:
-        with open(f"{PROC}/{pid}/comm", errors="replace") as f:
-            return f.read().strip()
+        with open(f"{PROC}/{pid}/comm", errors="replace", newline="") as f:
+            return clean_comm(f.read().removesuffix("\n"))
     except OSError:  # the process exited in the meantime
         return "?"
 

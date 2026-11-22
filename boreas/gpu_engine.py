@@ -29,9 +29,20 @@ def helper_path():
 
 
 def check_protocol(path):
+    path = os.path.realpath(path)
     info = os.stat(path)
-    if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
         raise OSError("GPU engine must be root-owned and not group/world-writable")
+    parent = os.path.dirname(path)
+    while True:
+        info = os.stat(parent)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise OSError("GPU engine must be root-owned and not group/world-writable")
+        if parent == os.path.dirname(parent):
+            break
+        parent = os.path.dirname(parent)
     result = subprocess.run([path, "--protocol-info"], capture_output=True, text=True, timeout=5)
     try:
         data = json.loads(result.stdout)
@@ -44,6 +55,7 @@ def check_protocol(path):
             raise ValueError()
     except (ValueError, TypeError):
         raise OSError("Incompatible GPU engine; protocol v1 with status/eco/standard is required") from None
+    return path
 
 
 class Engine:
@@ -66,8 +78,7 @@ class Engine:
         attr = hw.get_attr("dgpu_disable")
         if attr and attr.current == 1:
             raise OSError("Leave firmware Eco and reboot before selecting the eBPF engine")
-        path = helper_path()
-        check_protocol(path)
+        path = check_protocol(helper_path())
         self.process = subprocess.Popen([path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=None, bufsize=0, close_fds=True)
 
@@ -97,6 +108,16 @@ class Engine:
                         raise ValueError("Invalid GPU engine status")
                     if command in ("eco", "standard") and status["policy"] != command:
                         raise ValueError("GPU engine did not apply the requested policy")
+                    if "users" in status:
+                        from .gpu import clean_comm
+                        users = status["users"]
+                        status["users"] = []
+                        for user in users if isinstance(users, list) else ():
+                            if not isinstance(user, str) or not user.endswith(")"):
+                                continue
+                            comm, sep, pid = user[:-1].rpartition("(")
+                            if sep and pid.isascii() and pid.isdigit():
+                                status["users"].append(f"{clean_comm(comm)}({pid})")
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 self._disconnect()
                 # Status polls land here every few seconds once the helper is gone: the restore

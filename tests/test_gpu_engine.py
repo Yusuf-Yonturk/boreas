@@ -1,5 +1,6 @@
 """GPU backend routing must never fall back to driver unloads after an eBPF error."""
 import os
+import stat
 import unittest
 from unittest.mock import Mock, patch
 import os as _os  # noqa: E402
@@ -414,7 +415,10 @@ class CompatibilityTests(unittest.TestCase):
         with patch.object(gpu_engine.subprocess, "run", side_effect=[
                 Mock(returncode=1), Mock(returncode=0, stdout='{"protocol_version":2,"capabilities":[]}')]), \
                 patch.object(hw, "get_attr", return_value=None), \
-                patch.object(gpu_engine.os, "stat", return_value=Mock(st_uid=0, st_mode=0o755)), \
+                patch.object(gpu_engine, "helper_path", return_value=gpu_engine.HELPER), \
+                patch.object(gpu_engine.os, "stat", side_effect=lambda path: Mock(
+                    st_uid=0, st_mode=(stat.S_IFREG if path == gpu_engine.HELPER else stat.S_IFDIR) | 0o755)), \
+                patch.object(gpu_engine.os.path, "realpath", side_effect=lambda path: path), \
                 patch.object(gpu_engine.subprocess, "Popen") as spawn:
             with self.assertRaisesRegex(OSError, "Incompatible"):
                 engine.request("status")
@@ -422,7 +426,9 @@ class CompatibilityTests(unittest.TestCase):
 
     def test_protocol_requires_version_and_all_commands(self):
         import json
-        with patch.object(gpu_engine.os, "stat", return_value=Mock(st_uid=0, st_mode=0o755)):
+        with patch.object(gpu_engine.os, "stat", side_effect=lambda path: Mock(
+                st_uid=0, st_mode=(stat.S_IFREG if path == "/helper" else stat.S_IFDIR) | 0o755)), \
+                patch.object(gpu_engine.os.path, "realpath", side_effect=lambda path: path):
             for data in ({}, {"protocol_version": True, "capabilities": ["status", "eco", "standard"]},
                          {"protocol_version": 1, "capabilities": ["status"]}):
                 with patch.object(gpu_engine.subprocess, "run", return_value=Mock(returncode=0, stdout=json.dumps(data))):
