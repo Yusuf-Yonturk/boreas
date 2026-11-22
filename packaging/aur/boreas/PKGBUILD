@@ -1,7 +1,7 @@
 # Maintainer: Yusuf Yontürk <140352702+Yusuf-Yonturk@users.noreply.github.com>
 
 pkgname=boreas
-pkgver=0.1.9
+pkgver=0.1.10
 pkgrel=1
 pkgdesc="Control panel for ASUS ROG and TUF laptops: performance modes, fan curves, power limits, GPU modes, Aura lighting, charge limit"
 arch=('any')
@@ -16,7 +16,7 @@ optdepends=('polkit: enable Boreas from its window instead of a terminal'
             'noto-fonts: Hindi and Arabic interface')
 install=boreas.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('e725c5f0f78bd7ef02762af634ae304454bf75253f42793c8c10a6827da59842')
+sha256sums=('edc900911238775f7da083ad94e60dddd34ac527336997d525dc5a13b0c58ab4')
 
 check() {
     cd "$pkgname-$pkgver"
