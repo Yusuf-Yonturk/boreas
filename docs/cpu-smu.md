@@ -82,6 +82,23 @@ ceiling was back; the gap is the time between the kernel's resume and `boreasctl
 
 No SMU, ACPI or mailbox error appeared in the kernel log in any of these runs.
 
+## Help test it
+
+Only the ROG Strix G713PV (Dragon Range) has been measured. A report from any other Ryzen laptop in
+the table above helps, also one where the module does not load. On AC power (Arch and CachyOS; on
+another distribution install `dkms`, `stress-ng` and your kernel's headers with its package manager):
+
+```bash
+sudo pacman -S --needed dkms stress-ng linux-headers   # the headers of your kernel, e.g. linux-lts-headers
+git clone https://github.com/Yusuf-Yonturk/boreas.git && cd boreas
+sudo BOREAS_SMU=1 ./install.sh
+tools/smu-report.sh        # about 2 minutes, every thread under load for 90 s
+```
+
+The script changes no setting. It writes `boreas-smu-report.md`; paste it into a new issue with the
+"CPU temperature ceiling (SMU) test" form. To switch the ceiling off again: `sudo BOREAS_SMU=0 ./install.sh`.
+To remove Boreas: `sudo ./uninstall.sh`.
+
 ## The BIOS shares the mailbox
 
 The BIOS tables of a ROG Strix G713PV (BIOS G713PV.336) were read on 2026-11-21 (DSDT and

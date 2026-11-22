@@ -1,0 +1,30 @@
+name: CPU temperature ceiling (SMU) test
+description: Report how the experimental SMU ceiling runs on your Ryzen laptop
+title: "SMU test: "
+labels: [hardware report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing. The steps are in docs/cpu-smu.md under "Help test it". A report where
+        the module refuses to load is as useful as one where everything works.
+  - type: input
+    id: model
+    attributes:
+      label: Laptop model
+      description: Output of `cat /sys/class/dmi/id/product_name`
+      placeholder: ROG Strix G713PV_G713PV
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: Paste boreas-smu-report.md, the file tools/smu-report.sh wrote
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Fans, noise, a freeze, a mode that behaved differently, an error in the window

@@ -6,6 +6,7 @@ Newest version first.
 ## Unreleased
 
 - **Packaging:** the experimental CPU temperature ceiling has its own package, `packaging/aur/boreas-smu-dkms`, for a copy installed as a package. It carries the `smu/` module source for DKMS, the opt-in `/etc/boreas/smu` and the line that loads the module at boot; removing it stops `boreasd` first, so the CPU gets its default ceiling back, and starts it again without the module. The AUR `boreas` PKGBUILD builds 0.1.9
+- **Testing the SMU ceiling:** `tools/smu-report.sh` writes a report (laptop, CPU family, module state, a 90 s load test against the mode's target) for the new "CPU temperature ceiling (SMU) test" issue form; docs/cpu-smu.md lists the steps
 
 ## 0.1.9
 
