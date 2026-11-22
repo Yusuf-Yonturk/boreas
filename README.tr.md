@@ -15,14 +15,16 @@ limitlerini ve CPU sıcaklık hedefini taşır; tek tıkla bütün makinenin dav
 kaynak.
 
 [asus-linux.org](https://asus-linux.org) topluluğunun çalışması üzerine kuruludur: donanım desteğinin
-tamamı onların çekirdek sürücülerinden (asus-wmi, asus-armoury) gelir. Boreas, kullanıcı tarafındaki kısmı
+büyük kısmı onların çekirdek sürücülerinden (asus-wmi, asus-armoury) gelir. Boreas, kullanıcı tarafındaki kısmı
 (asusd, supergfxd, rog-control-center) tek bir küçük sistem servisi (`boreasd`) ve bir tepsi uygulamasıyla
-(`boreas`) değiştirir.
+(`boreas`) değiştirir; Ryzen'de CPU sıcaklık tavanı için kendi küçük çekirdek modülünü ekler.
 
 Pencere düzeni bilerek [G-Helper](https://github.com/seerge/g-helper) örnek alınarak yapıldı; Windows'tan
-gelenlere tanıdık gelsin diye. Ortak kod yoktur: G-Helper bir Windows programıdır, Boreas Python ve Qt ile
-sıfırdan yazıldı. Birkaç donanım ayrıntısı G-Helper ve asusctl okunarak öğrenildi; bunlar
-[üçüncü taraf bildirimlerinde](THIRD_PARTY_NOTICES.md) yazılıdır. Boreas yalnız Linux içindir; Windows'ta
+gelenlere tanıdık gelsin diye. Ortak kod yoktur: G-Helper bir Windows programıdır; Boreas Python ve Qt ile,
+kendine ait küçük bir C çekirdek modülüyle sıfırdan yazıldı. Tek üçüncü taraf kodu isteğe bağlı eBPF GPU
+motorunda, Cardwire'dan (GPL-3.0). Boreas'ın G-Helper ve asusctl'den öğrendiği ya da RyzenAdj ve diğer
+projelerle karşılaştırdığı donanım ayrıntıları [üçüncü taraf bildirimlerinde](THIRD_PARTY_NOTICES.md)
+yazılıdır. Boreas yalnız Linux içindir; Windows'ta
 G-Helper kullanın.
 
 ## Hızlı başlangıç
@@ -42,8 +44,9 @@ birlikte yazılıdır; `sudo ./uninstall.sh` her şeyi geri alır.
 - **Mod eksiksiz bir ön ayardır.** Fan eğrileri, güç limitleri, CPU Boost, güç profili ve sıcaklık hedefi
   mod başına saklanır; Sessiz / Dengeli / Turbo'nun yanına kendi modlarınızı ekleyebilirsiniz. Mod
   değişince hepsi birlikte değişir: pencereden, tepsiden, Fn+F5 ile ya da pil / prize göre otomatik.
-- **CPU sıcaklık hedefi.** Bir mod için 75-95 °C seçin; Boreas güç limitlerini o hedefe göre yönetir. Güç
-  tabanı sayesinde oyun modu firmware'in minimumuna düşmez.
+- **CPU sıcaklık hedefi.** Bir mod için 75-95 °C seçin. Desteklenen AMD Ryzen dizüstülerinde hedefi
+  CPU'nun kendisi tutar; diğerlerinde Boreas güç limitlerini o hedefe göre yönetir. Güç tabanı sayesinde
+  oyun modu firmware'in minimumuna düşmez.
 - NVIDIA dGPU'lu dizüstülerde **yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
 - **11 dil, açık ve koyu tema, uygulama içi güncelleme**; Windows'tan gelenlere tanıdık bir düzenle.
 - **Denemesi kolay, geri alması kolay.** İlk açılışta Boreas mevcut ayarlarınızı benimser ve donanıma
@@ -77,7 +80,7 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | Güç profili (mod başına) | ✓ (`Varsayılan` / `Güç tasarrufu` / `Performans`): Boreas power-profiles-daemon'ı maskelemeden önce masaüstünün güç menüsünün ayarladığı CPU frekans governor'ı | `cpufreq/scaling_governor` |
 | Güç limitleri (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / sıcaklık hedefi | ✓ | asus-armoury `nv_*` |
-| CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol; isteğe bağlı olarak CPU'nun kendi tavanı (Ryzen, deneysel çekirdek modülü) |
+| CPU sıcaklık hedefi (75-95 °C, mod başına) | Aralığı bildirilen ASUS CPU güç kontrolleriyle | asus-armoury üzerinden yazılımsal kontrol; desteklenen Ryzen dizüstülerinde CPU'nun kendi tavanı (çekirdek modülü, varsayılan açık) |
 | Pil/prize göre otomatik mod | ✓ | `power_supply` |
 | GPU: Eco / Standart / Optimized / Ultimate | ✓ (Eco ve Optimized NVIDIA dGPU ile) | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran 60 Hz / maks / Otomatik | ✓ (KDE) | `kscreen-doctor` |
@@ -183,7 +186,9 @@ güç limitleri ve pil sayfasını açar; tekrar basınca ana sayfaya döner.
 Boreas açıldıktan 10 saniye sonra, ardından günde bir kez GitHub'a bakar; her seferinde yalnızca yayımlanmış
 son sürümü sorar. Yeni bir sürüm varsa pencerede **Güncelle · Sürüm notları ·
 Gizle** görünür. **Güncelle** önce yönetici şifrenizi sorar (pkexec), ardından Boreas ile kurulan bir yardımcı o
-sürümün kaynağını GitHub'dan root olarak indirip kurar ve uygulama yeniden başlar. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar.
+sürümün kaynağını GitHub'dan root olarak indirip kurar ve uygulama yeniden başlar. **Sürüm notları** [CHANGELOG.md](CHANGELOG.md) dosyasını açar. Yardımcı
+yalnız kurulu olandan yeni bir sürümü kurar. GitHub'daki sürümler değiştirilemez: bir sürüm yayınlandıktan
+sonra kaynağı ve ona eklenen GPU yardımcısı değiştirilemez.
 
 Elle güncellemek için:
 
@@ -210,13 +215,14 @@ boreasctl cputemp default   # kapat
 boreasctl cpufloor 45       # sürekli güç tabanı; `cpufloor min` = firmware minimumu
 ```
 
-**Boreas bu hedefi yazılımla tutar, bu yüzden CPU bir süre hedefin üstüne çıkabilir.** Boost, firmware,
+**CPU'nun kendi tavanı (aşağıda) kullanılmıyorsa Boreas bu hedefi yazılımla tutar, bu yüzden CPU bir süre
+hedefin üstüne çıkabilir.** Boost, firmware,
 GPU ile paylaşılan soğutma ve servis gecikmeleri bu aşımlara yol açabilir; özellik yalnız dizüstünün CPU güç
 kontrollerini sunduğu yerde görünür. Başka bir güç ayarlama servisiyle birlikte çalıştırmayın.
 Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 [docs/cpu-temperature.md](docs/cpu-temperature.md) dosyasında.
 
-**Deneysel: CPU'nun kendi tavanı.** Birçok AMD Ryzen dizüstünde hedef, G-Helper'ın Windows'ta yaptığı
+**CPU'nun kendi tavanı (Ryzen, varsayılan açık, henüz yeni).** Birçok AMD Ryzen dizüstünde hedef, G-Helper'ın Windows'ta yaptığı
 gibi doğrudan CPU'ya verilebilir; CPU onu milisaniyeler içinde kendisi tutar. Bunun için DKMS ile
 derlenen küçük bir çekirdek modülü gerekir. Kurulum bunu aşağıda listelenen her Ryzen ailesinde
 kendiliğinden açar; modülün derlenebilmesi için `dkms` ve çekirdeğinizin başlık dosyaları kurulu olmalı.
@@ -241,6 +247,14 @@ Boreas CPU ailesini kendisi tanır (Ryzen 2000-3000, 4000-5000, 6000-8000 mobil,
 Ryzen AI 300 / AI Max). Modül başka bir CPU'da ve BIOS ile paylaştığı kilidi (`\_SB.AM00`) sunmayan bir
 BIOS'ta yüklenmez. Modül yoksa, yüklenmezse ya da hata bildirirse Boreas yukarıdaki yazılımsal hedefle
 devam eder. Ayrıntılar ve aile listesi [docs/cpu-smu.md](docs/cpu-smu.md) dosyasında.
+
+Dizüstünüzün bunu kullanıp kullanamayacağını hiçbir şey kurmadan 10 saniyede görmek için (CPU ailesi ve
+BIOS kilidi):
+
+```bash
+curl -LO https://raw.githubusercontent.com/Yusuf-Yonturk/boreas/main/tools/smu-check.sh
+sudo sh smu-check.sh
+```
 
 ## GPU modları hakkında
 
@@ -283,8 +297,10 @@ python3 -m boreas.gui.app               # arayüz (servis çalışıyor olmalı)
 Ayarlar: `/etc/boreas/config.json`. Soket: `/run/boreas.sock` (`wheel` grubu).
 
 Yeni sürüm yayınlamak için `boreas/__init__.py` içindeki `__version__` değerini artırın, [CHANGELOG.md](CHANGELOG.md)
-dosyasına bir bölüm ekleyin, `main`'e gönderin ve `v<sürüm>` etiketini gönderin; CI GPU yardımcısını o sürümün
-GitHub Release'ine ekler, kurulum betiği oradan indirir. Kurulu kopyalar bir gün içinde güncelleme notunu gösterir.
+dosyasına bir bölüm ekleyin ve `main`'e birleştirin. Ardından `v<sürüm>` etiketini gönderin ve sürümü taslak
+olarak oluşturun (`gh release create v<sürüm> --verify-tag --draft`); CI, kurulum betiğinin indirdiği GPU
+yardımcısını ekleyip sürümü yayınlar. Yayınlanan sürümler değiştirilemez. Kurulu kopyalar bir gün içinde
+güncelleme notunu gösterir.
 
 ## Katkıda bulunma
 
@@ -301,8 +317,10 @@ yeni dil ekleme için [CONTRIBUTING.tr.md](CONTRIBUTING.tr.md) dosyasına bakın
   [G-Helper](https://github.com/seerge/g-helper) topluluğuna.
 - Linux çekirdek sürücüleri (asus-wmi, asus-armoury) ve asusctl için [asus-linux.org](https://asus-linux.org)
   topluluğuna.
-- AMD SMU araştırmaları için [RyzenAdj](https://github.com/FlyGoat/RyzenAdj) ve
-  [ZenStates-Core](https://github.com/irusanov/ZenStates-Core) projelerine.
+- AMD SMU araştırmaları için [RyzenAdj](https://github.com/FlyGoat/RyzenAdj),
+  [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules) ve [ryzen_smu](https://github.com/amkillam/ryzen_smu)
+  projelerine.
+- Herkese açık ACPI tabloları için [Linux Hardware Project](https://github.com/linuxhw/ACPI)'e.
 
 ## Lisans
 

@@ -14,14 +14,17 @@ the Ultimate MUX switch), Aura keyboard lighting and the battery charge limit. E
 fans, power limits and CPU temperature target, so one click changes how the whole machine behaves. Free
 and open source.
 
-It builds on the work of the [asus-linux.org](https://asus-linux.org) community: all the hardware support
+It builds on the work of the [asus-linux.org](https://asus-linux.org) community: most of the hardware support
 comes from their kernel drivers (asus-wmi, asus-armoury). Boreas replaces the userspace side (asusd,
-supergfxd, rog-control-center) with a single small system service (`boreasd`) and a tray app (`boreas`).
+supergfxd, rog-control-center) with a single small system service (`boreasd`) and a tray app (`boreas`);
+for the CPU temperature ceiling on Ryzen it adds a small kernel module of its own.
 
 The window layout is modelled on [G-Helper](https://github.com/seerge/g-helper) on purpose, so it feels
-familiar if you come from Windows. No code is shared: G-Helper is a Windows program, Boreas is written from
-scratch in Python and Qt. A few hardware details were learned by reading G-Helper and asusctl; they are
-listed in the [third-party notices](THIRD_PARTY_NOTICES.md). Boreas is Linux only; on Windows, use G-Helper.
+familiar if you come from Windows. No code is shared: G-Helper is a Windows program, and Boreas is written
+from scratch in Python and Qt, with a small C kernel module of its own. The only third-party code is in the
+optional eBPF GPU engine, which uses Cardwire (GPL-3.0). Hardware details that Boreas learned from G-Helper
+and asusctl, or checked against RyzenAdj and other projects, are listed in the
+[third-party notices](THIRD_PARTY_NOTICES.md). Boreas is Linux only; on Windows, use G-Helper.
 
 ## Quick start
 
@@ -40,8 +43,9 @@ Then open **Boreas** from the application menu, or run `boreas`. The requirement
 - **A mode is a complete preset.** Fan curves, power limits, CPU Boost, power profile and temperature
   target are stored per mode, and you can add your own modes next to Silent / Balanced / Turbo. Switching
   mode changes all of it at once: from the window, the tray, Fn+F5, or automatically on battery / AC.
-- **A CPU temperature target.** Pick 75-95 °C for a mode and Boreas steers the power limits towards it,
-  with a power floor so a gaming mode does not fall to the firmware's minimum.
+- **A CPU temperature target.** Pick 75-95 °C for a mode. On supported AMD Ryzen laptops the CPU itself
+  holds it; elsewhere Boreas steers the power limits towards it, with a power floor so a gaming mode does
+  not fall to the firmware's minimum.
 - **Eco without a reboot** on laptops with an NVIDIA dGPU, through the optional eBPF GPU backend (experimental).
 - **11 languages, light and dark, in-app updates**, and a layout that is familiar if you come from Windows.
 - **Easy to try, easy to undo.** On first start Boreas adopts your current settings and writes nothing to
@@ -76,7 +80,7 @@ whether everything worked or not.
 | Power profile (per mode) | ✓ (`Default` / `Power saver` / `Performance`): the CPU frequency governor the desktop's power menu set before Boreas masked power-profiles-daemon | `cpufreq/scaling_governor` |
 | Power limits (SPL/SPPT/FPPT) | ✓ | asus-armoury `ppt_*` |
 | NVIDIA Dynamic Boost / temp target | ✓ | asus-armoury `nv_*` |
-| CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury; optionally the CPU's own ceiling (Ryzen, experimental kernel module) |
+| CPU temperature target (75-95 °C, per mode) | With bounded ASUS CPU power controls | Software feedback through asus-armoury; the CPU's own ceiling on supported Ryzen laptops (kernel module, on by default) |
 | Auto mode on battery / AC | ✓ | `power_supply` |
 | GPU: Eco / Standard / Optimized / Ultimate | ✓ (Eco and Optimized with an NVIDIA dGPU) | `dgpu_disable`, `gpu_mux_mode` |
 | Display 60 Hz / max / Auto | ✓ (KDE) | `kscreen-doctor` |
@@ -183,7 +187,8 @@ for the latest published release. When a newer version is available, the window 
 **Update · Release notes · Hide**. **Update** asks for your administrator password (pkexec), then a
 helper installed with Boreas downloads the source of that release from GitHub as root, installs it and
 the app restarts. **Release notes** opens
-[CHANGELOG.md](CHANGELOG.md).
+[CHANGELOG.md](CHANGELOG.md). The helper installs only a release newer than the installed one. Releases are
+immutable on GitHub: once published, the source and the GPU helper attached to a version cannot be swapped.
 
 To update by hand instead:
 
@@ -210,11 +215,12 @@ boreasctl cputemp default   # turn it off
 boreasctl cpufloor 45       # sustained power floor; `cpufloor min` = firmware minimum
 ```
 
-**Boreas holds this target in software, so the CPU can go above it for a while.** Boost, firmware,
+**Without the CPU's own ceiling (below), Boreas holds this target in software, so the CPU can go above it
+for a while.** Boost, firmware,
 shared GPU cooling and service delays can cause such overshoots, and it is offered only where the laptop exposes the CPU power
 controls.
 
-**Experimental: the CPU's own ceiling.** On many AMD Ryzen laptops the target can instead be handed to
+**The CPU's own ceiling (Ryzen, on by default, still new).** On many AMD Ryzen laptops the target can instead be handed to
 the CPU itself, the way G-Helper does on Windows; the CPU then holds it within milliseconds. This needs a
 small kernel module that is built with DKMS. The installer switches it on by default on every Ryzen family
 listed below; `dkms` and your kernel's headers must be installed for the module to build. The command it
@@ -241,6 +247,14 @@ lock it shares with the BIOS (`\_SB.AM00`). When the module is missing, refuses,
 Boreas keeps the software target above. Details and the list of families are in
 [docs/cpu-smu.md](docs/cpu-smu.md). Do not run another power tuning service at the same time. How the controller steps, what it
 does on errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-temperature.md).
+
+To see in 10 seconds, without installing anything, whether your laptop can use it (CPU family and the
+BIOS lock):
+
+```bash
+curl -LO https://raw.githubusercontent.com/Yusuf-Yonturk/boreas/main/tools/smu-check.sh
+sudo sh smu-check.sh
+```
 
 ## GPU modes
 
@@ -282,9 +296,10 @@ python3 -m boreas.gui.app               # UI (the service must be running)
 Settings: `/etc/boreas/config.json`. Socket: `/run/boreas.sock` (`wheel` group).
 
 To publish a new version, raise `__version__` in `boreas/__init__.py`, add a section to
-[CHANGELOG.md](CHANGELOG.md), push to `main` and push the tag `v<version>`; CI then attaches the GPU
-helper to that version's GitHub Release, which the installer downloads. Installed copies show the
-update note within a day.
+[CHANGELOG.md](CHANGELOG.md) and merge to `main`. Then push the tag `v<version>` and create the release as
+a draft (`gh release create v<version> --verify-tag --draft`); CI attaches the GPU helper, which the
+installer downloads, and publishes the release. Releases are immutable once published. Installed copies
+show the update note within a day.
 
 ## Contributing
 
@@ -301,8 +316,9 @@ workflow, tests and how to add a language.
   ASUS hardware.
 - The [asus-linux.org](https://asus-linux.org) community, for the Linux kernel drivers (asus-wmi,
   asus-armoury) and asusctl.
-- [RyzenAdj](https://github.com/FlyGoat/RyzenAdj) and [ZenStates-Core](https://github.com/irusanov/ZenStates-Core),
-  for their research on the AMD SMU.
+- [RyzenAdj](https://github.com/FlyGoat/RyzenAdj), [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)
+  and [ryzen_smu](https://github.com/amkillam/ryzen_smu), for their research on the AMD SMU.
+- The [Linux Hardware Project](https://github.com/linuxhw/ACPI), for its public ACPI tables.
 
 ## License
 
