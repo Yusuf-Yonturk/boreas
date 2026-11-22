@@ -1,5 +1,9 @@
 # Third-party source notices
 
+Boreas's code is its own. The only third-party code in this repository is the vendored Cardwire crates of
+the optional eBPF GPU engine (below). The other projects are listed because Boreas learned hardware
+protocol details from them or checked its own tables against them; no code was copied from them.
+
 ## Cardwire
 
 Source: https://github.com/OpenGamingCollective/cardwire
@@ -31,31 +35,34 @@ workspace manifests and build instructions, including the vendored eBPF sources.
 Other Cargo dependencies retain their respective licenses; these notices do not
 replace those dependencies' applicable license requirements.
 
-## G-Helper (protocol and control-flow reference)
+## G-Helper (CPU temperature and keyboard reference)
 
 Source: https://github.com/seerge/g-helper
 Reference commit: d7347c075d185a2b500458a2ceb468efa6d18982
 Original author/maintainer: Serge (seerge) and G-Helper contributors.
 License: GNU General Public License, version 3 (GPL-3.0).
 
-No C# source files from G-Helper are vendored in this repository. G-Helper
-re-applies the CPU temperature ceiling once, 5 seconds after a profile change
-(`app/Mode/ModeControl.cs`). Boreas measured the firmware reset itself on a
-G713PV and re-applies on its own schedule instead (see `docs/cpu-smu.md`); the
-30-second reapply on the families G-Helper marks as dropping the ceiling under
-load still follows G-Helper. The kernel module in `smu/`
-takes its per-family facts from G-Helper's `app/Pawn/RyzenSmu.cs` (reference
-commit aa0037c5326d002ecee316873dcf17de61fac228): which CPU families have a
-temperature command, the command number per family (`SetThm`), the MP1 mailbox
-addresses (`GetMp1Addrs`) and the mailbox sequence (`MailboxRaw`). The code is
-written from scratch; no G-Helper code is copied.
+No C# source files from G-Helper are in this repository and no G-Helper code is
+copied; Boreas's code is its own.
 
-The keyboard question in `boreas/aura.py` (`probe`, `kind_of`) was learned from
-G-Helper's `app/USB/AsusHid.cs` and `app/USB/Aura.cs` as of 2026-11-20: the two
-wake-up packets, the query, and the byte of the answer that tells a single-zone,
-a four-zone and a per-key keyboard apart. Boreas's code for this is its own; the
-colors and thresholds of the heatmap, battery and GPU mode effects are Boreas's
-own choices.
+CPU temperature ceiling: G-Helper's `app/Pawn/RyzenSmu.cs` (reference commit
+aa0037c5326d002ecee316873dcf17de61fac228) is one of four sources the per-family
+table in `smu/boreas_smu.c` was taken from and checked against; the others are
+RyzenAdj, PawnIO.Modules and ryzen_smu (below). The table holds which CPU families
+have a temperature command, its number (`SetThm`), the MP1 mailbox addresses
+(`GetMp1Addrs`) and the mailbox sequence (`MailboxRaw`). How Boreas uses them is
+its own: it goes through the kernel's locked SMN path, holds the BIOS's own lock
+(`\_SB.AM00`) for every message, re-applies the ceiling on a schedule measured on
+a G713PV (G-Helper re-applies once, 5 seconds after a profile change,
+`app/Mode/ModeControl.cs`), and falls back to the power limits on any fault. The
+30-second re-apply on the families G-Helper marks as dropping the ceiling under
+load follows G-Helper.
+
+Keyboard: the keyboard query in `boreas/aura.py` (`probe`, `kind_of`) follows the
+protocol G-Helper uses (`app/USB/AsusHid.cs`, `app/USB/Aura.cs`, as of 2026-11-20):
+the two wake-up packets, the query, and the byte of the answer that tells a
+single-zone, a four-zone and a per-key keyboard apart. The code, and the colors and
+thresholds of the heatmap, battery and GPU mode effects, are Boreas's own.
 
 ## asusctl (keyboard protocol reference)
 
@@ -65,8 +72,9 @@ Original authors: Luke Jones, Denis Benato and asusctl contributors.
 License: Mozilla Public License, version 2.0 (MPL-2.0).
 
 No source files from asusctl are vendored in this repository. The Aura packet
-layout, effect numbers, speed values and zone numbers in `boreas/aura.py` are
-the ones in asusctl's `rog-aura/src/builtin_modes.rs`.
+layout, effect numbers, speed values and zone numbers in `boreas/aura.py` match
+the ones in asusctl's `rog-aura/src/builtin_modes.rs`; Boreas's code for this is
+its own.
 
 Which effects are offered for each kind of keyboard (`modes_for`) is what
 asusctl's `rog-aura/data/aura_support.ron` lists for most models of that kind:
