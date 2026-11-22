@@ -3,7 +3,7 @@
 pkgname=boreas-smu-dkms
 _modname=boreas-smu
 _modver=1  # PACKAGE_VERSION in smu/dkms.conf
-pkgver=0.1.9
+pkgver=0.1.10
 pkgrel=1
 pkgdesc="Experimental: Boreas hands a mode's CPU temperature target to the Ryzen CPU itself (SMU kernel module, DKMS)"
 arch=('x86_64')
@@ -12,7 +12,7 @@ license=('GPL-2.0-only')
 depends=('boreas' 'dkms')
 install=boreas-smu-dkms.install
 source=("boreas-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('e725c5f0f78bd7ef02762af634ae304454bf75253f42793c8c10a6827da59842')
+sha256sums=('edc900911238775f7da083ad94e60dddd34ac527336997d525dc5a13b0c58ab4')
 
 package() {
     cd "boreas-$pkgver/smu"
