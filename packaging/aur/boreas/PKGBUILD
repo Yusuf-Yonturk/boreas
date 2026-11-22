@@ -9,6 +9,7 @@ url="https://github.com/Yusuf-Yonturk/boreas"
 license=('GPL-3.0-only')
 depends=('python>=3.11' 'pyside6' 'qt6-svg' 'systemd' 'hicolor-icon-theme')
 optdepends=('polkit: enable Boreas from its window instead of a terminal'
+            'boreas-smu-dkms: CPU temperature ceiling held by the CPU itself (experimental)'
             'qt6-wayland: sharp UI on Wayland'
             'kscreen: refresh rate control on KDE Plasma'
             'noto-fonts-cjk: Chinese and Japanese interface'

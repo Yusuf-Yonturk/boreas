@@ -218,10 +218,14 @@ Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 
 **Deneysel: CPU'nun kendi tavanı.** Birçok AMD Ryzen dizüstünde hedef, G-Helper'ın Windows'ta yaptığı
 gibi doğrudan CPU'ya verilebilir; CPU onu milisaniyeler içinde kendisi tutar. Bunun için DKMS ile
-derlenen küçük bir çekirdek modülü gerekir (`dkms` ve çekirdeğinizin başlık dosyaları kurulu olmalı):
+derlenen küçük bir çekirdek modülü gerekir. Kurulum bunu aşağıda listelenen her Ryzen ailesinde
+kendiliğinden açar; modülün derlenebilmesi için `dkms` ve çekirdeğinizin başlık dosyaları kurulu olmalı.
+Gönderilen komut, G-Helper ve RyzenAdj'in gönderdiği komutun aynısıdır. Kapatma tercihi
+`/etc/boreas/smu-off` dosyasına kaydedilir; sonraki kurulumlar ve güncellemeler kapalı bırakır:
 
 ```bash
-sudo BOREAS_SMU=1 ./install.sh   # açar (BOREAS_SMU=0 yeniden kapatır)
+sudo BOREAS_SMU=0 ./install.sh # kapatır; sonraki kurulumlarda ve güncellemelerde kapalı kalır
+sudo BOREAS_SMU=1 ./install.sh # yeniden açar
 ```
 
 Boreas'ı paket olarak mı kurdunuz (yukarıda)? O zaman modül ayrı bir pakettir ve

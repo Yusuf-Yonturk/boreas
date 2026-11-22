@@ -7,7 +7,7 @@ There is no BIOS modification, raw PCI 0xB8/0xBC write or raw-access fallback.
 
 ## Backends and scope
 
-- Default (`power-feedback`): Closed-loop ASUS power-attribute feedback
+- Fallback (`power-feedback`): Closed-loop ASUS power-attribute feedback
   (`ppt_pl1_spl`, `ppt_pl2_sppt`, `ppt_pl3_fppt`). Mainline Linux `asus-wmi`
   and `asus-armoury` do not expose an ASUS CPU temperature sysfs attribute
   for endpoint `0x0012009E` (and `DSTS(0x0012009E)` returns `ENODEV` on the
@@ -16,7 +16,9 @@ There is no BIOS modification, raw PCI 0xB8/0xBC write or raw-access fallback.
 - Experimental (`smu-bridge`): the CPU's own temperature ceiling through the
   `boreas_smu` kernel module (`/dev/boreas-smu`, `ryzen.BridgeSmu`). Selected when
   `/etc/boreas/smu` exists, the CPU family is supported and the module is loaded;
-  how it is installed, the supported families and the BIOS analysis are in
+  `install.sh` enables it by default on every supported family when no choice is saved;
+  `BOREAS_SMU=0` keeps it off across installs and updates through `/etc/boreas/smu-off`. DKMS and kernel headers are required.
+  Installation details, supported families and the BIOS analysis are in
   [cpu-smu.md](cpu-smu.md). On a mode change the ceiling is handed over directly
   (no default in between), re-written every 0.1 s for 8 s and every second for
   10 s, because the firmware puts its own ceiling back about 4 s after a mode is
