@@ -20,7 +20,7 @@ if [ -e /etc/boreas/boreas-gpu-engine ]; then
     echo "Local helper override /etc/boreas/boreas-gpu-engine is in use; checking it too" >&2
     /etc/boreas/boreas-gpu-engine --protocol-info
 fi
-python3 -m compileall -q "$STAGE/usr/lib/boreas/boreas"
+python3 -I -m compileall -q "$STAGE/usr/lib/boreas/boreas"
 BACKUP="/var/lib/boreas/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m700 "$BACKUP"
 for path in /usr/lib/boreas /etc/boreas /usr/lib/systemd/system/boreasd.service /usr/bin/boreas /usr/bin/boreasd /usr/bin/boreasctl; do
@@ -30,7 +30,7 @@ for path in /usr/lib/boreas /etc/boreas /usr/lib/systemd/system/boreasd.service 
 done
 printf '%s\n' "$BACKUP" > /var/lib/boreas/last-reviewed-backup
 # Never request a MUX change as a side effect of installing reviewed files.
-/usr/bin/boreasctl status | python3 -c 'import json,sys; g=json.load(sys.stdin).get("gpu") or {}; sys.exit("Leave Ultimate / finish the pending reboot before this live test" if g.get("mux") == 0 or g.get("pending_reboot") else 0)'
+/usr/bin/boreasctl status | python3 -I -c 'import json,sys; g=json.load(sys.stdin).get("gpu") or {}; sys.exit("Leave Ultimate / finish the pending reboot before this live test" if g.get("mux") == 0 or g.get("pending_reboot") else 0)'
 # Use the current service to leave firmware Eco before changing runtime files.
 /usr/bin/boreasctl gpu standard
 systemctl stop boreasd.service

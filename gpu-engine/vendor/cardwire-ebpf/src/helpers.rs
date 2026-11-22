@@ -1,5 +1,5 @@
 use aya_ebpf::helpers::{
-    bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_probe_read_kernel,
+    bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_probe_read_kernel,
     bpf_probe_read_kernel_str_bytes, bpf_probe_read_user, bpf_probe_read_user_str_bytes,
     bpf_probe_write_user, generated::bpf_get_current_task,
 };
@@ -222,6 +222,11 @@ fn get_task_ppid() -> Option<u32> {
 /// Verify if the proc is whitelisted, returns false if not
 #[inline(always)]
 pub fn is_comm_whitelisted() -> bool {
+    // Boreas: the names (udev, package managers) count only for root processes, because any
+    // process can give itself one of them (prctl PR_SET_NAME) to get past the Eco block
+    if bpf_get_current_uid_gid() as u32 != 0 {
+        return false;
+    }
     if let Ok(comm) = bpf_get_current_comm()
         && unsafe { CW_ALLOWED_COMM.get(comm).is_some() }
     {

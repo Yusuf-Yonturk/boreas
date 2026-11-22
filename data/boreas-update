@@ -25,6 +25,9 @@ def main(argv: list[str]) -> int:
     try:
         from boreas import update
         update.tarball_url(args[0])  # a release version, nothing else
+        # only forward: an older release (with fixed bugs back in) is not installed through here
+        if not update.is_newer(args[0]):
+            raise ValueError(f"{args[0]} is not newer than the installed {update.__version__}")
         if proxy_stdin:
             # on stdin, not argv: other users can read argv in /proc and pkexec logs it
             proxy = update.normalize_proxy(sys.stdin.readline(4096).removesuffix("\n"))

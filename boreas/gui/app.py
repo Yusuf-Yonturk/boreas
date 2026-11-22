@@ -72,7 +72,13 @@ def gpu_users_summary(users: list[str]) -> tuple[str, str]:
         line = _("{n} processes are using the dGPU").format(n=len(apps))
     else:
         line = _("only system services hold the dGPU")
-    return line, ", ".join(users)
+    # Qt reads a tooltip as rich text only when it finds markup ("<"). Such a list is escaped and
+    # wrapped in <qt>, so a process name shows as written instead of acting as markup; any other
+    # list stays plain text, where "&" and quotes already show as written.
+    tip = ", ".join(users)
+    if "<" in tip:
+        tip = "<qt>" + html.escape(tip, quote=False) + "</qt>"
+    return line, tip
 
 
 def _wind_paths(simple: bool = False) -> list:

@@ -7,6 +7,7 @@ change (including Fn+F5 and the KDE power profile) and when the charger is plugg
 
 from __future__ import annotations
 
+import errno
 import grp
 import json
 import os
@@ -23,7 +24,9 @@ from .config import BUILTIN, Config, check_mode_fields, sanitize_aura
 
 SOCKET = os.environ.get("BOREAS_SOCKET", "/run/boreas.sock")
 SOCKET_GROUP = "wheel"
-MAX_REQUEST = 1024 * 1024  # bytes per request line; the largest real one (a mode update) is a few kB
+MAX_REQUEST = 64 * 1024  # bytes per request line; a fully populated mode update is under 1 KiB
+MAX_CLIENTS = 16
+REQUEST_TIMEOUT = 10  # seconds to finish a request once its first byte arrives
 POLL_SECONDS = 1.0
 # seconds a connection may sit without sending a request
 IDLE_TIMEOUT = 30
@@ -880,12 +883,39 @@ class Handler(socketserver.StreamRequestHandler):
     # a client that connects and then sends nothing does not keep its thread forever
     timeout = IDLE_TIMEOUT
 
-    def handle(self):
+    def _read_request(self):
+        line = bytearray()
+        deadline = None
         while True:
-            # readline with a limit: a client that never sends a newline cannot grow the service's memory
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Request timed out")
+            if not self.pending:
+                left = self.timeout if deadline is None else deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    raise TimeoutError("Request timed out")
+                self.connection.settimeout(left)
+                self.pending = self.connection.recv(min(65536, MAX_REQUEST + 1 - len(line)))
+                if not self.pending:
+                    return bytes(line)
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("Request timed out")
+            if deadline is None:
+                deadline = time.monotonic() + REQUEST_TIMEOUT
+            newline = self.pending.find(b"\n")
+            take = len(self.pending) if newline < 0 else newline + 1
+            take = min(take, MAX_REQUEST + 1 - len(line))
+            line.extend(self.pending[:take])
+            self.pending = self.pending[take:]
+            if line.endswith(b"\n") or len(line) > MAX_REQUEST:
+                return bytes(line)
+
+    def handle(self):
+        self.pending = b""
+        while True:
             try:
-                line = self.rfile.readline(MAX_REQUEST + 1)
-            except OSError:  # idle for too long, or the connection was reset
+                line = self._read_request()
+                self.connection.settimeout(self.timeout)
+            except OSError:  # idle/total request timeout, or the connection was reset
                 return
             if not line:
                 return
@@ -902,8 +932,49 @@ class Handler(socketserver.StreamRequestHandler):
             self.wfile.flush()
 
 
+# said to a client over MAX_CLIENTS before the connection is closed, so it does not read as a crash
+TOO_MANY_CLIENTS = (json.dumps({"ok": False, "error": "Too many connections to boreasd, try again"}) + "\n").encode()
+
+
 class Server(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.client_slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        self.last_accept_warning = None
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self.client_slots.acquire(blocking=False):
+            try:
+                request.sendall(TOO_MANY_CLIENTS)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.client_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.client_slots.release()
+
+    def get_request(self):
+        try:
+            return super().get_request()
+        except OSError as exc:
+            if exc.errno in (errno.EMFILE, errno.ENFILE):
+                now = time.monotonic()
+                if self.last_accept_warning is None or now - self.last_accept_warning >= 5:
+                    log(f"Could not accept connection: {exc}")
+                    self.last_accept_warning = now
+                time.sleep(0.1)
+            raise
 
 
 def main() -> None:
