@@ -2,7 +2,7 @@
 
 Boreas can hand a mode's CPU temperature target to the CPU itself instead of steering the ASUS
 power limits in software (see [cpu-temperature.md](cpu-temperature.md)). The CPU then holds the
-ceiling within milliseconds, so short boost bursts no longer run past it. G-Helper does the same on
+ceiling itself, so short boost bursts no longer run past it (measurements below). G-Helper does the same on
 Windows. This page says how, on which CPUs, and what was checked.
 
 ## How it is switched on
