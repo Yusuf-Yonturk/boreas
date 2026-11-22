@@ -3,7 +3,7 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
-## Unreleased
+## 0.1.10
 
 - **Security hardening, second part:** the root update helper installs only a release newer than the one installed; the GPU helper's list of dGPU users stops after 2 s instead of delaying its reply past the service's timeout; and in Eco the process names allowed past the block (udev, package managers) count only for processes running as root, since any process can take such a name
 - **Security hardening** after an audit of the service, the installer and the GPU helper. `boreasd` takes at most 16 connections at a time (the next one is told so), a request line must arrive within 10 s and be under 64 KiB, and a full file table no longer makes it spin. `install.sh` and `tools/install-reviewed.sh` run Python with `-I`, so a module in the folder they are started from is not loaded as root. `boreas-setup` sets `umask 022` and tightens its records if an earlier run left them writable. The GPU helper must be a regular file that, with every folder above it, is owned by root and not writable by others. Process names that hold the dGPU are cleaned of control characters before they reach the log, the notice or the tooltip, and the tooltip shows them as text

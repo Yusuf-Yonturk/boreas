@@ -1,3 +1,3 @@
 """Boreas: control tool for ASUS ROG/TUF laptops."""
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
