@@ -11,6 +11,10 @@ Windows. This page says how, on which CPUs, and what was checked.
 sudo BOREAS_SMU=1 ./install.sh   # BOREAS_SMU=0 switches it off again
 ```
 
+A copy installed as a package (`packaging/aur/boreas`) takes the package
+`packaging/aur/boreas-smu-dkms` instead. It carries the same module source, `/etc/boreas/smu` and
+`/usr/lib/modules-load.d/boreas-smu.conf`; the `dkms` package's pacman hook builds the module.
+
 The installer writes `/etc/boreas/smu` (the choice, kept by later installs and the in-app update),
 builds the kernel module `boreas_smu` from `smu/` with DKMS for every installed kernel that has its
 headers, and loads it at boot (`/etc/modules-load.d/boreas-smu.conf`). `boreasd` then uses the

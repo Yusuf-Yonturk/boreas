@@ -1,0 +1,32 @@
+post_install() {
+    cat <<'MSG'
+==> The boreas_smu module is built for every kernel with headers installed
+    (linux-headers, linux-lts-headers, ...). It loads at the next boot; to use it now:
+
+        sudo modprobe boreas_smu && sudo systemctl try-restart boreasd
+
+    'boreasctl status' then shows "control": "smu-bridge". On a CPU or BIOS the module
+    does not support it does not load and Boreas keeps the power-feedback controller.
+MSG
+}
+
+post_upgrade() {
+    echo "==> The updated boreas_smu module is used after the next boot."
+}
+
+pre_remove() {
+    # boreasd gives the CPU its default temperature ceiling back when it stops, which needs the
+    # module; it is started again without the module after removal
+    if systemctl is-active --quiet boreasd.service 2>/dev/null; then
+        : > /run/boreas-smu-dkms-restart
+        systemctl stop boreasd.service 2>/dev/null || true
+    fi
+}
+
+post_remove() {
+    modprobe -r boreas_smu 2>/dev/null || true
+    if [ -f /run/boreas-smu-dkms-restart ]; then
+        rm -f /run/boreas-smu-dkms-restart
+        systemctl start boreasd.service 2>/dev/null || true
+    fi
+}

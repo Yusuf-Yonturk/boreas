@@ -222,6 +222,15 @@ small kernel module that is built with DKMS (`dkms` and your kernel's headers mu
 sudo BOREAS_SMU=1 ./install.sh   # switch it on (BOREAS_SMU=0 switches it off again)
 ```
 
+Installed as a package (see above)? Then the module is a package of its own, removed again with
+`sudo pacman -R boreas-smu-dkms`:
+
+```bash
+cd boreas/packaging/aur/boreas-smu-dkms
+makepkg -si
+sudo modprobe boreas_smu && sudo systemctl try-restart boreasd   # or reboot
+```
+
 Boreas recognises the CPU family by itself (Ryzen 2000-3000, 4000-5000, 6000-8000 mobile, 7045HX-9055HX,
 Ryzen AI 300 / AI Max). The module refuses to load on any other CPU, and on a BIOS that does not offer the
 lock it shares with the BIOS (`\_SB.AM00`). When the module is missing, refuses, or reports an error,

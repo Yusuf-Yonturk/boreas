@@ -224,6 +224,15 @@ derlenen küçük bir çekirdek modülü gerekir (`dkms` ve çekirdeğinizin ba�
 sudo BOREAS_SMU=1 ./install.sh   # açar (BOREAS_SMU=0 yeniden kapatır)
 ```
 
+Boreas'ı paket olarak mı kurdunuz (yukarıda)? O zaman modül ayrı bir pakettir ve
+`sudo pacman -R boreas-smu-dkms` ile yeniden kaldırılır:
+
+```bash
+cd boreas/packaging/aur/boreas-smu-dkms
+makepkg -si
+sudo modprobe boreas_smu && sudo systemctl try-restart boreasd   # ya da yeniden başlatın
+```
+
 Boreas CPU ailesini kendisi tanır (Ryzen 2000-3000, 4000-5000, 6000-8000 mobil, 7045HX-9055HX,
 Ryzen AI 300 / AI Max). Modül başka bir CPU'da ve BIOS ile paylaştığı kilidi (`\_SB.AM00`) sunmayan bir
 BIOS'ta yüklenmez. Modül yoksa, yüklenmezse ya da hata bildirirse Boreas yukarıdaki yazılımsal hedefle
