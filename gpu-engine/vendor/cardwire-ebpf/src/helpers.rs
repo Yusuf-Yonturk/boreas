@@ -222,7 +222,7 @@ fn get_task_ppid() -> Option<u32> {
 /// Verify if the proc is whitelisted, returns false if not
 #[inline(always)]
 pub fn is_comm_whitelisted() -> bool {
-    // Boreas: the names (udev, package managers) count only for root processes, because any
+    // Boreas change, 2026-11-22: the names (udev, package managers) count only for root processes, because any
     // process can give itself one of them (prctl PR_SET_NAME) to get past the Eco block
     if bpf_get_current_uid_gid() as u32 != 0 {
         return false;

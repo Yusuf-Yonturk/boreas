@@ -3,9 +3,10 @@
 Default backend: bounded ASUS power-attribute feedback (power-feedback) with an
 escalation ladder below the mode's own CPU policy (EPP, cpufreq boost, governor).
 Optional backend (smu-bridge): the CPU's own temperature ceiling through the boreas_smu
-kernel module (/dev/boreas-smu), selected when the user opted in (/etc/boreas/smu), the CPU
-family is in ryzen.FAMILIES and the module is loaded. It writes the ceiling, re-applies it
-5 s after the profile write (and every 30 s on families that drop it), and on any fault falls
+kernel module (/dev/boreas-smu), selected when /etc/boreas/smu exists (the installer's default
+on a known family), the CPU family is in ryzen.FAMILIES and the module is loaded. It writes the
+ceiling, re-writes it every 0.1 s for 8 s and every 1 s for 10 s after it is written (and every
+30 s on families that drop it), and on any fault falls
 back to power-feedback for the rest of the service's life. Never raw PCI 0xB8/0xBC.
 Neither backend claims verified physical thermal ceiling enforcement.
 """
