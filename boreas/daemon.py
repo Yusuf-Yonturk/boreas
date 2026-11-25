@@ -35,10 +35,14 @@ THERMAL_STALL = 3 * POLL_SECONDS
 ECO_RETRY_TICKS = 15
 AURA_FOLLOW_STEP = 8  # a follow mode rewrites the keyboard color once a channel has moved this far
 # High temperature log: 95 °C, or 5 °C above a lowered limit. Not every second:
-# two lines per episode (start + end, with the peak) go to the journal.
+# two lines per episode (start + end, with the peak) go to the journal, and one more when a
+# lowered limit is not held for HOT_NOTICE_AFTER seconds: that one is also shown in the window.
 HOT_TEMP = 95
+HOT_NOTICE_AFTER = 60
 HOT_OVER_LIMIT = 5
 HOT_HYSTERESIS = 3
+# A mode's own settings that are not power limits: written whether or not "Apply power limits" is on.
+ALWAYS_ATTRS = ("nv_temp_target",)
 GPU_TARGETS = (gpu.ECO, gpu.STANDARD, gpu.OPTIMIZED, gpu.ULTIMATE)
 
 
@@ -203,16 +207,17 @@ class Daemon:
                         self.cpu.fail(str(e))
                         thermal_ready = False
 
-            if m["power_apply"]:
+            wanted = {n: v for n, v in {**(m.get("ppt") or {}), **(m.get("nv") or {})}.items()
+                      if v is not None and (m["power_apply"] or n in ALWAYS_ATTRS)}
+            if wanted:
                 time.sleep(0.5)
-                for name, value in {**(m.get("ppt") or {}), **(m.get("nv") or {})}.items():
-                    if value is None:
-                        continue
+                for name, value in wanted.items():
                     try:
                         if not hw.set_attr(name, int(value)):
                             log(f"{name}: firmware offers no adjustable range right now, skipped")
                             continue
-                        self.custom_power = True
+                        if name not in ALWAYS_ATTRS:
+                            self.custom_power = True
                     except (OSError, ValueError) as e:
                         self.set_notice(f"Could not write {name}: {e}")
                         if thermal_on and name in thermal.POWER_ATTRS:
@@ -677,19 +682,45 @@ class Daemon:
             self.temp_peak = {"max": t, "at": time.strftime("%d.%m %H:%M:%S"), "mode": m["name"]}
         limit = m.get("cpu_temp")
         lowered = limit is not None and thermal.MIN_TEMP <= limit < thermal.DEFAULT_TEMP
+        threshold = min(HOT_TEMP, limit + HOT_OVER_LIMIT) if lowered else HOT_TEMP
+        if self.hot is not None and self.hot["threshold"] != threshold:
+            # The mode or its target changed: the episode was measured against the old threshold.
+            # Close it, so the new one is judged (and logged) on its own.
+            log(f"high temperature ended: peak {self.hot['max']}°C, "
+                f"{time.monotonic() - self.hot['start']:.0f} s (threshold changed to {threshold})")
+            self.end_hot_notice()
+            self.hot = None
+        now = time.monotonic()
+        noticed_limit = limit if lowered else None
         if self.hot is None:
-            threshold = min(HOT_TEMP, limit + HOT_OVER_LIMIT) if lowered else HOT_TEMP
             if t >= threshold:
-                self.hot = {"threshold": threshold, "max": t, "start": time.monotonic()}
+                self.hot = {"threshold": threshold, "max": t, "start": now,
+                            "limit": noticed_limit, "since": now}
                 fans_rpm = ", ".join(f"{k} {v}" for k, v in hw.fan_rpms().items())
                 log(f"high temperature: CPU {t}°C (threshold {threshold}, mode {m['name']}, "
                     f"limit {limit if lowered else 'default'}, fan {fans_rpm or '?'} rpm)")
             return
         self.hot["max"] = max(self.hot["max"], t)
+        if self.hot["limit"] != noticed_limit:
+            # Another limit with the same threshold (90-95 °C, or none): the episode goes on, but the
+            # notice names a limit, so its minute starts again and the old one comes down.
+            self.end_hot_notice()
+            self.hot.update(limit=noticed_limit, since=now, noticed=False)
         if t <= self.hot["threshold"] - HOT_HYSTERESIS:
             log(f"high temperature ended: peak {self.hot['max']}°C, "
-                f"{time.monotonic() - self.hot['start']:.0f} s")
+                f"{now - self.hot['start']:.0f} s")
+            self.end_hot_notice()
             self.hot = None
+        elif (lowered and t >= threshold and not self.hot.get("noticed") and self.notice == ""
+              and now - self.hot["since"] >= HOT_NOTICE_AFTER):
+            # Once per episode, and never over another notice: a dismissed one stays dismissed.
+            self.hot["noticed"] = True
+            self.set_notice(f"CPU at {int(round(t))} °C: this mode's {int(limit)} °C limit is not being held")
+
+    def end_hot_notice(self) -> None:
+        """Take the 'limit not held' notice down when its episode is over; other notices stay."""
+        if self.notice.startswith("CPU at ") and self.notice.endswith(" limit is not being held"):
+            self.notice = ""
 
     # ---- status ----------------------------------------------------------------
 
@@ -800,6 +831,11 @@ class Daemon:
                                 self.apply_mode(mode_id)
                             else:
                                 self.apply_cpu_temp(target, entry)
+                                if changed & {"cpu_temp", "cpu_temp_floor_w"}:
+                                    floor = entry.get("cpu_temp_floor_w")
+                                    log(f"cpu target: {target if enabled else 'default'}"
+                                        f"{'°C' if enabled else ''} (mode {entry['name']})"
+                                        f"{f' +floor {floor}W' if enabled and floor else ''}")
                 return {"mode": entry}
             if cmd == "default_curve":
                 fan = req["fan"]

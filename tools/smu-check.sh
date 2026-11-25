@@ -1,5 +1,5 @@
 #!/bin/sh
-# smu-check.sh [TABLE_DIR]: can the experimental CPU temperature ceiling (docs/cpu-smu.md) work on
+# smu-check.sh [TABLE_DIR]: can the CPU temperature ceiling (docs/cpu-smu.md) work on
 # this laptop? Reads the CPU family and the BIOS's ACPI tables, changes nothing and needs no
 # Boreas install. The tables are root-only, so run it with sudo:
 #     sudo sh smu-check.sh

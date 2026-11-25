@@ -322,10 +322,11 @@ def align_sliders(sliders) -> None:
     if not sliders:
         return
     head = max(s.head_width() for s in sliders)
-    value = max(s.value_width() for s in sliders)
+    value = max((s.value_width() for s in sliders if isinstance(s, ValueSlider)), default=0)
     for s in sliders:
         s.head.setFixedWidth(head)
-        s.value.setFixedWidth(value)
+        if isinstance(s, ValueSlider):
+            s.value.setFixedWidth(value)
 
 
 def hint(text: str = "") -> QLabel:
@@ -360,6 +361,33 @@ def footer_bar(inner: QHBoxLayout) -> QWidget:
     return outer
 
 
+def _head_width(info: QLabel | None) -> int:
+    """The label column, plus the icon's footprint so the icon takes nothing from the label."""
+    return u(176) + (u(6) + info.width() if info is not None else 0)
+
+
+class ControlRow(QWidget):
+    """A control in the sliders' columns: the label takes the label column and the control starts where
+    the grooves start and runs to the card's edge. Goes through align_sliders with the sliders."""
+
+    def __init__(self, label: str, control: QWidget, height: int = 56, info: str = ""):
+        super().__init__()
+        self.setFixedHeight(uv(height))
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(u(20))
+        self.name = QLabel(label)
+        self.name.setWordWrap(True)
+        self.info: QLabel | None = info_icon(info) if info else None
+        self.head = _labelled(self.name, self.info)
+        self.head.setFixedWidth(self.head_width())
+        lay.addWidget(self.head)
+        lay.addWidget(control, 1, Qt.AlignVCenter)
+
+    def head_width(self) -> int:
+        return _head_width(self.info)
+
+
 class ValueSlider(QWidget):
     def __init__(self, label: str, lo: int, hi: int, value: int, unit: str, max_text: str = "", min_text: str = "",
                  info: str = ""):
@@ -390,8 +418,7 @@ class ValueSlider(QWidget):
         self._show(value)
 
     def head_width(self) -> int:
-        """The label column, plus the icon's footprint so the icon takes nothing from the label."""
-        return u(176) + (u(6) + self.info.width() if self.info is not None else 0)
+        return _head_width(self.info)
 
     def value_width(self) -> int:
         self.value.ensurePolished()

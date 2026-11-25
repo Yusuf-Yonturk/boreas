@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QInputDialog, QLa
 from ..fans import POINTS, fix_curve, point_floor
 from ..i18n import _, mode_name, tr_msg
 from .common import Hold, T, fs, run_async, u, uv
-from .widgets import (CheckDot, Segmented, Switch, ValueSlider, card, footer_bar, hline, row,  # noqa: F401
+from .widgets import (CheckDot, ControlRow, Segmented, Switch, ValueSlider, card, footer_bar, hline, row,  # noqa: F401
                       align_sliders, scroll_page, set_info)
 
 FLOOR_SLACK_W = 2  # the controller's recovery step (thermal.RECOVER_STEP_W): how far above the floor "(floor)" is held
@@ -252,19 +252,16 @@ class FansWindow(QWidget):
         self.cpu_boost_cb: QComboBox | None = None
         if main.status.get("cpu_boost_supported", True):
             cb = QComboBox()
-            cb.setFixedWidth(u(220))
             cb.setCursor(Qt.PointingHandCursor)
             self.cpu_boost_cb = cb
             self._fill_boost_items(performance=False)
             cb.currentIndexChanged.connect(self._dirty)
-            pl.addWidget(row(_("CPU Boost"), cb, height=56))
-            pl.addWidget(hline())
+            pl.addWidget(ControlRow(_("CPU Boost"), cb))
         # Power profile (cpufreq governor) under CPU Boost: what the desktop's power menu set
         self.cpu_governor_cb: QComboBox | None = None
         governors = main.status.get("cpu_governors") or []
         if len(governors) > 1:
             cb = QComboBox()
-            cb.setFixedWidth(u(220))
             cb.setCursor(Qt.PointingHandCursor)
             for g_key, g_label in (
                 ("default", _("Default")),
@@ -276,10 +273,15 @@ class FansWindow(QWidget):
             cb.currentIndexChanged.connect(self._dirty)
             cb.currentIndexChanged.connect(self._sync_boost_items)
             self.cpu_governor_cb = cb
-            r = row(_("Power profile"), cb, height=56, info=_("Default leaves the governor to the driver. Power saver lets the clock drop when it can and keeps the CPU Boost preference in effect. Performance holds every core at its highest clock; CPU Boost is then only on or off."))
+            r = ControlRow(_("Power profile"), cb, info=_("Default leaves the governor to the driver. Power saver lets the clock drop when it can and keeps the CPU Boost preference in effect. Performance holds every core at its highest clock; CPU Boost is then only on or off."))
             self.cpu_governor_info = r.info
             pl.addWidget(r)
-            pl.addWidget(hline())
+        # Three groups with a line between them: the selectors above, then the temperature targets, then
+        # the switch with the power limits it applies under it (greyed out while it is off).
+        self.power_apply = Switch()
+        self.power_apply.toggled.connect(self._dirty)
+        self.power_apply.toggled.connect(self._sync_power_rows)
+        power = [row(_("Apply power limits"), self.power_apply, height=56)]
         self.sliders: dict[str, ValueSlider] = {}
         attrs = main.status.get("attrs", {})
         for name, label in {**PPT_LABELS, **NV_LABELS}.items():
@@ -289,21 +291,9 @@ class FansWindow(QWidget):
             s = ValueSlider(_(label), a["min"], a["max"], a["current"] or a["min"], NV_UNITS.get(name, "W"))
             s.slider.valueChanged.connect(self._dirty)
             self.sliders[name] = s
-            pl.addWidget(s)
-        # CPU temperature target, independent of the power box; top value disables feedback
-        self.cpu_temp = None
+            if name in PPT_LABELS:
+                power.append(s)
         ct = main.status.get("cpu_temp")
-        if ct:
-            pl.addWidget(hline())
-            self.cpu_temp_info = _("Lowers the CPU power limits toward the target; short bursts can still overshoot by a few degrees, since the firmware sets a floor on the limits.")
-            self.cpu_conflict = _("With the Performance power profile the EPP cannot be lowered: when the target is exceeded the controller switches boost off and falls back to the default power profile until the CPU cools.")
-            self.cpu_temp = ValueSlider(_("CPU temperature target"), ct["min"], ct["max"], ct["max"], "°C",
-                                        max_text=_("Default"), info=self.cpu_temp_info)
-            self.cpu_temp.slider.valueChanged.connect(self._dirty)
-            pl.addWidget(self.cpu_temp)
-            self.cpu_temp.slider.valueChanged.connect(self._sync_conflict_hint)
-            if self.cpu_governor_cb is not None:
-                self.cpu_governor_cb.currentIndexChanged.connect(self._sync_conflict_hint)
         # Sustained power floor: the target never requests SPL below it, the ladder takes over there
         self.cpu_floor = None
         spl = attrs.get("ppt_pl1_spl") or {}
@@ -311,11 +301,30 @@ class FansWindow(QWidget):
             self.cpu_floor = ValueSlider(_("Sustained power floor"), spl["min"], spl["max"], spl["min"], "W",
                                          min_text=_("Off"), info=_("The controller never lowers the sustained limit (SPL) below this value. Once it is reached, the controller lowers the EPP, then switches boost off, then the power profile, and restores them in reverse order when the CPU cools. At the lowest position no floor is set and the firmware's own minimum applies."))
             self.cpu_floor.slider.valueChanged.connect(self._dirty)
-            pl.addWidget(self.cpu_floor)
-        pl.addWidget(hline())
-        self.power_apply = Switch()
-        self.power_apply.toggled.connect(self._dirty)
-        pl.addWidget(row(_("Apply power limits"), self.power_apply, height=56))
+        power += [s for n, s in self.sliders.items() if n in NV_LABELS and NV_UNITS.get(n) != "°C"]
+        # the temperature targets, both independent of the switch; the CPU target's top value disables feedback
+        temps = []
+        self.cpu_temp = None
+        if ct:
+            self.cpu_temp_info = _("Lowers the CPU power limits toward the target; short bursts can still overshoot by a few degrees, since the firmware sets a floor on the limits.")
+            self.cpu_conflict = _("With the Performance power profile the EPP cannot be lowered: when the target is exceeded the controller switches boost off and falls back to the default power profile until the CPU cools.")
+            self.cpu_temp = ValueSlider(_("CPU temperature target"), ct["min"], ct["max"], ct["max"], "°C",
+                                        max_text=_("Default"), info=self.cpu_temp_info)
+            self.cpu_temp.slider.valueChanged.connect(self._dirty)
+            temps.append(self.cpu_temp)
+            if self.cpu_floor is not None:
+                temps.append(self.cpu_floor)  # right under the target it belongs to
+            self.cpu_temp.slider.valueChanged.connect(self._sync_conflict_hint)
+            self.cpu_temp.slider.valueChanged.connect(self._sync_power_rows)
+            if self.cpu_governor_cb is not None:
+                self.cpu_governor_cb.currentIndexChanged.connect(self._sync_conflict_hint)
+        temps += [s for n, s in self.sliders.items() if NV_UNITS.get(n) == "°C"]
+        for group in (temps, power):
+            if group and pl.count() > 2:  # the card's head and its line come first
+                pl.addWidget(hline())
+            for w in group:
+                pl.addWidget(w)
+        self._sync_power_rows()
         pl.addSpacing(uv(4))
         root.addWidget(pc)
 
@@ -324,7 +333,7 @@ class FansWindow(QWidget):
         if pil is not None:
             root.addWidget(pil)
         root.addStretch(1)
-        align_sliders(content.findChildren(ValueSlider))  # rows with an info icon have a wider label column
+        align_sliders(content.findChildren(ValueSlider) + content.findChildren(ControlRow))  # rows with an info icon have a wider label column
         outer.addWidget(scroll_page(content), 1)
 
         # Bottom bar: status + Apply
@@ -372,6 +381,14 @@ class FansWindow(QWidget):
         idx = cb.findData(keep) if keep is not None else -1
         cb.setCurrentIndex(idx if idx >= 0 else 0)
         cb.blockSignals(False)
+
+    def _sync_power_rows(self, *_args):
+        """A slider that is not in effect is greyed out: the limits with the switch off, the floor without a target."""
+        for name, s in self.sliders.items():
+            s.setEnabled(self.power_apply.isChecked() or NV_UNITS.get(name) == "°C")
+        if self.cpu_floor is not None:  # the floor belongs to the temperature target: idle without one
+            t = self.cpu_temp.slider
+            self.cpu_floor.setEnabled(t.value() < t.maximum())
 
     def _sync_conflict_hint(self, *_args):
         """The target's info icon also explains the Performance power profile's effect while both are selected."""

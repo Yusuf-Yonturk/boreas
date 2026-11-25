@@ -2,7 +2,7 @@
 
 **Linux'ta ASUS ROG ya da TUF dizüstünüz için tek küçük pencere: her mod kendi fanlarını, güç limitlerini ve sıcaklık hedefini taşır.**
 
-[English](README.md) · **Türkçe**
+[English](README.md) · **Türkçe** · [Web sitesi](https://yusufyonturk.com/boreas/)
 
 <p align="center">
   <img src="docs/demo.gif" alt="Boreas: açık ve koyu temada ana pencere ile Fanlar ve güç sayfası; mod, GPU modu, klavye efekti ve şarj limiti değişirken">
@@ -235,7 +235,8 @@ Denetleyicinin adımları, hata durumunda ne yaptığı ve durum alanları
 
 **CPU'nun kendi tavanı (AMD Ryzen işlemciler, varsayılan açık, henüz yeni).** Birçok AMD Ryzen dizüstünde hedef doğrudan
 CPU'ya verilebilir; CPU onu kendisi tutar, böylece kısa boost atakları artık tavanı aşıp geçmez (bir G713PV'de
-en yüksek değer tavanın yaklaşık 2 °C yakınında kaldı). Bunun için DKMS ile
+en yüksek değer tavanın yaklaşık 2 °C yakınında kaldı). Oyunda, sessiz bir modda düşük tavan işlemci
+hızını epey düşürebilir: ölçümler ve ne yapılacağı [docs/cpu-smu.md](docs/cpu-smu.md) dosyasında. Bunun için DKMS ile
 derlenen küçük bir çekirdek modülü gerekir. Kurulum bunu aşağıda listelenen her AMD Ryzen işlemci ailesinde
 kendiliğinden açar; modülün derlenebilmesi için `dkms` ve çekirdeğinizin başlık dosyaları kurulu olmalı.
 Komut AMD'nin kendisine ait (SMU'nun sıcaklık sınırı mesajı); RyzenAdj ve G-Helper da aynısını gönderir,

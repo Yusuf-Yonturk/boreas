@@ -1695,6 +1695,107 @@ class TestThermalDaemon(Base):
         self.assertEqual(len(hot), 2, hot)
         self.assertIn("threshold 85", hot[0])
 
+    def test_hot_episode_ends_when_the_threshold_changes(self):
+        d, smn, clock = self._daemon(80)
+        d.apply_mode(hw.BALANCED)
+        lines = self._hot_run(d, clock, [86, 87])
+        d.cfg.mode(hw.BALANCED)["cpu_temp"] = 88  # threshold 85 -> 93: 87 is no longer hot
+        lines += self._hot_run(d, clock, [87, 87])
+        d.cfg.mode(hw.BALANCED)["cpu_temp"] = 80  # back to 85: a new episode, logged again
+        lines += self._hot_run(d, clock, [87])
+        hot = [l for l in lines if "high temperature" in l]
+        self.assertEqual(len(hot), 3, hot)
+        self.assertIn("threshold changed to 93", hot[1])
+        self.assertIn("threshold 85", hot[2])
+
+    def test_target_change_of_the_running_mode_is_logged(self):
+        d, smn, clock = self._daemon(82)
+        d.apply_mode(hw.BALANCED)
+        lines = []
+        with patch.object(daemon, "log", side_effect=lines.append):
+            d.handle({"cmd": "update_mode", "mode": hw.BALANCED, "data": {"cpu_temp": 85}})
+            d.handle({"cmd": "update_mode", "mode": hw.BALANCED, "data": {"cpu_temp": 85}})
+        hits = [l for l in lines if l.startswith("cpu target: 85°C")]
+        self.assertEqual(len(hits), 1, lines)  # the change, not the unchanged resend
+
+    def _hot_notice_setup(self):
+        d, smn, clock = self._daemon(80)
+        d.apply_mode(hw.BALANCED)
+        return d, clock
+
+    def test_hot_notice_after_a_minute_above_lowered_limit(self):
+        d, clock = self._hot_notice_setup()
+        self._hot_run(d, clock, [88] * 60)  # the episode opens on the first call: 59 s so far
+        self.assertEqual(d.notice, "")
+        self._hot_run(d, clock, [88])
+        self.assertIn("88 °C", d.notice)
+        self.assertIn("80 °C limit is not being held", d.notice)
+
+    def test_hot_notice_waits_for_other_notice_and_comes_later(self):
+        d, clock = self._hot_notice_setup()
+        d.set_notice("something else")
+        self._hot_run(d, clock, [88] * 70)
+        self.assertEqual(d.notice, "something else")
+        d.handle({"cmd": "clear_notice"})
+        self._hot_run(d, clock, [88])
+        self.assertIn("limit is not being held", d.notice)
+
+    def test_hot_notice_not_raised_again_after_dismissal(self):
+        d, clock = self._hot_notice_setup()
+        self._hot_run(d, clock, [88] * 61)
+        self.assertIn("limit is not being held", d.notice)
+        d.handle({"cmd": "clear_notice"})
+        self._hot_run(d, clock, [88] * 30)
+        self.assertEqual(d.notice, "")
+
+    def test_hot_notice_goes_away_with_the_episode_but_not_others(self):
+        d, clock = self._hot_notice_setup()
+        self._hot_run(d, clock, [88] * 61)
+        self.assertIn("limit is not being held", d.notice)
+        self._hot_run(d, clock, [70])
+        self.assertEqual(d.notice, "")
+        self._hot_run(d, clock, [88] * 61)
+        d.set_notice("something else")
+        self._hot_run(d, clock, [70])
+        self.assertEqual(d.notice, "something else")
+
+    def test_hot_notice_goes_away_when_the_threshold_changes(self):
+        d, clock = self._hot_notice_setup()
+        self._hot_run(d, clock, [88] * 61)
+        self.assertIn("limit is not being held", d.notice)
+        d.cfg.mode(hw.BALANCED)["cpu_temp"] = 90
+        self._hot_run(d, clock, [88])
+        self.assertEqual(d.notice, "")
+
+    def test_no_hot_notice_without_lowered_limit(self):
+        d, smn, clock = self._daemon(None)
+        self._hot_run(d, clock, [96] * 120)
+        self.assertEqual(d.notice, "")
+
+    def test_hot_notice_clock_starts_again_with_a_new_limit(self):
+        # 92 keeps the threshold at 95, so the episode goes on: the limit still gets its own minute
+        d, smn, clock = self._daemon(None)
+        self._hot_run(d, clock, [96] * 120)
+        d.cfg.mode(hw.BALANCED)["cpu_temp"] = 92
+        self._hot_run(d, clock, [96] * 60)
+        self.assertEqual(d.notice, "")
+        self._hot_run(d, clock, [96])
+        self.assertIn("92 °C limit is not being held", d.notice)
+
+    def test_hot_notice_does_not_outlive_its_limit(self):
+        d, smn, clock = self._daemon(90)
+        d.apply_mode(hw.BALANCED)
+        self._hot_run(d, clock, [96] * 61)
+        self.assertIn("90 °C limit is not being held", d.notice)
+        d.cfg.mode(hw.BALANCED)["cpu_temp"] = None  # the threshold stays 95
+        self._hot_run(d, clock, [96] * 90)
+        self.assertEqual(d.notice, "")
+
+    def test_no_hot_notice_while_under_the_threshold(self):
+        d, clock = self._hot_notice_setup()
+        self._hot_run(d, clock, [88] + [84] * 70)  # 84 keeps the episode open, but is not over 85
+        self.assertEqual(d.notice, "")
+
     def test_normal_temperature_not_logged(self):
         d, smn, clock = self._daemon(85)
         d.apply_mode(hw.BALANCED)
@@ -2055,6 +2156,17 @@ class TestDaemon(Base):
         self.assertEqual(get(f"{ARM}/nv_dynamic_boost/current_value"), "20")
         self.assertTrue(d.custom_power)
         self.assertEqual(config.Config()["mode_ac"], hw.TURBO)
+
+    def test_gpu_temp_target_does_not_wait_for_the_power_switch(self):
+        d = self.make()
+        m = d.cfg.mode(hw.TURBO)
+        m.update(power_apply=False, ppt={"ppt_pl1_spl": 100}, nv={"nv_dynamic_boost": 20, "nv_temp_target": 80})
+        spl, boost = get(f"{ARM}/ppt_pl1_spl/current_value"), get(f"{ARM}/nv_dynamic_boost/current_value")
+        d.set_mode(hw.TURBO)
+        self.assertEqual(get(f"{ARM}/nv_temp_target/current_value"), "80")
+        self.assertEqual(get(f"{ARM}/ppt_pl1_spl/current_value"), spl)  # the limits stay with the switch
+        self.assertEqual(get(f"{ARM}/nv_dynamic_boost/current_value"), boost)
+        self.assertFalse(d.custom_power)
 
     def test_mode_without_fans_disables_curve(self):
         d = self.make()

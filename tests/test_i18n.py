@@ -135,6 +135,11 @@ class TestLookup(unittest.TestCase):
         self.assertEqual(i18n.tr_msg("CPU temperature limit must be 75..96"), "CPU sıcaklık limiti 75..96 olmalı")
         self.assertEqual(i18n.tr_msg("something new"), "something new")
 
+    def test_hot_limit_notice_translated(self):
+        i18n.set_language("tr")
+        self.assertEqual(i18n.tr_msg("CPU at 88 °C: this mode's 80 °C limit is not being held"),
+                         "CPU 88 °C'de: bu modun 80 °C limiti tutturulamıyor")
+
     def test_daemon_messages_match_templates(self):
         """Messages produced by the service must match the catalog templates (the test breaks if the source changes)."""
         with open(os.path.join(ROOT, "boreas/daemon.py"), encoding="utf-8") as fh:
