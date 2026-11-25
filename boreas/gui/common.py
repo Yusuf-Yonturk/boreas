@@ -170,16 +170,18 @@ QSlider::groove:horizontal {{ height:{groove}px; background:{p['track']}; border
 QSlider::sub-page:horizontal {{ background:{p['fill']}; border-radius:{groove // 2 + 1}px; }}
 QSlider::handle:horizontal {{ background:#ffffff; width:{hw}px; height:{hw}px; margin:{hm}px 0; border-radius:{hr}px; border:1px solid rgba(0,0,0,0.18); }}
 QSlider::handle:horizontal:disabled {{ background:{p['swOff']}; }}
+QSlider::sub-page:horizontal:disabled {{ background:{p['swOff']}; }}
+QLabel:disabled {{ color:{p['dim']}; }}
 
 QCheckBox {{ spacing:{u(12)}px; }}
 QCheckBox::indicator {{ width:{u(18)}px; height:{u(18)}px; border:1px solid {p['inputBorder']}; border-radius:{u(5)}px; background:{p['input']}; }}
 QCheckBox::indicator:checked {{ background:{p['fill']}; border-color:{p['fill']}; image:url({check}); }}
 
 QScrollArea {{ border:none; background:transparent; }}
-QScrollBar:vertical {{ width:{u(10)}px; background:transparent; margin:0; }}
+QScrollBar:vertical {{ width:{u(10)}px; background:{p['win']}; margin:0; }}
 QScrollBar::handle:vertical {{ background:{p['track']}; border-radius:{u(4)}px; min-height:30px; margin:2px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:transparent; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:{p['win']}; }}
 """
 
 

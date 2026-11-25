@@ -613,6 +613,12 @@ _T = {
         "Impossible d'appliquer la limite de température CPU : {error}", "Não foi possível aplicar o limite de temperatura da CPU: {error}",
         "Не удалось применить лимит температуры CPU: {error}", "CPU-Temperaturgrenze konnte nicht angewendet werden: {error}",
         "CPU 温度上限を適用できませんでした: {error}"),
+    "CPU at {temp} °C: this mode's {limit} °C limit is not being held": (
+        "CPU {temp} °C'de: bu modun {limit} °C limiti tutturulamıyor", "CPU 达到 {temp} °C：此模式的 {limit} °C 温度上限未能保持",
+        "CPU {temp} °C पर है: इस मोड की {limit} °C लिमिट बनी नहीं रह रही", "CPU a {temp} °C: no se mantiene el límite de {limit} °C de este modo",
+        "CPU عند {temp} °C: حد {limit} °C لهذا الوضع غير مُحافَظ عليه", "CPU à {temp} °C : la limite de {limit} °C de ce mode n'est pas respectée",
+        "CPU a {temp} °C: o limite de {limit} °C deste modo não está sendo mantido", "CPU при {temp} °C: лимит {limit} °C этого режима не удерживается",
+        "CPU bei {temp} °C: Die Grenze von {limit} °C dieses Modus wird nicht gehalten", "CPU が {temp} °C: このモードの {limit} °C の上限を維持できていません"),
     "Backend rollback failed: {error}": (
         "Önceki GPU yöntemine dönülemedi: {error}", "无法恢复 GPU 后端：{error}",
         "GPU बैकएंड बहाल नहीं हुआ: {error}", "No se pudo restaurar el motor GPU: {error}",

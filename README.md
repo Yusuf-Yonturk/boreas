@@ -2,7 +2,7 @@
 
 **One small window for your ASUS ROG or TUF laptop on Linux: every mode carries its own fans, power limits and temperature target.**
 
-**English** · [Türkçe](README.tr.md)
+**English** · [Türkçe](README.tr.md) · [Website](https://yusufyonturk.com/boreas/)
 
 <p align="center">
   <img src="docs/demo.gif" alt="Boreas: the main window in the light and the dark theme next to Fans and power, while the mode, the GPU mode, the keyboard effect and the charge limit change">
@@ -236,7 +236,8 @@ errors and the status fields are in [docs/cpu-temperature.md](docs/cpu-temperatu
 
 **The CPU's own ceiling (AMD Ryzen processors, on by default, still new).** On many AMD Ryzen laptops the target can instead be handed to
 the CPU itself; the CPU then holds it, so short boost bursts no longer run past it (on a G713PV the
-peak stayed within about 2 °C of the ceiling). This needs a
+peak stayed within about 2 °C of the ceiling). In a game, a low ceiling in a quiet mode can cost a lot of
+clock speed: measured numbers and what to do are in [docs/cpu-smu.md](docs/cpu-smu.md). This needs a
 small kernel module that is built with DKMS. The installer switches it on by default on every AMD Ryzen processor family
 listed below; `dkms` and your kernel's headers must be installed for the module to build. The command is AMD's
 own (the SMU's temperature-limit message); RyzenAdj and G-Helper send the same one, so it is well tested. Switching it off is saved in `/etc/boreas/smu-off`, so later

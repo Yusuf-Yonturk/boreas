@@ -1,4 +1,4 @@
-# CPU temperature ceiling through the SMU (experimental)
+# CPU temperature ceiling through the SMU
 
 Boreas can hand a mode's CPU temperature target to the CPU itself instead of steering the ASUS
 power limits in software (see [cpu-temperature.md](cpu-temperature.md)). The CPU then holds the
@@ -103,6 +103,71 @@ wake-up, with the fans still stopped and the desktop waking up, Tctl reached 90 
 ceiling was back; the gap is the time between the kernel's resume and `boreasctl reapply`.
 
 No SMU, ACPI or mailbox error appeared in the kernel log in any of these runs.
+
+### In games
+
+PEAK (Proton, Ultra settings, RTX 4060 in Standard mode) on AC, same G713PV, ceiling 88 °C, Tctl and the cores' clocks
+read every 0.5 s (2026-11-22):
+
+| Mode | Tctl (average) | Fastest core (average) | Fans cpu / gpu | Frame rate |
+|---|---|---|---|---|
+| Dengeli | 88.6-89.1 °C | 1.1-1.7 GHz | about 4000 / 4300 rpm | 46-70 fps |
+| Turbo | 89.0-89.2 °C | 2.7-2.8 GHz | about 6000 / 5500 rpm | 119 fps |
+
+The ceiling held in both modes. What it cost differed: in Dengeli the CPU dropped to its lowest clocks
+to stay at 88 °C and the game became CPU-bound. In Dengeli none of these changed that: power limits of
+55/65/65 W or 120/125/125 W, NVIDIA Dynamic Boost 25 W or 5 W, CPU Boost `Max`, the `performance`
+power profile.
+
+A second game separated the two things that differ in Turbo, the fan speed and the firmware's profile.
+Dying Light (native), ceiling 88 °C, 6 minutes each. Fans, clocks and GPU load are averages of the last
+3 minutes of the 2560x1440 logs (2026-11-24 and 2026-11-25). The frame rates were read at 2560x1440 on
+Ultra and at 1920x1080 on High:
+
+| Profile | Fan curve | CPU fan | Fastest core | All cores | GPU load | fps 2560x1440 Ultra | fps 1080p High |
+|---|---|---|---|---|---|---|---|
+| Dengeli | its own | 4000 rpm | 1.5 GHz | 1.0 GHz | 65-72 % | 50-70 | 55-75 |
+| Turbo | Dengeli's | 4000 rpm | 1.45 GHz | 0.7 GHz | 57 % | 45-60 | 50-65 |
+| Dengeli | in between | 5200 rpm | 1.55 GHz | 1.2 GHz | 92 % | 75-90 | 90-110 |
+| Turbo | its own | 5950 rpm | 4.0 GHz | 3.2 GHz | 98 % | 85-100 | 130-160 |
+
+Tctl was 88-89 °C in every row. The fan speed decides, not the profile: Turbo with Dengeli's fan curve
+was as slow as Dengeli. Dengeli and Turbo were measured twice, in both orders, and agreed within 5 %;
+the other two rows are one run each. Lowering the resolution barely helps where the CPU is the limit
+(the first two rows) and helps most where the GPU was (the last row).
+
+A third game added the frame rate to every row, a higher ceiling, and fan curves in between. PAYDAY 3
+(Proton, 1920x1080, High), 5 minutes each, averages of the last 3 minutes, frame rate logged by
+MangoHud (2026-11-25):
+
+| Profile | Fan curve | Ceiling | CPU fan | Fastest core | GPU load | Frame rate |
+|---|---|---|---|---|---|---|
+| Dengeli | its own (top 39 %) | 88 °C | 4000 rpm | 1.5-1.9 GHz | 43-51 % | 53-65 fps |
+| Turbo | Dengeli's | 88 °C | 4000 rpm | 1.6-1.75 GHz | 45-47 % | 56-59 fps |
+| Dengeli | its own | 92 °C | 4000 rpm | 1.8 GHz | 54 % | 71 fps |
+| Dengeli | its own | 95 °C | 4000 rpm | 2.05 GHz | 56 % | 74 fps |
+| Dengeli | top 50 % | 88 °C | 4600 rpm | 1.95 GHz | 56 % | 72-75 fps |
+| Dengeli | top 60 % | 88 °C | 5200 rpm | 2.25-3.1 GHz | 68-75 % | 94-102 fps |
+| Dengeli | top 70 % | 88 °C | 5750 rpm | 2.45-3.15 GHz | 77-79 % | 110-111 fps |
+| Turbo | its own | 88 °C | 5950 rpm | 3.15-3.45 GHz | 82-88 % | 105-127 fps |
+
+Four sessions: Dengeli was measured seven times, Turbo and the 60 % curve four times each, the 50 % and
+70 % curves and Turbo with Dengeli's curve twice each (the fan steps once going up and once going
+down), the two higher ceilings once. Tctl stayed within 1 °C of the ceiling in every row. Again the fan
+speed decides, not the profile, and the frame rate rises step by step with it: the 70 % curve is level
+with Turbo. A higher ceiling with the quiet fans gave less: 74 fps at 95 °C, with Tccd1 at 99.7 °C on
+average. So in a game, give a mode with a ceiling a faster fan curve before a higher ceiling, or play
+in Turbo.
+
+This is not specific to Linux or to Boreas. PEAK on the same laptop under Windows, with
+G-Helper in Balanced and its CPU temperature limit at 88 °C (2026-11-24), ran at 30-60 fps, and the
+busy cores settled at about 1.2 GHz once the temperature had risen (Tctl 89.9 °C on average).
+
+**Which temperature the ceiling follows.** The CPU applies the ceiling to its own internal reading, which
+is not always the `Tctl` that Boreas shows. Under full load and in the game, Tctl stayed about 1 °C above
+the ceiling. Under a light desktop load with a few cores boosting, Tctl sat about 2 °C above it while
+`Tccd1` averaged within 0.8 °C of it (ceilings 80, 82 and 85 °C, 30 s each). A Tctl a little above the
+ceiling is therefore not a fault.
 
 ## Help test it
 

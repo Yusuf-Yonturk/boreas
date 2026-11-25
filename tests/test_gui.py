@@ -253,6 +253,36 @@ class TestPanels(unittest.TestCase):
         self.assertFalse(f.power_apply.isChecked())
         self.assertEqual(f.sliders["ppt_pl1_spl"].slider.value(), 120)
 
+    def test_power_card_layout(self):
+        self.w.status.update(cpu_governors=["default", "powersave"], cpu_temp={"min": 75, "max": 96})
+        self.w.status["attrs"]["nv_temp_target"] = {"current": 87, "min": 75, "max": 87, "default": 87, "choices": None}
+        f = A.FansWindow(self.w)
+        f.mode_id = 0
+        f.resize(600, 1200)
+        f.show()
+        qa.processEvents()
+        spl, target = f.sliders["ppt_pl1_spl"], f.cpu_temp
+        left = lambda w: w.mapTo(f, w.rect().topLeft()).x()  # noqa: E731
+        for cb in (f.cpu_boost_cb, f.cpu_governor_cb):
+            self.assertEqual(left(cb), left(spl.slider))  # the combo boxes start where the grooves start
+        top = lambda w: w.mapTo(f, w.rect().topLeft()).y()  # noqa: E731
+        self.assertLess(top(f.cpu_governor_cb), top(target))  # selectors, temperature targets, then power
+        self.assertLess(top(target), top(f.sliders["nv_temp_target"]))
+        self.assertLess(top(f.sliders["nv_temp_target"]), top(f.power_apply))
+        # the switch sits above the limits it applies, and they are idle while it is off
+        self.assertLess(f.power_apply.mapTo(f, f.power_apply.rect().topLeft()).y(),
+                        spl.mapTo(f, spl.rect().topLeft()).y())
+        self.assertFalse(f.power_apply.isChecked())
+        self.assertFalse(spl.isEnabled())
+        self.assertTrue(target.isEnabled())  # the temperature targets do not depend on the switch
+        self.assertTrue(f.sliders["nv_temp_target"].isEnabled())
+        self.assertFalse(f.cpu_floor.isEnabled())  # no target set: the floor has nothing to hold
+        f._show_entry({"mode": {"fans_apply": False, "power_apply": True, "ppt": {}, "nv": {}}})
+        self.assertTrue(spl.isEnabled())
+        f.power_apply.setChecked(False)
+        self.assertFalse(spl.isEnabled())
+        f.close()
+
     def test_cpu_temp_slider(self):
         self.assertIsNone(A.FansWindow(self.w).cpu_temp)  # unsupported CPU: hidden
         self.w.status["cpu_temp"] = {"min": 75, "max": 96, "applied": 96, "cpu": "Dragon Range"}

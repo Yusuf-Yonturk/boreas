@@ -3,6 +3,14 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## 0.1.11
+
+- **A notice when a lowered CPU temperature limit is not held.** When a mode has a lowered limit and the CPU stays 5 °C above it for 60 seconds, the window says so, for example "CPU at 87 °C: this mode's 80 °C limit is not being held". The notice goes away when the temperature drops or the limit changes, never replaces another notice, and does not come back in the same hot spell after it is dismissed. The journal also records a threshold change during a hot spell and the CPU target on a mode switch
+- **The power card, regrouped.** CPU Boost and Power profile line up with the sliders. The temperature targets (the CPU target, its sustained power floor and the NVIDIA GPU target) form their own group. **Apply power limits** now sits above the limits it applies, and those limits are greyed out while it is off; the sustained power floor is greyed out while no CPU target is set
+- **The GPU temperature target no longer waits for Apply power limits.** A mode's NVIDIA temperature target is written whenever the mode is applied; the switch still decides only the CPU power limits and Dynamic Boost
+- **Scroll bar:** its track uses the window's background color instead of being transparent
+- **Gaming with a temperature limit:** docs/cpu-smu.md has measurements in three games on a ROG Strix G713PV. With the limit at 88 °C the fan speed decides the frame rate, not the mode: Dengeli with a faster fan curve came level with Turbo, and Turbo with Dengeli's quiet fans was as slow as Dengeli. A faster fan curve helps more than a higher limit
+
 ## 0.1.10
 
 - **Security hardening, second part:** the root update helper installs only a release newer than the one installed; the GPU helper's list of dGPU users stops after 2 s instead of delaying its reply past the service's timeout; and in Eco the process names allowed past the block (udev, package managers) count only for processes running as root, since any process can take such a name
