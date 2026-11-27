@@ -10,15 +10,26 @@ Cardwire-derived eBPF links and uses its own PID exemption to read hidden GPU no
 Boreas owns AC/battery switching and nvidia-powerd restoration; the child owns only
 GPU visibility. No separate cardwired, GUI or new public service is required.
 
-First implementation: one non-primary NVIDIA GPU, a second GPU driving an internal
-eDP panel, and loaded NVIDIA/DRM nodes. AMD dGPU, desktops, multiple NVIDIA GPUs,
-Smart/app policies, external GPU and driver hot-reload are not supported yet.
+The blocking itself comes from Cardwire (GPL-3.0), used here as a library: the eBPF
+programs and the code that loads them and hands them the device nodes to block. Boreas
+adds its own device discovery, safety checks and the integration with the ASUS GPU modes.
+
+Supported layouts, both with exactly two built-in GPUs:
+
+- one non-primary NVIDIA GPU, a second GPU driving an internal eDP panel, and loaded
+  NVIDIA/DRM nodes (tested on one laptop, see below);
+- one Radeon dGPU next to the processor's integrated GPU (see "Radeon dGPU" below; not
+  tested on real hardware).
+
+Desktops, more than two GPUs, Smart/app policies, external GPU and driver hot-reload are
+not supported.
 The eBPF path never unloads a driver, removes PCI devices or writes dgpu_disable.
 Ultimate still uses Boreas's firmware MUX path and needs reboot.
 
 Policy `eco` means new accesses are blocked, NOT that power is off. Read
 `gpu.engine.power_state`, `runtime_status` and `users` to diagnose actual sleep.
 GPU temperature polling through nvidia-smi is disabled for this backend.
+A Radeon dGPU has no GPU temperature reading in Boreas.
 Existing processes keep their handles. Connected dGPU monitors cause Eco to be
 rejected. Hotplug while already in Eco is NOT automatically handled in this first
 version: choose Standard before attaching an external screen. No udev refresh
@@ -28,6 +39,41 @@ fresh helper for that request only. If nvidia-powerd could not be started again
 after the fault, the fresh helper inherits that pending restore and every
 Standard request retries it. Restart boreasd in Standard after changing
 GPUs/drivers. No automatic fallback from eBPF to firmware.
+
+## Radeon dGPU
+
+Not tested on a laptop with a Radeon dGPU. The rules below are covered by unit tests on
+a fake sysfs tree; the one real check was the integrated-GPU query, which answered
+"integrated" for the Ryzen iGPU of the G713PV. Whether amdgpu lets the dGPU sleep once
+access is blocked is unknown. Reports are welcome.
+
+Blocking does not depend on the GPU maker: the helper blocks the card and render nodes,
+the PCI device and its audio function, the DRM sysfs entries and hwmon. What differs is
+finding the dGPU, because the integrated GPU is AMD (vendor 0x1002) too. With no NVIDIA
+GPU present the helper accepts the layout only when all of this holds:
+
+- exactly two built-in GPUs, and exactly one of them has a connected internal eDP panel;
+- the other one, the target, is AMD on the amdgpu driver and is not the boot display:
+  `boot_vga` is 0, or the file is missing and the PCI class is 0x0380 (the kernel
+  creates `boot_vga` only for VGA-class devices);
+- the GPU with the panel is the processor's integrated GPU: Intel, or AMD on amdgpu
+  that answers the kernel's `AMDGPU_INFO_DEV_INFO` query with the `FUSION` (APU) flag.
+  Only the panel GPU is asked, so the dGPU is not woken up. On a laptop whose MUX has
+  put the panel on the dGPU the answer is "not integrated" and the layout is refused,
+  instead of the integrated GPU being taken for the dGPU. A failed query refuses too.
+
+Differences from Cardwire: Cardwire also tells the GPU type through Vulkan and blocks
+the PCI bridges above the dGPU. The helper does neither: it runs as a root child
+without a Vulkan loader, and the bridges are left alone. `/dev/kfd` (ROCm/OpenCL
+compute) is not blocked; its effect on sleep is unknown.
+
+On the Boreas side the firmware backend still refuses Eco and Optimized with a Radeon
+dGPU: its Eco writes `dgpu_disable=1`, which can freeze the system while amdgpu is
+bound. When the installed helper advertises `amd` and the service finds the same
+layout, the eBPF switch is offered; Eco and Optimized appear after it is switched on.
+While it is off, a request for them is refused with "Eco and Optimized are offered
+here only through the eBPF engine". A helper built before this support does not
+advertise `amd`, and nothing changes with it.
 
 ## Helper source and reproducible build
 
@@ -155,11 +201,13 @@ Before loading hooks, the helper must answer `--protocol-info` without touching
 the GPU or requiring root:
 
 ```json
-{"protocol_version":1,"capabilities":["status","eco","standard"]}
+{"protocol_version":1,"capabilities":["status","eco","standard","amd"]}
 ```
 
-Boreas requires protocol v1 and all three capabilities, plus the existing
-newline-delimited JSON request/response contract. Custom executables must be
+Boreas requires protocol v1 and the first three capabilities, plus the existing
+newline-delimited JSON request/response contract. `amd` is optional: with it the helper
+says it can drive a Radeon dGPU, and without it Boreas offers eBPF only with an NVIDIA
+dGPU. Custom executables must be
 root-owned and not group/world-writable. Missing, legacy or incompatible helpers
 fail visibly; Boreas does not silently substitute a different binary. Rebuild
 older helpers from the updated source to support negotiation. Protocol agreement
@@ -200,6 +248,7 @@ hardware item below.
 - Helper startup failure/crash/EOF; daemon restart; no legacy fallback.
 - Kernel lockdown and rejected hooks are accurately reported.
 - Repeat on other supported NVIDIA laptops before broad compatibility claims.
+- A laptop with a Radeon dGPU: every item above. Nothing has been run on one yet.
 
 Vendored source provenance and license: ../THIRD_PARTY_NOTICES.md.
 
@@ -230,3 +279,17 @@ Xwayland, systemd and logind handles remained listed. This confirms access
 blocking/restoration, not actual GPU sleep or energy savings, and does not
 isolate the cause. The test ended in firmware Standard. Machine-readable evidence:
 `outputs/gpu-live-20261102-074534/report.json` (local, ignored by Git).
+
+### NVIDIA check of the helper with Radeon support, 2026-11-27
+
+The helper that also accepts a Radeon dGPU was installed with `tools/install-reviewed.sh`
+on the same G713PV (Linux `6.18.60-2-cachyos-lts`, NVIDIA 620.70.06,
+NVreg_DynamicPowerManagement=0x02) to see that nothing changed for NVIDIA. One
+Standard --> Eco --> Standard pass on the eBPF backend: the service reported the device
+as `nvidia`; new opens of `/dev/dri/card0`, `/dev/dri/renderD129`, `/dev/nvidia0` and
+`/dev/nvidiactl` succeeded in Standard, failed in Eco and succeeded again in Standard;
+the iGPU's `renderD128` opened in every step. After 75 seconds in Eco the GPU reported
+`D3cold / suspended`. `dgpu_disable` stayed 0, the MUX stayed 1, no reboot became
+pending, and nvidia-powerd was stopped in Eco and active again in Standard.
+Suspend/resume, AC/battery and Ultimate were not repeated. This says nothing about a
+Radeon dGPU.

@@ -33,6 +33,13 @@ Boreas change, 2026-11-22: `cardwire-ebpf/src/helpers.rs` `is_comm_whitelisted()
 allowed process name only when the process runs as root (uid 0), so an unprivileged process
 cannot rename itself past the Eco block.
 
+Boreas change, 2026-11-27: the helper's discovery in `engine/src/main.rs` also accepts a Radeon
+dGPU. It follows two ideas of Cardwire's `cardwire-core`: the GPU with a connected internal eDP
+panel is the default one, and an amdgpu device with the `AMDGPU_IDS_FLAGS_FUSION` flag is integrated
+(`src/gpu/vendor_specific/amd.rs`). The code is written anew in the helper and in `boreas/gpu.py`,
+with the ioctl numbers taken from the kernel header `include/uapi/drm/amdgpu_drm.h`. The vendored
+crates are not changed by this.
+
 The Rust helper and its vendored code are distributed under GPL version 3.
 Binary distributions must provide their corresponding sources, Cargo.lock,
 workspace manifests and build instructions, including the vendored eBPF sources.

@@ -364,9 +364,9 @@ class Daemon:
             if (mux and mux.current == 0) or target == gpu.ULTIMATE:
                 raise ValueError("Leave Ultimate and reboot before selecting the eBPF engine")
             eco = hw.get_attr("dgpu_disable")
-            # The helper only drives an NVIDIA offload GPU. In firmware Eco the dGPU is off the bus;
-            # the engine itself then asks to leave Eco first.
-            if not gpu.eco_capable(eco.current if eco else None):
+            # The helper drives an NVIDIA offload GPU, or a Radeon one when it advertises "amd".
+            # In firmware Eco the dGPU is off the bus; the engine itself then asks to leave Eco first.
+            if not gpu.eco_capable(eco.current if eco else None) and not gpu.amd_ebpf_supported():
                 raise ValueError("The eBPF engine needs an NVIDIA dGPU")
         try:
             next_target = target
@@ -497,7 +497,10 @@ class Daemon:
         ultimate = (hw.get_attr("gpu_mux_mode") or hw.Attr("", None)).current == 0
         if gpu.gpu_engine.selected() and not ultimate:
             engine = (state or {}).get("engine") or {}
-            awake = engine.get("policy") == "standard" and engine.get("runtime_status") == "active"
+            device = engine.get("device")
+            # nvidia-smi knows nothing about a Radeon dGPU the helper drives: not queried there
+            nvidia = not (isinstance(device, dict) and device.get("vendor") == "amd")
+            awake = nvidia and engine.get("policy") == "standard" and engine.get("runtime_status") == "active"
         else:
             awake = gpu.dgpu_runtime_status() == "active"
         if awake and (ultimate or hw.ac_online()):

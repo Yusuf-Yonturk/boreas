@@ -36,6 +36,8 @@ PCI_ADDR = re.compile(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]")
 # Why Eco and Optimized are refused (the GUI translates these texts)
 NO_ECO = "Eco and Optimized are not supported on this device"
 NEEDS_NVIDIA = "Eco and Optimized need an NVIDIA dGPU"
+# A Radeon offload dGPU the installed eBPF helper says it can drive: the firmware path still refuses
+NEEDS_EBPF = "Eco and Optimized are offered here only through the eBPF engine"
 
 
 class GpuBusy(Exception):
@@ -79,16 +81,19 @@ def state() -> dict:
     pending = hw.read_int(hw.ARMOURY + "/pending_reboot")
     if pending is None:
         pending = hw.read_int(hw.ARMOURY + "/pending_reboot/current_value")
-    # The eBPF helper only starts with an NVIDIA offload GPU, and in its Eco the device's sysfs
-    # files are hidden from us, so the PCI check below would read nothing.
+    # The eBPF helper starts with an NVIDIA offload GPU (or a Radeon one when it advertises
+    # "amd"), and in its Eco the device's sysfs files are hidden from us, so the PCI check below
+    # would read nothing.
     capable = gpu_engine.selected() or eco_capable(eco_v)
+    ebpf = capable or amd_ebpf_supported()
     return {
         "mode": mode,
         "mux": mux_v,
         "dgpu_disable": eco_v,
         "has_mux": mux is not None,
-        "has_eco": eco is not None and capable,
-        "ebpf_available": capable and os.path.isfile(gpu_engine.helper_path()),
+        # the eBPF Eco never writes dgpu_disable, so it does not need the attribute
+        "has_eco": capable and (eco is not None or gpu_engine.selected()),
+        "ebpf_available": ebpf and os.path.isfile(gpu_engine.helper_path()),
         "backend": "ebpf" if gpu_engine.selected() else "firmware",
         "backend_error": engine_error,
         "engine": engine,
@@ -128,6 +133,121 @@ def other_dgpu_present() -> bool:
             if vendor:  # unreadable (a rescan in progress): not counted
                 vendors.append(vendor)
     return len(vendors) >= 2 and "0x10de" not in vendors
+
+
+# from linux include/uapi/drm/amdgpu_drm.h:
+# DRM_IOCTL_AMDGPU_INFO = DRM_IOW(DRM_COMMAND_BASE + DRM_AMDGPU_INFO, struct drm_amdgpu_info)
+DRM_IOCTL_AMDGPU_INFO = 0x40206445
+# AMDGPU_INFO_DEV_INFO: the query that fills struct drm_amdgpu_info_device
+AMDGPU_INFO_DEV_INFO = 0x16
+# offset of drm_amdgpu_info_device.ids_flags (__u64) in that struct
+AMDGPU_DEV_INFO_IDS_FLAGS = 136
+# AMDGPU_IDS_FLAGS_FUSION: the GPU is an APU (integrated)
+AMDGPU_IDS_FLAGS_FUSION = 0x1
+_AMD_INFO_SIZE = 1024
+# PCI device path --> answer of a successful query, for the life of the process
+_amd_integrated_cache: dict[str, bool] = {}
+# PCI device path --> time.monotonic() of a failed query; asked again after AMD_QUERY_RETRY s
+AMD_QUERY_RETRY = 60
+_amd_query_failed: dict[str, float] = {}
+
+
+def _amd_is_integrated(path: str) -> bool | None:
+    """Whether the amdgpu device behind this render node is an APU (the FUSION flag).
+
+    Returns None (falsy) when the query fails, so a failure is not cached; it is retried after
+    AMD_QUERY_RETRY seconds."""
+    import ctypes
+    import fcntl
+    import struct
+    buf = ctypes.create_string_buffer(_AMD_INFO_SIZE)
+    req = struct.pack("QII16x", ctypes.addressof(buf), _AMD_INFO_SIZE, AMDGPU_INFO_DEV_INFO)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CLOEXEC)
+        try:
+            fcntl.ioctl(fd, DRM_IOCTL_AMDGPU_INFO, req)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+    ids_flags = struct.unpack_from("Q", buf.raw, AMDGPU_DEV_INFO_IDS_FLAGS)[0]
+    return bool(ids_flags & AMDGPU_IDS_FLAGS_FUSION)
+
+
+def _driver(device: str) -> str | None:
+    try:
+        return os.path.basename(os.readlink(hw.p(device + "/driver")))
+    except OSError:
+        return None
+
+
+def _other_is_integrated_amd(device: str) -> bool:
+    """The non-candidate AMD GPU reports itself as integrated. Only this one is asked: it is
+    awake anyway, while opening the candidate would wake the dGPU."""
+    if device in _amd_integrated_cache:
+        return _amd_integrated_cache[device]
+    failed = _amd_query_failed.get(device)
+    if failed is not None and time.monotonic() - failed < AMD_QUERY_RETRY:
+        return False  # failed a moment ago: not asked again on every status poll
+    nodes = sorted(os.path.basename(n) for n in glob.glob(hw.p(device + "/drm/renderD*")))
+    if not nodes:
+        return False
+    try:
+        answer = _amd_is_integrated(hw.p("/dev/dri/" + nodes[0]))
+    except Exception:  # noqa: BLE001 - any failure of the query means "not this layout"
+        answer = None
+    if isinstance(answer, bool):
+        _amd_integrated_cache[device] = answer
+        _amd_query_failed.pop(device, None)
+    else:
+        _amd_query_failed[device] = time.monotonic()
+    return answer is True
+
+
+def _amd_candidate(device: str, vendor: str | None) -> bool:
+    """AMD on amdgpu and not the boot display. The kernel creates boot_vga only for VGA-class
+    devices (0x0300xx), so a "Display controller" (0x0380xx) without the file counts too."""
+    if vendor != "0x1002" or _driver(device) != "amdgpu":
+        return False
+    if hw.exists(device + "/boot_vga"):
+        return hw.read(device + "/boot_vga") == "0"
+    return (hw.read(device + "/class") or "").startswith("0x0380")
+
+
+def amd_offload_present() -> bool:
+    """A Radeon offload dGPU next to the iGPU: exactly two built-in display devices, none NVIDIA,
+    and one of them (the candidate) is AMD (0x1002), not the boot display (boot_vga 0, or no
+    boot_vga on a 0x0380 display controller) and bound to amdgpu. The iGPU is AMD too, so the vendor alone says nothing; boot_vga tells the two
+    apart. With a MUX that puts the panel on the dGPU, the iGPU could look like the candidate,
+    so the other GPU must be an Intel iGPU or an amdgpu device that reports itself integrated."""
+    devices = []
+    for d in glob.glob(hw.p("/sys/bus/pci/devices/*")):
+        device = d[len(hw.ROOT):]
+        if ((hw.read(device + "/class") or "").startswith("0x03") and
+                hw.read(device + "/removable") != "removable"):
+            devices.append(device)
+    if len(devices) != 2:
+        return False
+    vendors = [hw.read(d + "/vendor") for d in devices]
+    if None in vendors or "0x10de" in vendors:
+        return False  # unreadable (a rescan in progress) or an NVIDIA dGPU: not this layout
+    candidates = [i for i, d in enumerate(devices) if _amd_candidate(d, vendors[i])]
+    if len(candidates) != 1:
+        return False  # none, or both look like the offload GPU: cannot tell which one it is
+    other = 1 - candidates[0]
+    if vendors[other] == "0x8086":
+        return True  # an Intel iGPU next to a Radeon dGPU
+    if vendors[other] != "0x1002" or _driver(devices[other]) != "amdgpu":
+        return False
+    return _other_is_integrated_amd(devices[other])
+
+
+def amd_ebpf_supported() -> bool:
+    """The eBPF helper is installed, says it can drive a Radeon offload dGPU ("amd") and this
+    machine has one. The helper is probed only on such a machine, and the result is cached."""
+    if not amd_offload_present() or not os.path.isfile(gpu_engine.helper_path()):
+        return False
+    return "amd" in gpu_engine.helper_capabilities()
 
 
 def nvidia_driver_loaded() -> bool:
@@ -188,7 +308,9 @@ def eco_capable(dgpu_disable: int | None) -> bool:
 def eco_refusal(st: dict) -> str | None:
     """Why Eco and Optimized cannot be chosen in this state() (None: they can)."""
     if st.get("has_eco") or st.get("backend") == "ebpf":
-        return None  # the eBPF helper only runs on an NVIDIA offload GPU and has its own Eco
+        return None  # the eBPF helper has its own Eco (NVIDIA, or a Radeon it advertises "amd" for)
+    if st.get("ebpf_available") and amd_offload_present():
+        return NEEDS_EBPF  # firmware Eco would write dgpu_disable=1 with amdgpu bound; the helper can
     return NEEDS_NVIDIA if st.get("dgpu_disable") is not None else NO_ECO
 
 

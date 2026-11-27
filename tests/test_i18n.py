@@ -169,6 +169,7 @@ class TestLookup(unittest.TestCase):
         shown += ["Leave Ultimate and reboot before selecting the eBPF engine", "GPU switching is not supported on this device",
                   "The eBPF engine needs an NVIDIA dGPU", "Eco and Optimized need an NVIDIA dGPU",
                   "Eco and Optimized are not supported on this device",
+                  "Eco and Optimized are offered here only through the eBPF engine",
                   "Backend transition could not be applied immediately", "No such fan: turbine", "Invalid value for ppt"]
         self.assertGreaterEqual(len(shown), 14)
         for lang in ("tr", "ar", "ja"):
