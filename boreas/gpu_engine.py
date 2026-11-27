@@ -29,6 +29,11 @@ def helper_path():
 
 
 def check_protocol(path):
+    return _protocol_info(path)[0]
+
+
+def _protocol_info(path):
+    """The trusted resolved path and the capabilities the helper advertises."""
     path = os.path.realpath(path)
     info = os.stat(path)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
@@ -55,7 +60,37 @@ def check_protocol(path):
             raise ValueError()
     except (ValueError, TypeError):
         raise OSError("Incompatible GPU engine; protocol v1 with status/eco/standard is required") from None
-    return path
+    return path, frozenset(data["capabilities"])
+
+
+# helper_capabilities() runs --protocol-info only when the helper file changes; a failed probe
+# is tried again after CAPABILITY_RETRY seconds instead of on every status poll.
+CAPABILITY_RETRY = 60
+_capability_cache: dict = {}
+
+
+def helper_capabilities(path=None) -> frozenset:
+    """Capabilities of the installed helper (empty when it is missing, untrusted or incompatible).
+
+    Cached per resolved path, inode, mtime, ctime and size, so a status poll does not start the
+    helper and a chmod, chown or replaced file is probed again."""
+    path = path or helper_path()
+    try:
+        real = os.path.realpath(path)
+        info = os.stat(real)
+        key = (real, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    except OSError:
+        return frozenset()
+    cached = _capability_cache.get(key)
+    if cached is not None and (cached[1] or time.monotonic() - cached[2] < CAPABILITY_RETRY):
+        return cached[0]
+    try:
+        caps, ok = _protocol_info(path)[1], True
+    except (OSError, ValueError, subprocess.SubprocessError):
+        caps, ok = frozenset(), False
+    _capability_cache.clear()
+    _capability_cache[key] = (caps, ok, time.monotonic())
+    return caps
 
 
 class Engine:

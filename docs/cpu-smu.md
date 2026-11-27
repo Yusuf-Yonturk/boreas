@@ -159,6 +159,20 @@ with Turbo. A higher ceiling with the quiet fans gave less: 74 fps at 95 °C, wi
 average. So in a game, give a mode with a ceiling a faster fan curve before a higher ceiling, or play
 in Turbo.
 
+A fourth game repeated the fan steps. Counter-Strike 2 (native, Vulkan, 2560x1440, Medium settings), ceiling 88 °C, 5 minutes
+each, averages of the last 3 minutes, frame rate logged by MangoHud (2026-11-26):
+
+| Profile | Fan curve | CPU fan | Fastest core | All cores | GPU load | Frame rate (average) | Slowest / fastest 10 % |
+|---|---|---|---|---|---|---|---|
+| Dengeli | top 50 % | 4600 rpm | 1.35 GHz | 1.2 GHz | 53 % | 106 fps | 79 / 137 fps |
+| Dengeli | top 60 % | 5150 rpm | 1.65 GHz | 1.45 GHz | 62 % | 135 fps | 103 / 174 fps |
+| Dengeli | top 70 % | 5750 rpm | 1.9 GHz | 1.7 GHz | 72 % | 153 fps | 115 / 200 fps |
+| Turbo | its own | 5950 rpm | 2.0 GHz | 1.8 GHz | 80 % | 161 fps | 111 / 212 fps |
+
+One run each. Tctl was 88.4-89.5 °C in every row. The GPU was never the limit, so the frame rate
+followed the CPU clock, and the CPU clock followed the fan: the 70 % curve reached 95 % of Turbo. The
+run with Dengeli's own fan curve was cut short when the game closed, so it is not in the table.
+
 This is not specific to Linux or to Boreas. PEAK on the same laptop under Windows, with
 G-Helper in Balanced and its CPU temperature limit at 88 °C (2026-11-24), ran at 30-60 fps, and the
 busy cores settled at about 1.2 GHz once the temperature had risen (Tctl 89.9 °C on average).

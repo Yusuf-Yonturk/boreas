@@ -643,6 +643,12 @@ _T = {
         "يتطلب وضعا Eco والمُحسّن بطاقة dGPU من NVIDIA", "Les modes Éco et Optimisé nécessitent un dGPU NVIDIA",
         "Os modos Eco e Otimizado exigem uma dGPU NVIDIA", "Для режимов Эко и Оптимум нужна дискретная GPU NVIDIA",
         "Eco und Optimiert benötigen eine NVIDIA-dGPU", "Eco と最適化には NVIDIA の dGPU が必要です"),
+    "Eco and Optimized are offered here only through the eBPF engine": (
+        "Eco ve Optimized burada yalnızca eBPF motoruyla sunulur", "此设备仅通过 eBPF 引擎提供节能和优化模式",
+        "यहाँ Eco और ऑप्टिमाइज़्ड केवल eBPF इंजन के ज़रिए उपलब्ध हैं", "Aquí Eco y Optimizado solo se ofrecen con el motor eBPF",
+        "يتوفر وضعا Eco والمُحسّن هنا عبر محرك eBPF فقط", "Ici, les modes Éco et Optimisé ne sont proposés qu'avec le moteur eBPF",
+        "Aqui os modos Eco e Otimizado só são oferecidos com o motor eBPF", "Здесь режимы Эко и Оптимум доступны только через движок eBPF",
+        "Eco und Optimiert gibt es hier nur über die eBPF-Engine", "このデバイスでは Eco と最適化は eBPF エンジンでのみ利用できます"),
     "{reason}. The GPU mode was set to Standard.": (
         "{reason}. GPU modu Standart yapıldı.", "{reason}。GPU 模式已设为标准。",
         "{reason}। GPU मोड स्टैंडर्ड पर सेट किया गया।", "{reason}. El modo de GPU se cambió a Estándar.",

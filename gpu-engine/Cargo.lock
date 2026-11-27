@@ -354,6 +354,7 @@ dependencies = [
  "aya",
  "cardwire-core",
  "cardwire-ebpf-userspace",
+ "libc",
  "serde",
  "serde_json",
  "tokio",

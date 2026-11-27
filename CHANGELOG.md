@@ -3,6 +3,11 @@
 Boreas shows these notes from the **Release notes** link when a new version is available.
 Newest version first.
 
+## 0.1.12
+
+- **Eco and Optimized with a Radeon dGPU, through the eBPF engine (experimental).** On a laptop with a Radeon dGPU next to the processor's integrated GPU, switch on **eBPF engine (no-reboot Eco)** in the GPU mode card and Eco and Optimized appear; Standard removes the block again, without a reboot. The helper tells the two AMD GPUs apart by itself and refuses any layout it is not sure about. It is tested on an NVIDIA laptop and by unit tests, and is waiting for its first run on a Radeon one: if you have such a laptop, try it and open an issue with what you saw. Nothing changes on NVIDIA laptops. How it works and what is still open are in docs/gpu-engine.md
+- **Gaming with a temperature limit, a fourth game:** docs/cpu-smu.md adds Counter-Strike 2 (2560x1440, Medium) on the ROG Strix G713PV. With the limit at 88 °C, Dengeli went from 106 fps with its fan curve topped at 50 % to 153 fps at 70 %, against 161 fps in Turbo: again the fan speed decided the frame rate
+
 ## 0.1.11
 
 - **A notice when a lowered CPU temperature limit is not held.** When a mode has a lowered limit and the CPU stays 5 °C above it for 60 seconds, the window says so, for example "CPU at 87 °C: this mode's 80 °C limit is not being held". The notice goes away when the temperature drops or the limit changes, never replaces another notice, and does not come back in the same hot spell after it is dismissed. The journal also records a threshold change during a hot spell and the CPU target on a mode switch

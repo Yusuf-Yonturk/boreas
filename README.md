@@ -50,7 +50,7 @@ Then open **Boreas** from the application menu, or run `boreas`. The requirement
 - **A CPU temperature target.** Pick 75-95 °C for a mode. On supported AMD Ryzen laptops the CPU itself
   holds it; elsewhere Boreas steers the power limits towards it, with an optional power floor so a gaming
   mode does not fall to the firmware's minimum.
-- **Eco without a reboot** on laptops with an NVIDIA dGPU, through the optional eBPF GPU backend (experimental).
+- **Eco without a reboot** on laptops with an NVIDIA or a Radeon dGPU, through the optional eBPF GPU backend (experimental).
 - **11 languages, light and dark, in-app updates**, and a layout that is familiar if you come from Windows.
 - **Easy to try, easy to undo.** On first start Boreas takes over your current charge limit, keyboard
   brightness, mode and GPU mode; fan curves, power limits and CPU Boost start from the firmware defaults.
@@ -89,7 +89,7 @@ whether everything worked or not.
 | CPU temperature target (75-95 °C, per mode) | ✓ | Software feedback through asus-armoury |
 | The CPU's own temperature ceiling (SMU, on AMD Ryzen processors) | ✓ (on by default; needs `\_SB.AM00` in the BIOS) | Boreas's own `boreas_smu` kernel module (DKMS) |
 | Auto mode on battery / AC | ✓ | `power_supply` |
-| GPU: Eco / Standard / Optimized / Ultimate | ✓ (Eco and Optimized with an NVIDIA dGPU) | `dgpu_disable`, `gpu_mux_mode` |
+| GPU: Eco / Standard / Optimized / Ultimate | ✓ (Eco and Optimized with an NVIDIA dGPU; with a Radeon dGPU through the eBPF engine) | `dgpu_disable`, `gpu_mux_mode` |
 | Display: lowest rate / max / Auto (Auto also switches panel overdrive with AC) | ✓ (KDE) | `kscreen-doctor` |
 | Panel overdrive | ✓ | `panel_overdrive` |
 | Keyboard Aura (static, breathe with two colors, cycle, strobe; rainbow except on single-zone keyboards; Star, Rain, Highlight, Laser, Ripple, Comet, Flash on per-key keyboards; zone colors on four-zone keyboards) | ✓ | hidraw, report 0x5D (output report) |
@@ -285,12 +285,23 @@ sudo sh smu-check.sh
 - **Eco and Optimized need an NVIDIA dGPU.** The steps above only know how to let go of an NVIDIA
   dGPU, so on a laptop with a Radeon dGPU (for example the 2022 ROG Zephyrus G14) Eco and Optimized
   are not shown and the service refuses them. Standard and Ultimate work as usual. A saved Eco or
-  Optimized mode falls back to Standard with a notice.
+  Optimized mode falls back to Standard with a notice. The eBPF engine below is the exception: once
+  it is switched on, Eco and Optimized are offered with a Radeon dGPU too.
 
 ## Experimental eBPF GPU engine
 
-An opt-in backend adapted from Cardwire that blocks access to the dGPU instead of removing it, so Eco
-does not need a reboot. Like Eco itself it needs an NVIDIA dGPU. The installer puts the helper in place (see [Install](#install)); it stays off
+An opt-in backend that blocks access to the dGPU instead of removing it, so Eco does not need a
+reboot. The dGPU blocking itself comes from [Cardwire](https://github.com/OpenGamingCollective/cardwire)
+(GPL-3.0), used here as a library. Boreas adds its own device discovery, safety checks and the
+integration with the ASUS GPU modes.
+
+It works with an NVIDIA dGPU, and with a Radeon dGPU next to the processor's integrated GPU. The
+NVIDIA side is tested on the G713PV. The Radeon side is new: its rules are covered by tests, and it
+is waiting for its first run on a laptop with a Radeon dGPU. If you have one, try it and
+[tell us how it went](https://github.com/Yusuf-Yonturk/boreas/issues). Choosing
+Standard removes the block again, without a reboot.
+
+The installer puts the helper in place (see [Install](#install)); it stays off
 until you switch it on with **eBPF engine (no-reboot Eco) · Experimental** in the **GPU mode** card or:
 
 ```bash

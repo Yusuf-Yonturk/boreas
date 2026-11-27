@@ -50,7 +50,7 @@ birlikte yazılıdır; `sudo ./uninstall.sh` Boreas'ı kaldırır ve maskelediğ
 - **CPU sıcaklık hedefi.** Bir mod için 75-95 °C seçin. Desteklenen AMD Ryzen dizüstülerinde hedefi
   CPU'nun kendisi tutar; diğerlerinde Boreas güç limitlerini o hedefe göre yönetir; isteğe bağlı bir güç tabanı da
   oyun modunun firmware'in minimumuna düşmesini önler.
-- NVIDIA dGPU'lu dizüstülerde **yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
+- NVIDIA ya da Radeon dGPU'lu dizüstülerde **yeniden başlatmadan Eco**, isteğe bağlı eBPF GPU arka ucuyla (deneysel).
 - **11 dil, açık ve koyu tema, uygulama içi güncelleme**; Windows'tan gelenlere tanıdık bir düzenle.
 - **Denemesi kolay, geri alması kolay.** İlk açılışta Boreas mevcut şarj limitinizi, klavye parlaklığınızı,
   modunuzu ve GPU modunuzu devralır; fan eğrileri, güç limitleri ve CPU Boost firmware varsayılanlarından
@@ -88,7 +88,7 @@ Sıradaki satır sizin modeliniz olabilir: Boreas'ı çalıştırın, sonra her 
 | CPU sıcaklık hedefi (75-95 °C, mod başına) | ✓ | asus-armoury üzerinden yazılımsal geri besleme |
 | CPU'nun kendi sıcaklık tavanı (SMU, AMD Ryzen işlemcilerde) | ✓ (varsayılan açık; BIOS'ta `\_SB.AM00` gerekir) | Boreas'ın `boreas_smu` çekirdek modülü (DKMS) |
 | Pil/prize göre otomatik mod | ✓ | `power_supply` |
-| GPU: Eco / Standart / Optimized / Ultimate | ✓ (Eco ve Optimized NVIDIA dGPU ile) | `dgpu_disable`, `gpu_mux_mode` |
+| GPU: Eco / Standart / Optimized / Ultimate | ✓ (Eco ve Optimized NVIDIA dGPU ile; Radeon dGPU'da eBPF motoruyla) | `dgpu_disable`, `gpu_mux_mode` |
 | Ekran: en düşük hız / maks / Otomatik (Otomatik, panel overdrive'ı da prize göre açıp kapatır) | ✓ (KDE) | `kscreen-doctor` |
 | Panel overdrive | ✓ | `panel_overdrive` |
 | Klavye Aura (statik, iki renkli nefes, döngü, strobe; tek bölgeli klavyeler dışında gökkuşağı; tuş başına aydınlatmalı klavyelerde Star, Rain, Highlight, Laser, Ripple, Comet, Flash; 4 bölgeli klavyelerde bölge renkleri) | ✓ | hidraw, rapor 0x5D (output report) |
@@ -283,12 +283,23 @@ sudo sh smu-check.sh
 - **Eco ve Optimized için NVIDIA dGPU gerekir.** Yukarıdaki adımlar yalnızca NVIDIA dGPU'yu bırakmayı
   bilir; bu yüzden Radeon dGPU'lu bir dizüstünde (örneğin 2022 ROG Zephyrus G14) Eco ve Optimized
   gösterilmez ve servis onları reddeder. Standart ve Ultimate her zamanki gibi çalışır. Kayıtlı bir Eco
-  ya da Optimized modu bir bildirimle Standart'a döner.
+  ya da Optimized modu bir bildirimle Standart'a döner. Aşağıdaki eBPF motoru bunun istisnasıdır: motor
+  açıldığında Eco ve Optimized Radeon dGPU ile de sunulur.
 
 ## Deneysel eBPF GPU motoru
 
-Cardwire kodundan uyarlanmış isteğe bağlı bir arka uç: ayrık GPU'yu (dGPU) kaldırmak yerine ona erişimi
-engeller, böylece Eco yeniden başlatma istemez. Eco gibi bu da NVIDIA dGPU ister. Yardımcı programı kurulum betiği yerleştirir
+İsteğe bağlı bir arka uç: ayrık GPU'yu (dGPU) kaldırmak yerine ona erişimi engeller, böylece Eco yeniden
+başlatma istemez. Ayrık kartı engelleyen kısım [Cardwire](https://github.com/OpenGamingCollective/cardwire)'dan
+(GPL-3.0) geliyor, burada kütüphane olarak kullanılıyor. Boreas kendi aygıt keşfini, güvenlik kontrollerini
+ve ASUS GPU modlarıyla bütünleşmeyi ekliyor.
+
+NVIDIA dGPU ile ve işlemcinin tümleşik GPU'sunun yanındaki bir Radeon dGPU ile çalışır. NVIDIA tarafı
+G713PV'de denendi. Radeon tarafı yeni: kuralları testlerle kapsanıyor ve Radeon dGPU'lu bir dizüstündeki
+ilk denemesini bekliyor. Sizde varsa deneyin ve
+[nasıl gittiğini yazın](https://github.com/Yusuf-Yonturk/boreas/issues). Standart'ı
+seçmek engeli yeniden başlatmadan kaldırır.
+
+Yardımcı programı kurulum betiği yerleştirir
 ([Kurulum](#kurulum) bölümüne bakın); **GPU modu** kartındaki **eBPF motoru (yeniden başlatmadan Eco) ·
 Deneysel** anahtarıyla ya da şu komutla açana kadar kapalı kalır:
 

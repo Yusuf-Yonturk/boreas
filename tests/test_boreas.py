@@ -1434,6 +1434,402 @@ class TestEcoNeedsNvidia(Base):
         self.assertIsNone(gpu.eco_refusal(st))
 
 
+class TestAmdOffload(Base):
+    """A Radeon offload dGPU on amdgpu (Strix G15 Advantage Edition: Ryzen iGPU + RX 6800M, both
+    0x1002). Firmware Eco stays refused; the eBPF backend is offered only when the installed
+    helper advertises the "amd" capability."""
+
+    RADEON = "/sys/bus/pci/devices/0000:03:00.0"
+    NEW_HELPER = frozenset({"status", "eco", "standard", "amd"})
+    OLD_HELPER = frozenset({"status", "eco", "standard"})
+
+    def setUp(self):
+        super().setUp()
+        gpu.gpu_engine._capability_cache.clear()
+        self.addCleanup(gpu.gpu_engine._capability_cache.clear)
+        self.addCleanup(gpu.gpu_engine.set_config_backend, None)
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("BOREAS_GPU_BACKEND", None)
+        self.helper = TMP + "/boreas-gpu-engine-amd"
+        put(self.helper, "")
+        path = patch.object(gpu.gpu_engine, "helper_path", return_value=self.helper)
+        path.start()
+        self.addCleanup(path.stop)
+        # the fake root has no /dev/dri node: the iGPU's FUSION answer is patched in
+        gpu._amd_integrated_cache.clear()
+        self.addCleanup(gpu._amd_integrated_cache.clear)
+        gpu._amd_query_failed.clear()
+        self.addCleanup(gpu._amd_query_failed.clear)
+        query = patch.object(gpu, "_amd_is_integrated", return_value=True)
+        self.query = query.start()
+        self.addCleanup(query.stop)
+
+    def display(self, device, vendor, boot_vga, driver):
+        put(R + device + "/vendor", vendor)
+        put(R + device + "/class", "0x030000")
+        put(R + device + "/boot_vga", boot_vga)
+        link = R + device + "/driver"
+        if os.path.lexists(link):
+            os.remove(link)
+        if driver:
+            os.symlink("../../../../bus/pci/drivers/" + driver, link)
+
+    def amd_layout(self, dgpu_driver="amdgpu", dgpu_boot_vga=0):
+        shutil.rmtree(R + DGPU, ignore_errors=True)
+        self.display(IGPU, "0x1002", 1, "amdgpu")
+        os.makedirs(R + IGPU + "/drm/card1", exist_ok=True)
+        os.makedirs(R + IGPU + "/drm/renderD129", exist_ok=True)
+        self.display(self.RADEON, "0x1002", dgpu_boot_vga, dgpu_driver)
+        os.makedirs(R + self.RADEON + "/drm/renderD128", exist_ok=True)
+
+    def probe(self, caps=None, error=None):
+        return patch.object(gpu.gpu_engine, "_protocol_info",
+                            side_effect=error, return_value=(self.helper, caps))
+
+    def test_amd_offload_present_on_the_amd_layout(self):
+        self.amd_layout()
+        self.assertTrue(gpu.amd_offload_present())
+
+    def test_other_amd_gpu_integrated_is_asked_through_its_own_render_node(self):
+        self.amd_layout()
+        self.assertTrue(gpu.amd_offload_present())
+        # the iGPU (awake anyway) is asked, never the candidate dGPU (that would wake it)
+        self.query.assert_called_once_with(hw.p("/dev/dri/renderD129"))
+
+    def test_other_amd_gpu_not_integrated_means_absent(self):
+        # a MUX with the panel on the dGPU: the iGPU looks like the candidate, the "other" is the dGPU
+        self.amd_layout()
+        self.query.return_value = False
+        self.assertFalse(gpu.amd_offload_present())
+
+    def test_failed_integration_query_means_absent_and_is_retried(self):
+        self.amd_layout()
+        now = [1000.0]
+        clock = patch.object(gpu.time, "monotonic", side_effect=lambda: now[0])
+        clock.start()
+        self.addCleanup(clock.stop)
+        for kwargs in ({"return_value": None}, {"side_effect": OSError("EACCES")}):
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                gpu._amd_query_failed.clear()
+                self.query.reset_mock(return_value=True, side_effect=True)
+                self.query.configure_mock(**kwargs)
+                self.assertFalse(gpu.amd_offload_present())
+                self.assertEqual(self.query.call_count, 1)
+                now[0] += gpu.AMD_QUERY_RETRY - 1
+                self.assertFalse(gpu.amd_offload_present())
+                self.assertEqual(self.query.call_count, 1)  # inside the back-off window: not asked
+                now[0] += 2
+                self.assertFalse(gpu.amd_offload_present())
+                self.assertEqual(self.query.call_count, 2)  # after it: asked again, still not cached
+        self.query.reset_mock(return_value=True, side_effect=True)
+        self.query.return_value = True
+        self.assertFalse(gpu.amd_offload_present())  # the last failure is still fresh
+        self.query.assert_not_called()
+        now[0] += gpu.AMD_QUERY_RETRY
+        self.assertTrue(gpu.amd_offload_present())
+        self.assertEqual(self.query.call_count, 1)
+
+    def test_missing_render_node_means_absent(self):
+        self.amd_layout()
+        shutil.rmtree(R + IGPU + "/drm")
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_other_amd_gpu_off_amdgpu_means_absent(self):
+        self.amd_layout()
+        self.display(IGPU, "0x1002", 1, "radeon")
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_intel_igpu_and_radeon_present_without_the_query(self):
+        self.amd_layout()
+        self.display(IGPU, "0x8086", 1, "i915")
+        self.assertTrue(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_other_vendor_means_absent(self):
+        self.amd_layout()
+        self.display(IGPU, "0x1a03", 1, "ast")
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_display_controller_radeon_without_boot_vga_is_a_candidate(self):
+        # the kernel creates boot_vga only for VGA-class devices; a 0x0380 controller has none
+        self.amd_layout()
+        os.remove(R + self.RADEON + "/boot_vga")
+        put(R + self.RADEON + "/class", "0x038000")
+        self.assertTrue(gpu.amd_offload_present())
+        self.query.assert_called_once_with(hw.p("/dev/dri/renderD129"))
+
+    def test_vga_radeon_without_boot_vga_is_not_a_candidate(self):
+        self.amd_layout()
+        os.remove(R + self.RADEON + "/boot_vga")  # class stays 0x030000
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_both_display_controllers_without_boot_vga_means_absent(self):
+        self.amd_layout()
+        for device in (IGPU, self.RADEON):
+            os.remove(R + device + "/boot_vga")
+            put(R + device + "/class", "0x038000")
+        self.assertFalse(gpu.amd_offload_present())
+        self.display(IGPU, "0x1002", 0, "amdgpu")  # one with boot_vga 0, one 0x0380 without
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_both_devices_candidates_means_absent(self):
+        self.amd_layout()
+        self.display(IGPU, "0x1002", 0, "amdgpu")
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.assert_not_called()
+
+    def test_integration_answer_is_cached(self):
+        self.amd_layout()
+        for _ in range(3):
+            self.assertTrue(gpu.amd_offload_present())
+        self.query.return_value = False  # a successful answer is kept for the process
+        self.assertTrue(gpu.amd_offload_present())
+        self.assertEqual(self.query.call_count, 1)
+        gpu._amd_integrated_cache.clear()
+        self.assertFalse(gpu.amd_offload_present())
+        self.query.return_value = True
+        self.assertFalse(gpu.amd_offload_present())  # a successful False is kept as well
+        self.assertEqual(self.query.call_count, 2)
+
+    def test_amd_offload_absent_next_to_an_nvidia_dgpu(self):
+        self.display(IGPU, "0x1002", 1, "amdgpu")
+        self.display(DGPU, "0x10de", 0, "nvidia")
+        self.assertFalse(gpu.amd_offload_present())
+
+    def test_amd_offload_absent_with_a_single_gpu(self):
+        shutil.rmtree(R + DGPU)
+        self.display(IGPU, "0x1002", 0, "amdgpu")
+        self.assertFalse(gpu.amd_offload_present())
+
+    def test_amd_offload_absent_on_a_non_amdgpu_driver(self):
+        self.amd_layout()
+        for driver in ("radeon", "vfio-pci", None):
+            with self.subTest(driver=driver):
+                self.display(self.RADEON, "0x1002", 0, driver)
+                self.assertFalse(gpu.amd_offload_present())
+
+    def test_amd_offload_absent_when_the_radeon_is_the_boot_display(self):
+        self.amd_layout(dgpu_boot_vga=1)
+        self.assertFalse(gpu.amd_offload_present())
+
+    def test_amd_offload_ignores_a_removable_egpu(self):
+        self.amd_layout()
+        egpu = "/sys/bus/pci/devices/0000:0a:00.0"
+        self.display(egpu, "0x1002", 0, "amdgpu")
+        put(R + egpu + "/removable", "removable")
+        self.assertTrue(gpu.amd_offload_present())
+
+    def test_state_offers_ebpf_only_with_the_amd_capability(self):
+        self.amd_layout()
+        with self.probe(self.NEW_HELPER):
+            st = gpu.state()
+        self.assertTrue(st["ebpf_available"])
+        self.assertFalse(st["has_eco"])  # firmware Eco keeps its meaning
+        self.assertEqual(st["backend"], "firmware")
+        self.assertEqual(gpu.eco_refusal(st), gpu.NEEDS_EBPF)
+
+    def test_ebpf_backend_offers_eco_without_dgpu_disable(self):
+        # the eBPF Eco never writes dgpu_disable, so a laptop without that attribute still gets
+        # the Eco and Optimized buttons once the backend is on; on firmware it does not
+        self.amd_layout()
+        shutil.rmtree(f"{ARM}/dgpu_disable")
+        self.assertIsNone(hw.get_attr("dgpu_disable"))
+        with self.probe(self.NEW_HELPER):
+            self.assertFalse(gpu.state()["has_eco"])
+        gpu.gpu_engine.set_config_backend("ebpf")
+        engine = Mock()
+        engine.request.return_value = {"policy": "standard", "runtime_status": "active", "power_state": "D0"}
+        with self.probe(self.NEW_HELPER), patch.object(gpu.gpu_engine, "get", return_value=engine):
+            st = gpu.state()
+        self.assertEqual(st["backend"], "ebpf")
+        self.assertTrue(st["has_eco"])
+        self.assertIsNone(gpu.eco_refusal(st))
+
+    def test_state_does_not_offer_ebpf_with_an_old_helper(self):
+        self.amd_layout()
+        with self.probe(self.OLD_HELPER):
+            st = gpu.state()
+        self.assertFalse(st["ebpf_available"])
+        self.assertFalse(st["has_eco"])
+        self.assertEqual(gpu.eco_refusal(st), gpu.NEEDS_NVIDIA)
+
+    def test_state_does_not_offer_ebpf_without_the_helper_file(self):
+        self.amd_layout()
+        os.remove(self.helper)
+        with self.probe(self.NEW_HELPER) as probe:
+            self.assertFalse(gpu.state()["ebpf_available"])
+        probe.assert_not_called()
+
+    def test_failed_probe_means_not_available_not_an_exception(self):
+        self.amd_layout()
+        for error in (OSError("Incompatible GPU engine"), gpu.gpu_engine.subprocess.TimeoutExpired("x", 5)):
+            with self.subTest(error=error):
+                gpu.gpu_engine._capability_cache.clear()
+                with self.probe(error=error):
+                    st = gpu.state()
+                self.assertFalse(st["ebpf_available"])
+                self.assertEqual(gpu.eco_refusal(st), gpu.NEEDS_NVIDIA)
+
+    def test_capability_probe_is_cached_per_helper_file(self):
+        self.amd_layout()
+        with self.probe(self.NEW_HELPER) as probe:
+            for _ in range(3):
+                self.assertTrue(gpu.state()["ebpf_available"])
+            self.assertEqual(probe.call_count, 1)
+            put(self.helper, "a new build")  # size and mtime change: probed again
+            self.assertTrue(gpu.state()["ebpf_available"])
+            self.assertEqual(probe.call_count, 2)
+
+    def test_capability_cache_sees_a_chmod_and_a_replaced_file(self):
+        self.amd_layout()
+        with self.probe(self.NEW_HELPER) as probe:
+            self.assertTrue(gpu.state()["ebpf_available"])
+            self.assertTrue(gpu.state()["ebpf_available"])
+            self.assertEqual(probe.call_count, 1)
+            before = os.stat(self.helper)
+            deadline = time.monotonic() + 2
+            while True:  # the ctime clock is coarse: chmod until the ctime has really moved
+                os.chmod(self.helper, 0o700)
+                os.utime(self.helper, ns=(before.st_atime_ns, before.st_mtime_ns))
+                info = os.stat(self.helper)
+                if info.st_ctime_ns != before.st_ctime_ns or time.monotonic() > deadline:
+                    break
+            self.assertNotEqual(info.st_ctime_ns, before.st_ctime_ns)
+            self.assertEqual((info.st_mtime_ns, info.st_size, info.st_ino),
+                             (before.st_mtime_ns, before.st_size, before.st_ino))  # only ctime differs
+            self.assertTrue(gpu.state()["ebpf_available"])
+            self.assertEqual(probe.call_count, 2)
+            replacement = self.helper + ".new"
+            put(replacement, "")  # same size, a new inode
+            os.utime(replacement, ns=(info.st_atime_ns, info.st_mtime_ns))
+            os.replace(replacement, self.helper)
+            self.assertTrue(gpu.state()["ebpf_available"])
+            self.assertEqual(probe.call_count, 3)
+
+    def test_failed_probe_is_retried_only_after_a_while(self):
+        self.amd_layout()
+        with self.probe(error=OSError("timed out")) as probe:
+            gpu.state()
+            gpu.state()
+            self.assertEqual(probe.call_count, 1)
+            with patch.object(gpu.gpu_engine, "CAPABILITY_RETRY", 0):
+                gpu.state()
+            self.assertEqual(probe.call_count, 2)
+
+    def test_nvidia_machine_never_probes_the_helper(self):
+        with self.probe(self.NEW_HELPER) as probe:
+            st = gpu.state()
+        self.assertTrue(st["ebpf_available"])  # unchanged: NVIDIA needs no capability
+        self.assertTrue(st["has_eco"])
+        probe.assert_not_called()
+
+    def test_firmware_eco_still_refused_on_the_amd_layout(self):
+        self.amd_layout()
+        calls = []
+        run = patch.object(gpu, "_run", side_effect=lambda *cmd: (calls.append(cmd), cmd[0] not in ("modprobe", "modinfo"))[1])
+        run.start()
+        self.addCleanup(run.stop)
+        for caps, reason in ((self.OLD_HELPER, gpu.NEEDS_NVIDIA), (self.NEW_HELPER, gpu.NEEDS_EBPF)):
+            with self.subTest(caps=sorted(caps)):
+                gpu.gpu_engine._capability_cache.clear()
+                d = daemon.Daemon(config.Config())
+                with self.probe(caps):
+                    for target in (gpu.ECO, gpu.OPTIMIZED):
+                        with self.assertRaisesRegex(ValueError, reason):
+                            d.handle({"cmd": "set_gpu", "target": target})
+                    with self.assertRaisesRegex(ValueError, gpu.NEEDS_NVIDIA):
+                        gpu.set_eco(True)  # the firmware path itself, whoever calls it
+                self.assertEqual(d.cfg["gpu_target"], gpu.STANDARD)
+        self.assertEqual(get(f"{ARM}/dgpu_disable/current_value"), "0")
+        self.assertEqual(calls, [])
+
+    def test_ebpf_backend_selectable_only_with_the_amd_capability(self):
+        self.amd_layout()
+        engine = Mock()
+        engine.request.return_value = {"policy": "standard", "runtime_status": "suspended",
+                                       "device": {"vendor": "amd", "minor": None}}
+        d = daemon.Daemon(config.Config())
+        with self.probe(self.OLD_HELPER), patch.object(gpu.gpu_engine, "get", return_value=engine):
+            with self.assertRaisesRegex(ValueError, "NVIDIA"):
+                d.handle({"cmd": "set_gpu_backend", "backend": "ebpf"})
+        engine.request.assert_not_called()
+        self.assertFalse(gpu.gpu_engine.selected())
+        gpu.gpu_engine._capability_cache.clear()
+        with self.probe(self.NEW_HELPER), patch.object(gpu.gpu_engine, "get", return_value=engine), \
+                patch.object(gpu.gpu_engine, "reset"):
+            self.assertEqual(d.handle({"cmd": "set_gpu_backend", "backend": "ebpf"}), {"backend": "ebpf"})
+            self.assertTrue(gpu.gpu_engine.selected())
+            st = gpu.state()
+        self.assertEqual(st["backend"], "ebpf")
+        self.assertIsNone(gpu.eco_refusal(st))
+        self.assertTrue(st["ebpf_available"])
+
+    def test_ebpf_eco_in_ultimate_never_reaches_the_helper(self):
+        for layout in ("amd", "nvidia"):
+            with self.subTest(layout=layout):
+                build_tree()
+                put(self.helper, "")
+                if layout == "amd":
+                    self.amd_layout()
+                put(f"{ARM}/gpu_mux_mode/current_value", 0)
+                engine = Mock()
+                d = daemon.Daemon(config.Config())
+                gpu.gpu_engine.set_config_backend("ebpf")  # as a saved eBPF choice does at start
+                with self.probe(self.NEW_HELPER), patch.object(gpu.gpu_engine, "get", return_value=engine), \
+                        patch.object(gpu, "set_mux") as mux:
+                    for target in (gpu.ECO, gpu.OPTIMIZED):
+                        d.handle({"cmd": "set_gpu", "target": target})
+                        d.apply_gpu_target(target)
+                engine.request.assert_not_called()
+                engine.set_eco.assert_not_called()
+                self.assertEqual(get(f"{ARM}/gpu_mux_mode/current_value"), "0")
+                mux.assert_called_with(False)  # leaving Ultimate takes a reboot first, as on firmware
+
+    def test_gpu_temperature_never_runs_nvidia_smi_for_a_radeon(self):
+        self.amd_layout()
+        d = daemon.Daemon(config.Config())
+        gpu.gpu_engine.set_config_backend("ebpf")
+        state = {"engine": {"policy": "standard", "runtime_status": "active",
+                            "device": {"vendor": "amd", "minor": None}}}
+        with patch.object(daemon.subprocess, "run") as run:
+            self.assertIsNone(d.gpu_temp(state))
+        run.assert_not_called()
+        d.gpu_temp_cache = (float("-inf"), None)
+        state["engine"]["device"] = {"vendor": "nvidia", "minor": 0}
+        with patch.object(daemon.subprocess, "run", return_value=Mock(stdout="61\n")) as run:
+            self.assertEqual(d.gpu_temp(state), 61)
+        run.assert_called_once()
+
+
+class TestAmdIntegratedQuery(unittest.TestCase):
+    """The real DRM_IOCTL_AMDGPU_INFO query, only where an amdgpu boot display exists."""
+
+    def test_real_query_on_the_boot_amdgpu_returns_a_bool(self):
+        import glob
+        nodes = []
+        for d in sorted(glob.glob("/sys/bus/pci/devices/*")):
+            try:
+                driver = os.path.basename(os.readlink(d + "/driver"))
+                with open(d + "/boot_vga") as f:
+                    boot = f.read().strip()
+            except OSError:
+                continue
+            if driver == "amdgpu" and boot == "1":
+                nodes += ["/dev/dri/" + os.path.basename(n) for n in sorted(glob.glob(d + "/drm/renderD*"))]
+        nodes = [n for n in nodes if os.access(n, os.R_OK | os.W_OK)]
+        if not nodes:
+            self.skipTest("no accessible amdgpu render node on the boot display")
+        result = gpu._amd_is_integrated(nodes[0])
+        self.assertIsInstance(result, bool)
+
+
 class TestCpuDetect(Base):
     def test_detect_dragon_range(self):
         self.assertEqual(ryzen.detect().name, "Dragon Range / Raphael")

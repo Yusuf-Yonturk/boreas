@@ -800,7 +800,7 @@ class MainWindow(QWidget):
                 if k == "ultimate":
                     b.setEnabled(g["has_mux"])
                 if k in ("eco", "optimized"):
-                    # not offered at all where the service refuses them (a Radeon dGPU, no dgpu_disable)
+                    # not offered at all where the service refuses them (on the firmware backend: a Radeon dGPU, no dgpu_disable)
                     b.setVisible(g["has_eco"])
             text = _(GPU_HINTS.get(target, ""))
             tip = ""

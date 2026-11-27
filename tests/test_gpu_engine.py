@@ -69,6 +69,26 @@ class RoutingTests(unittest.TestCase):
             self.assertFalse(engine.powerd_stopped)
             self.assertIn(unittest.mock.call(["systemctl", "start", "nvidia-powerd.service"], timeout=10), run.call_args_list)
 
+    def test_eco_without_an_nvidia_powerd_unit_touches_no_service(self):
+        # a Radeon machine: `systemctl is-active` on a unit that does not exist exits non-zero (4)
+        engine = gpu_engine.Engine()
+        engine.request = Mock(return_value={"policy": "eco"})
+        with patch.object(gpu_engine.subprocess, "run", return_value=Mock(returncode=4)) as run:
+            engine.set_eco(True)
+            self.assertEqual(run.call_args_list, [unittest.mock.call(
+                ["systemctl", "is-active", "--quiet", "nvidia-powerd.service"], timeout=5)])
+            self.assertFalse(engine.powerd_stopped)
+            engine.request.assert_called_once_with("eco")
+            engine.request.return_value = {"policy": "standard"}
+            engine.set_eco(False)
+            engine.request.assert_called_with("standard")
+            self.assertEqual(run.call_count, 1)  # leaving Eco starts nothing either
+            engine.request.side_effect = OSError("rejected")
+            with self.assertRaises(OSError):
+                engine.set_eco(True)
+            self.assertEqual(run.call_count, 2)  # only the is-active check, no start on rollback
+        self.assertFalse(engine.powerd_stopped)
+
 class TransportTests(unittest.TestCase):
     def helper(self, script):
         import subprocess
