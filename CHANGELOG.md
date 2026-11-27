@@ -6,6 +6,7 @@ Newest version first.
 ## 0.1.12
 
 - **Eco and Optimized with a Radeon dGPU, through the eBPF engine (experimental).** On a laptop with a Radeon dGPU next to the processor's integrated GPU, switch on **eBPF engine (no-reboot Eco)** in the GPU mode card and Eco and Optimized appear; Standard removes the block again, without a reboot. The helper tells the two AMD GPUs apart by itself and refuses any layout it is not sure about. It is tested on an NVIDIA laptop and by unit tests, and is waiting for its first run on a Radeon one: if you have such a laptop, try it and open an issue with what you saw. Nothing changes on NVIDIA laptops. How it works and what is still open are in docs/gpu-engine.md
+- **Gaming with a temperature limit, a fourth game:** docs/cpu-smu.md adds Counter-Strike 2 (2560x1440, Medium) on the ROG Strix G713PV. With the limit at 88 °C, Dengeli went from 106 fps with its fan curve topped at 50 % to 153 fps at 70 %, against 161 fps in Turbo: again the fan speed decided the frame rate
 
 ## 0.1.11
 
